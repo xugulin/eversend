@@ -733,7 +733,35 @@ def check_windows_structure(tree: Path, report: Report) -> None:
         "PySide6 self-configures its DLL directory",
         "add_dll_directory" in (tree / "site" / "PySide6" / "__init__.py").read_text("utf-8", errors="replace"),
     )
-    report.skip("execute the windows launcher", "requires Windows; verified statically only")
+    if sys.platform == "win32":
+        # This is the one thing a user does first, and the one thing static
+        # analysis cannot prove: cmd.exe has to accept the batch file, the
+        # argument forwarding has to work, and the app has to start with the
+        # bundled interpreter.  ``run.bat --selftest`` exercises exactly that
+        # path (loop transfer included) without opening a window.
+        try:
+            # Invoked by name with the tree as the working directory: the path
+            # contains spaces and Chinese characters, and ``cmd /c`` has its own
+            # quoting rules for a quoted first token.  A bare name never has to
+            # survive them.
+            result = subprocess.run(
+                ["cmd", "/c", "run.bat", "--selftest"],
+                cwd=str(tree),
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=600,
+            )
+            tail = (result.stdout or "").strip().splitlines()[-1:] or [""]
+            report.add(
+                "run.bat --selftest starts the app and passes",
+                result.returncode == 0 and "SELFTEST OK" in (result.stdout or ""),
+                f"rc={result.returncode} {tail[0][:80]}",
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            report.add("run.bat --selftest starts the app and passes", False, str(exc)[:100])
+    else:
+        report.skip("execute the windows launcher", "requires Windows; verified statically only")
 
 
 # --------------------------------------------------------------------------
