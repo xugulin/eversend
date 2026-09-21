@@ -114,7 +114,7 @@ class Peer:
         env["EVERSEND_HOME"] = str(self.home)
         return [sys.executable, *args], env
 
-    def serve(self, port: int, receive_dir: Path) -> subprocess.Popen:
+    def serve(self, port: int, receive_dir: Path, log_path: Path | None = None) -> subprocess.Popen:
         cmd, env = self._command(
             [
                 "-m", "eversend", "--cli", "serve",
@@ -124,6 +124,13 @@ class Peer:
                 "--no-broadcast", "--no-mdns",
             ]
         )
+        # Write the receiver's output to a file rather than a pipe.  Under
+        # Wine a piped stdout is buffered inside the Windows process and is
+        # simply lost when the process is killed -- which is precisely when
+        # you need it.  A file always has whatever was written.
+        if log_path is not None:
+            handle = open(log_path, "wb")
+            return subprocess.Popen(cmd, env=env, stdout=handle, stderr=subprocess.STDOUT)
         return subprocess.Popen(
             cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, errors="replace",
@@ -166,7 +173,8 @@ def run_direction(
     receive_dir.mkdir(parents=True, exist_ok=True)
     port = free_port()
 
-    server = receiver.serve(port, receive_dir)
+    log_path = root / f"{label.replace(' ', '').replace('→', '-')}-receiver.log"
+    server = receiver.serve(port, receive_dir, log_path)
     try:
         # Wine needs several seconds to warm up its prefix; wait for the port
         # rather than sleeping a fixed amount, so a slow CI box does not flake.
@@ -218,13 +226,12 @@ def run_direction(
         # offer, its own output is the only place the reason appears -- the
         # sender just reports "returned 1".
         try:
-            output = (server.stdout.read() or "") if server.stdout else ""
-        except Exception:
+            output = log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
             output = ""
-        if output.strip():
-            print(f"      ── 接收端输出 ──")
-            for line in output.strip().splitlines()[-12:]:
-                print(f"      {line}")
+        print(f"      ── 接收端输出（{log_path.name}）──")
+        for line in (output.strip().splitlines() or ["（空）"])[-14:]:
+            print(f"      {line}")
 
 
 def main() -> int:

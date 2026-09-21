@@ -1826,7 +1826,15 @@ class SendSession:
         try:
             view = reader.read_chunk(chunk_index, length)
         except (OSError, TransferFailed) as exc:
+            # Tell the peer.  Returning silently leaves the receiver waiting
+            # for a chunk that will never come, and all it can report is a
+            # timeout -- which says nothing about the actual problem (a file
+            # that vanished or became unreadable mid-transfer).
             self.error = str(exc)
+            try:
+                conn.send_json(MSG_ERROR, {"message": f"读取 {entry.name} 失败：{exc}"})
+            except Exception:
+                pass
             return
 
         crc = crc32(view)

@@ -176,6 +176,10 @@ def _cmd_send(args: argparse.Namespace) -> int:
 
     queue = engine.events.subscribe()
     result = {"ok": False}
+    # Keep the events so a failure can say *why*.  Without this `send` exits 1
+    # and prints nothing at all -- exactly what happened on CI, where the
+    # reason was sitting in an event nobody looked at.
+    seen: list[dict] = []
     import threading
 
     def run() -> None:
@@ -192,7 +196,9 @@ def _cmd_send(args: argparse.Namespace) -> int:
     stats = None
     while thread.is_alive():
         try:
-            queue.get(timeout=0.3)
+            event = queue.get(timeout=0.3)
+            if event.get("kind") in ("send_finished", "send_offering", "warning"):
+                seen.append(event)
         except Exception:
             pass
         now = time.monotonic()
@@ -225,6 +231,14 @@ def _cmd_send(args: argparse.Namespace) -> int:
         f"\r   {human_bytes(done)} 完成，用时 {elapsed:.1f}s，"
         f"平均 {human_speed(done / elapsed)}          "
     )
+    if not result["ok"]:
+        reason = ""
+        for event in reversed(seen):
+            if event.get("kind") == "send_finished" and event.get("error"):
+                reason = str(event["error"])
+                break
+        print(f"发送失败：{reason or '对方拒绝或连接中断（对方可能设置了 PIN，或已拒绝接收）'}",
+              file=sys.stderr)
     engine.stop()
     return 0 if result["ok"] else 1
 
