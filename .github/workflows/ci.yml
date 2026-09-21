@@ -66,6 +66,9 @@ jobs:
         shell: bash
         env:
           PYTHONPATH: src
+          # 打开传输内核的调试输出。CI 上出现过只报 "no reply to chunk 0
+          # within 8s" 而两边都没有更多线索的情况 —— 那种信息量不足以定位。
+          EVERSEND_DEBUG: '1'
         run: |
           # 命令行模式绝不能依赖图形库：它的用途就是"没有图形界面的服务器上也能
           # 收发文件"，而那种机器上通常根本没装 Qt 的运行库。这里先证明它不导入

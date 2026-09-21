@@ -520,6 +520,7 @@ class ReceiveSession:
             return
         self._live = list(streams)
         self._expected_streams = max(1, expected_streams) if expected_streams else max(1, len(streams))
+        self._debug(f"开始传输：收到 {len(streams)} 条流（期望 {expected_streams}）")
         self.events.emit("transfer_started", transfer_id=self.transfer_id, streams=len(streams))
 
         # 4. Send each file, in order.
@@ -531,6 +532,8 @@ class ReceiveSession:
             if not self._send_file(file_index):
                 ok = False
                 break
+
+        self._debug(f"文件循环结束，live 流还有 {len(self._live)} 条")
 
         # 5. Report first, then tear the data connections down.  If the
         #    control connection died, a data stream is the only way the
@@ -1604,24 +1607,40 @@ class SendSession:
             conn.sock.settimeout(120.0)
         except OSError:
             # The connection was torn down before this thread got going.
+            self._log(f"stream {index}: socket already closed, nothing to serve")
             return
+        self._log(f"stream {index}: serving")
+        served = 0
         try:
             while not self._stop.is_set():
                 try:
                     frame = conn.recv_data()
                 except socket.timeout:
+                    self._log(f"stream {index}: idle timeout after {served} request(s)")
                     break
                 if isinstance(frame, ChunkFrame):
                     continue  # the sender never receives chunks
+                served += 1
                 if not self._handle_control(frame, conn):
                     break
-        except (ConnectionClosed, ProtocolError, OSError):
-            pass
+        except (ConnectionClosed, ProtocolError, OSError) as exc:
+            # Never let a stream die silently.  A stream that stops answering
+            # leaves the receiver waiting for a chunk that will never come, and
+            # all it can report is "no reply within Ns" -- which says nothing
+            # about why.  This is exactly the shape of the CI failure that took
+            # several rounds to pin down.
+            self._log(f"stream {index}: died after {served} request(s): {type(exc).__name__}: {exc}")
         finally:
+            self._log(f"stream {index}: exiting (served {served})")
             try:
                 conn.abort()
             except Exception:
                 pass
+
+    def _log(self, message: str) -> None:
+        """Diagnostics for the sending side, gated like the receiving side's."""
+        if os.environ.get("EVERSEND_DEBUG"):
+            print(f"[send {self.transfer_id[:8]}] {message}", file=sys.stderr, flush=True)
 
     def _handle_control(self, frame: Frame, conn: Connection) -> bool:
         """Process a control frame on the sender side.  False = stop."""
@@ -1805,6 +1824,10 @@ class SendSession:
         what keeps load balanced across streams without a central scheduler.
         """
         if file_index not in self.accepted:
+            self._log(
+                f"chunk {file_index}/{chunk_index}: file not in accepted list "
+                f"{sorted(self.accepted)} -- 忽略"
+            )
             return
         reader = self._readers.get(file_index)
         if reader is None:
