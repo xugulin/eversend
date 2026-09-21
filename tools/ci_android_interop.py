@@ -457,59 +457,49 @@ def main() -> int:
         check("测试文件已推进模拟器", "No such" not in probe, probe.strip())
 
         # The page's <input type=file> is what a person taps to pick a file.
+        #
+        # Picking *is* the upload here: the page queues the file and starts the
+        # HTTP upload to the selected device straight away
+        # (``enqueueFiles`` -> ``pump``).  The 「发送」 button belongs to the
+        # other flow -- the peer-to-peer protocol transfer -- so waiting for it
+        # to light up would be testing a path this page never uses for
+        # uploads.  What a person sees is the upload card.
+        uploaded_name = f"upload-{name}"
         node_id = devtools.file_input_node()
         if check("页面上找到文件选择框", bool(node_id)):
-            picked = ""
+            shown = ""
             for remote in remote_paths:
                 node_id = devtools.file_input_node()  # the page re-renders
                 if not node_id:
                     break
                 devtools.call("DOM.setFileInputFiles", files=[remote], nodeId=node_id)
-                time.sleep(2)
-                # Ask the *page* whether it took the file, via the button it
-                # gates on that file -- not via ``input.files``.
-                #
-                # The app re-renders the DOM on every state poll, so the input
-                # that received the files is usually already replaced by a
-                # fresh, empty one: ``input.files.length`` reads 0 even though
-                # the pick worked and the upload really happened.  The send
-                # button is the app's own answer to "is anything picked", and it
-                # is also what the next step clicks -- so it is the honest thing
-                # to assert on.
-                state = devtools.evaluate(
-                    "(function(){var b=document.querySelector('#btn-send');"
-                    "if(!b)return null;"
-                    "return {disabled:b.disabled,label:b.textContent,"
-                    "total:(document.querySelector('#file-total')||{}).textContent||''};})()"
-                )
-                picked = str((state or {}).get("label") or "")
-                if state and not state.get("disabled"):
-                    print(f"      文件从 {remote} 选中了：{picked.strip()}（{state.get('total')}）")
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline:
+                    state = devtools.evaluate(
+                        "(function(){var c=document.querySelector('#upload-card');"
+                        "var b=document.querySelector('#upload-body');"
+                        "return {card:!!c && !c.hidden,"
+                        "text:(b?(b.innerText||b.textContent):'')||''};})()"
+                    ) or {}
+                    shown = str(state.get("text") or "").replace("\n", " ").strip()
+                    if uploaded_name in shown or "已发送" in shown:
+                        break
+                    time.sleep(2)
+                if uploaded_name in shown or "已发送" in shown:
+                    print(f"      文件从 {remote} 进了页面：{shown[:70]}")
                     break
-                print(f"      {remote} 没被接受（按钮 {picked!r} disabled={state and state.get('disabled')}）"
-                      f": {devtools.last_error}")
-            check("页面已把文件收下（发送按钮可用）", bool(picked) and "1 " in picked, picked.strip())
-            # Tap the page's own send button.  Nothing here reaches into the
-            # app's internals: if the button is missing or mislabelled, this
-            # fails and says so, which is the point of driving a real browser.
-            clicked = devtools.evaluate(
-                "(function(){var b=[...document.querySelectorAll('button')]"
-                ".find(x=>/发送|Send/.test(x.textContent));if(b){b.click();return true;}return false;})()"
-            )
-            check("找到并点击了发送按钮", clicked is True, str(clicked))
-            time.sleep(20)
+                print(f"      {remote} 没被页面接受（上传区显示 {shown[:60]!r}）: {devtools.last_error}")
+            check("页面开始上传选中的文件", uploaded_name in shown or "已发送" in shown, shown[:80])
             shot3 = adb("exec-out", "screencap", "-p", binary=True, timeout=120)
             (shots / "03-android-upload.png").write_bytes(shot3)
 
-        landed = None
+        # The file we pushed into the emulator has to arrive on the desktop
+        # under its own name, byte for byte.
+        landed = receive_dir / uploaded_name
         deadline = time.monotonic() + 90
-        while time.monotonic() < deadline:
-            candidates = [p for p in receive_dir.rglob("*") if p.is_file() and p.name != name]
-            if candidates:
-                landed = max(candidates, key=lambda p: p.stat().st_mtime)
-                break
+        while time.monotonic() < deadline and not landed.exists():
             time.sleep(3)
-        if check("上传的文件落到了桌面端", landed is not None):
+        if check("上传的文件落到了桌面端", landed.exists(), str(landed)):
             check("上传逐字节一致", hashlib.sha256(landed.read_bytes()).hexdigest() == expected,
                   str(landed))
 
