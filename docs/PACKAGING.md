@@ -70,9 +70,13 @@ python3 tools/build_green.py  --platform windows --out tools/.build
 python3 tools/verify_green.py tools/.build/EverSend-1.0.0-windows.zip --platform windows
 ```
 
-Windows 目标只做**结构验证**（文件齐全、名字正确、zip 内容、启动器引用路径存在）。
-`python.exe` 无法在 Linux 上执行，所以「启动器真的能拉起窗口」这件事
-**没有在真实 Windows 上验证过**，见 §9。
+Windows 目标在 Linux 上只能做**结构验证**（文件齐全、名字正确、zip 内容、
+启动器引用路径存在），因为 `python.exe` 在 Linux 上跑不起来。真正的运行验证
+交给 CI 里 `windows-latest` 上的 `portable-windows` job，它把成品解压到
+「我的 U 盘」这样一个带空格和中文的目录，再用**包里自带的** `python.exe`
+执行 `tools/ci_windows_green.py`（内置解释器与内置 wheel、AES-256-GCM 加解密、
+24 MiB 真传输逐字节比对、内置 Qt 建窗口并截图），最后再跑一次 `--cli selftest`
+——也就是 `run.bat` 走的那条路。见 §9。
 
 ### 3.3 可选：裁剪体积
 
@@ -406,23 +410,36 @@ PyQt6/PySide6 的裁剪版或者干脆不用 Qt（改用系统 WebView / TUI）�
 ### 8.4 最终验证结果
 
 ```
-33 passed, 0 failed, 0 skipped   (20.4s)     # Linux 成品（含 zip 解压、移动、只读、$HOME 零污染）
+33 passed, 0 failed, 0 skipped   (15.3s)     # Linux 成品（含 zip 解压、移动、只读、$HOME 零污染）
 25 passed, 0 failed, 0 skipped   (7.0s)      # Linux --strip 成品（--quick）
-19 passed, 0 failed, 1 skipped   (2.1s)      # Windows 成品（结构检查；跳过「执行」）
+19 passed, 0 failed, 1 skipped   (2.1s)      # Windows 成品（结构检查；「执行」那项由 CI 接手）
 RESULT: PASS
+```
+
+Windows 成品的「执行」不在上面这 19 项里，它由 `ci.yml` 的 `portable-windows`
+job 在真 Windows runner 上完成（Wine 下也手工验证过）：
+
+```
+[1] 内置解释器与内置依赖        5/5  PASS   （解释器与 eversend 包都在包内，AES-256-GCM 可用）
+[2] 包里的代码真传一个文件       4/4  PASS   （24 MiB，SHA-256 逐字节一致，83 MiB/s）
+[3] 内置 Qt 真的能画出窗口       2/2  PASS   （PySide6 6.11.2，截图已保存）
+--cli selftest                  PASS        （run.bat 走的那条路）
 ```
 
 ---
 
 ## 9. 已知限制 / 没验证到的地方（重要）
 
-1. **Windows 成品从未真正运行过**。本机是 Linux，`python.exe` 无法执行。
-   已验证的是：`runtime/python.exe`/`pythonw.exe` 存在、25 个 `.pyd` 就位、
-   `site/PySide6/plugins/platforms/qwindows.dll` 存在、核心 `Qt6*.dll` 与
-   `msvcp140*.dll` 就位、`run.bat` 的语法与「引用到的每条路径都在包里存在」、
-   zip 结构与可执行位。**没有**验证：`python.exe` 真能启动、Qt 真能建窗口、
-   `run.bat` 真能在 cmd.exe 里跑通（批处理语法只做了人工审查 + 路径引用检查）。
-   建议在真实 Windows 上跑一次 `run.bat --selftest` 与一次实际传输。
+1. **Windows 成品的运行验证靠 CI，作者本机没有 Windows**。`ci.yml` 的
+   `portable-windows` job 在真 `windows-latest` 上组装并解压成品，用包里自带的
+   解释器跑 `tools/ci_windows_green.py`：内置解释器与内置 `eversend` 包、
+   内置 `cryptography`（AES-256-GCM 真加解密）、24 MiB 真传输逐字节比对、
+   内置 Qt 建窗口并截图，最后跑一遍 `--cli selftest`。同一套在 Wine 下也手工跑过
+   （24 MiB / 83 MiB·s⁻¹）。**仍然没有验证的**：
+   `run.bat` 在真的 cmd.exe 里双击运行（批处理语法只做人工审查 + 路径引用检查）；
+   真实 Windows 桌面会话里原生 `qwindows` 插件画出来的窗口（CI 用 Qt 的离屏插件，
+   因为 runner 没有可靠的桌面会话）；Windows 上的只读介质回退
+   （只读/无写权限那套只在 Linux 成品上端到端测过）。
 2. **只验证了 x86_64**。aarch64/arm64 需要另加平台描述（`PlatformSpec`），
    目前只有 `linux` 与 `windows` 两个 x86_64 目标。
 3. **glibc 版本下限被抬高到 2.34**。按需求选了 `manylinux_2_34` 的 wheel，

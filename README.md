@@ -41,14 +41,17 @@
 
 | 平台 | 状态 | 怎么验证的 |
 |---|---|---|
-| **Linux** | ✅ 完整支持 | 作者实机：`./run.sh --selftest` + 26 项内核测试 + 15 项恶劣网络测试 + 500 MB 真机传输 |
-| **Windows** | ✅ 完整支持 | GitHub Actions `windows-latest` 原生 runner 跑完整内核测试；`interop.yml` 里再由 **Wine 承载真 Windows CPython** 与 Linux 做双向互传，逐字节比对 |
-| **安卓** | ✅ 浏览器界面（零安装） | GitHub Actions 真机模拟器（API 34）+ 真 Chrome：用 CDP 把文件塞进页面的文件选择框再点发送，上传下载都逐字节比对 |
-| **macOS** | ⚠️ 有代码路径，**未验证** | CI 里会跑内核测试，但作者没有 Mac，界面从未实机运行过 |
+| **Linux** | ✅ 完整支持 | 作者实机 + GitHub Actions `ubuntu-latest` 原生 runner：33 项内核测试、15 项恶劣网络测试、7 项并发测试、99 项浏览器界面自检、真 Qt 离屏渲染 |
+| **Windows** | ✅ 完整支持 | GitHub Actions `windows-latest` 原生 runner 跑同一整套；另有 `interop.yml` 由 **Wine 承载真 Windows CPython + win_amd64 轮子**与 Linux 双向互传 24 MiB，逐字节比对；`ci.yml` 再把**绿色包解压到「我的 U 盘」这样的中文带空格路径**，用包里自带的解释器跑传输与界面 |
+| **安卓** | ✅ 浏览器界面（零安装） | GitHub Actions 真机模拟器（API 34）+ 真 Chrome：CDP 把文件塞进页面的文件选择框再点发送，上传下载都逐字节比对 |
+| **macOS** | ⚠️ 内核已验证，**界面未验证** | GitHub Actions `macos-latest` 跑完整内核测试（含 512 MiB 传输与内存上界），但作者没有 Mac，桌面窗口从未在真机上看过 |
 
-> **这三个平台不是"应该能跑"，是 CI 上真跑过。** 而且跨系统的测试抓到过两个只有在
-> Windows 上才存在、本机测试永远是绿的缺陷 —— 详见 [`docs/RESEARCH.md`](docs/RESEARCH.md)
-> 与 `ci.yml` 里的说明。
+> **这些不是"应该能跑"，是 CI 上真跑过。** 跨系统的测试至今抓到 4 个只在某个平台上
+> 存在、在作者本机永远是绿的缺陷：`os.pread/os.pwrite` 在 Windows 上不存在、
+> Windows 的 `os.open` 默认文本模式会悄悄改写二进制、Windows 上 `socket.sendmsg`
+> 不存在、以及**手动接受的传输在 Windows 上会因为文件还被自己开着而重命名失败**
+> （POSIX 允许重命名打开着的文件，所以 Linux 侧一直只表现为句柄泄漏）。
+> 详见 [`docs/RESEARCH.md`](docs/RESEARCH.md) 与 `ci.yml` / `interop.yml` 里的注释。
 
 ### 这是什么
 
@@ -139,11 +142,12 @@ PySide6 官方不支持 Android，所以手机端走浏览器：电脑上点「�
 | 恶劣网络（8 次 RST 杀连接 + 限速） | **仍然逐字节一致送达** |
 | 512 MiB 传输峰值内存 | 234 MiB，不随文件大小增长 |
 | Linux → Windows（Wine 承载） | 24 MiB，双向逐字节一致 |
+| Windows 绿色包（包里自带的解释器） | 24 MiB 真传 + 内置 Qt 建窗口，CI 在真 Windows runner 上跑 |
 
 ### 测试
 
 ```bash
-python tests/test_loopback.py            # 26 项：基本传输/目录/续传/坏块修复/取消/吞吐
+python tests/test_loopback.py            # 33 项：基本传输/目录/续传/坏块修复/取消/吞吐/手动接受
 python tests/test_resilience.py          # 15 项：RST 杀连接/限速/512MiB/内存上界
 python src/eversend/web/selftest.py      # 99 项：QR/CSRF/路径穿越/Range/完整收发链路
 python tests/test_interop_wine.py --stage tools/.cache/stage-windows   # Linux ↔ Windows 双向
@@ -167,7 +171,11 @@ python tools/ci_android_http.py          # 手机页面的 HTTP 表面（上传/
 
 - **远程（互联网）传输只有设计，没有实现。** 方案写在 [`docs/REMOTE_DESIGN.md`](docs/REMOTE_DESIGN.md)，
   接口留在 `src/eversend/remote/`。局域网部分已完整交付并实测。
-- **macOS 从未实机验证过。** CI 会跑内核测试，但界面和便携包都没有。
+- **macOS 界面从未实机验证过。** CI 会跑完整内核测试（含 512 MiB 与内存上界），作者没有 Mac，
+  所以窗口长什么样、便携包能不能双击启动，都还没人看过。
+- **Windows 绿色包的 `run.bat` 只做过人工审查 + 路径引用检查**：CI 是用包里自带的
+  `python.exe` 跑通的（传输、加密、Qt 建窗口、`--cli selftest`），但"在 cmd.exe 里双击
+  `run.bat`"这一步没有人真的做过。
 - **安卓端是浏览器界面，不是原生 App。** 这是 PySide6 的硬限制，也是唯一能做到"零安装"的路径。
 - **同名文件会续传/覆盖，不会自动改名。** 这是续传语义的必然结果；需要保留两份请手动改名。
 
@@ -235,9 +243,9 @@ runs instead of in a second pass.
 | Platform | Status | How it was verified |
 |---|---|---|
 | Linux | ✅ Full | Author's machine: 26 core + 15 resilience checks, 500 MB real transfer |
-| Windows | ✅ Full | GitHub Actions `windows-latest` native runner, **plus** a bidirectional Linux ↔ Windows transfer with a real Windows CPython under Wine |
+| Windows | ✅ Full | GitHub Actions `windows-latest` native runner runs the whole suite, **plus** a bidirectional Linux ↔ Windows transfer with a real Windows CPython under Wine, **plus** the portable zip unzipped into a path with spaces and Chinese characters and driven by its own bundled interpreter |
 | Android | ✅ Browser UI | A real Android emulator on CI: Chrome loads the page, files are uploaded and downloaded through it and compared byte for byte |
-| macOS | ⚠️ Never run | CI runs the core tests; the GUI and portable build are unverified |
+| macOS | ⚠️ Core verified, GUI not | CI runs the full core suite (including a 512 MiB transfer and the memory bound), but no Mac was available to look at the window |
 
 ### Quick start
 
