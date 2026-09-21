@@ -32,6 +32,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -158,6 +159,81 @@ class DevTools:
 
 
 # ---------------------------------------------------------------------------
+# driving Chrome on the emulator
+# ---------------------------------------------------------------------------
+
+#: Chrome's first-run experience, in the languages the emulator might be in.
+#: Until it is dismissed, ``am start -d <url>`` is swallowed by the welcome
+#: screen: the page never opens, and the download test then finds zero bytes
+#: with nothing in the log to say why.  (It took a screenshot to see it.)
+_FIRST_RUN_LABELS = (
+    "Use without an account",
+    "不用账号即可使用",
+    "Accept & continue",
+    "接受并继续",
+    "No thanks",
+    "以后再说",
+)
+
+_CHROME_ACTIVITY = "com.android.chrome/com.google.android.apps.chrome.Main"
+
+
+def prepare_chrome() -> None:
+    """Ask Chrome to skip its first-run wizard.
+
+    The command-line file is the documented way to do this on an emulator, but
+    Chrome only reads it when it is also the "debug app", hence the second
+    call.  Best effort: :func:`dismiss_first_run` catches the case where it
+    does not take.
+    """
+    flags = "--no-first-run --no-default-browser-check --disable-fre --disable-sync"
+    adb_shell(f"echo '{flags}' > /data/local/tmp/chrome-command-line")
+    adb_shell("chmod 644 /data/local/tmp/chrome-command-line")
+    adb_shell("am set-debug-app --persistent com.android.chrome")
+    adb_shell("am force-stop com.android.chrome")
+    time.sleep(2)
+
+
+def open_url(url: str, timeout: int = 60) -> None:
+    adb_shell(f"am start -a android.intent.action.VIEW -d '{url}' -n {_CHROME_ACTIVITY}", timeout=timeout)
+
+
+def ui_nodes() -> list[tuple[str, tuple[int, int, int, int]]]:
+    """``[(text, (x1, y1, x2, y2))]`` for everything on screen right now.
+
+    ``uiautomator dump`` is the only view of the UI available before the
+    DevTools port is up -- which is exactly the situation where we need one.
+    """
+    adb_shell("uiautomator dump /sdcard/window_dump.xml", timeout=90)
+    xml = adb_shell("cat /sdcard/window_dump.xml", timeout=60)
+    found: list[tuple[str, tuple[int, int, int, int]]] = []
+    for match in re.finditer(
+        r'text="([^"]*)"[^>]*?bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', xml
+    ):
+        text = match.group(1)
+        if not text.strip():
+            continue
+        box = tuple(int(match.group(i)) for i in range(2, 6))
+        found.append((text, box))  # type: ignore[arg-type]
+    return found
+
+
+def tap_text(labels: tuple[str, ...]) -> str:
+    """Tap the first on-screen element whose text matches; returns what was tapped."""
+    for text, (x1, y1, x2, y2) in ui_nodes():
+        for label in labels:
+            if label.lower() in text.lower():
+                adb_shell(f"input tap {(x1 + x2) // 2} {(y1 + y2) // 2}")
+                return text
+    return ""
+
+
+def dismiss_first_run() -> str:
+    """Dismiss Chrome's welcome screen if it is up.  Returns what was tapped."""
+    return tap_text(_FIRST_RUN_LABELS)
+
+
+# ---------------------------------------------------------------------------
 # checks
 # ---------------------------------------------------------------------------
 
@@ -181,6 +257,12 @@ def main() -> int:
     parser.add_argument("--url", default="http://localhost:52119/")
     parser.add_argument("--host-url", default="http://127.0.0.1:52119/")
     parser.add_argument("--size-mib", type=int, default=6)
+    parser.add_argument(
+        "--receive",
+        default="",
+        help="桌面端的接收目录。必须和桌面进程启动时的 --receive 一致，"
+        "否则上传的文件会落在别处，测试会以一句看不懂的失败收场。",
+    )
     args = parser.parse_args()
 
     work = Path(args.workdir)
@@ -216,20 +298,34 @@ def main() -> int:
     reverse = adb("reverse", "tcp:52119", "tcp:52119")
     check("adb reverse 建立成功", "error" not in reverse.lower(), reverse.strip())
 
-    adb_shell(
-        f"am start -a android.intent.action.VIEW -d {args.url} "
-        "-n com.android.chrome/com.google.android.apps.chrome.Main",
-        timeout=60,
-    )
+    prepare_chrome()
+    open_url(args.url)
     time.sleep(12)
+
+    dismissed = dismiss_first_run()
+    if dismissed:
+        print(f"      关掉了 Chrome 首次运行向导（点了「{dismissed}」），重新打开页面")
+        open_url(args.url)
+        time.sleep(10)
+
     shot = adb("exec-out", "screencap", "-p", binary=True, timeout=120)
     (shots / "01-android-page.png").write_bytes(shot)
     check("拿到模拟器截图", len(shot) > 10_000, f"{len(shot)} 字节")
 
-    adb("forward", "tcp:9222", "localabstract:chrome_devtools_remote")
+    forward = adb("forward", "tcp:9222", "localabstract:chrome_devtools_remote")
+    print(f"      adb forward: {forward.strip()}")
     devtools = DevTools()
     cdp_ok = devtools.connect(timeout=60)
-    if check("Chrome 调试端口已连上", cdp_ok):
+    if not check("Chrome 调试端口已连上", cdp_ok):
+        # 连不上时唯一有用的信息是"套接字到底有没有"，所以直接问内核。
+        sockets = adb_shell("cat /proc/net/unix | grep -i devtools || echo '（没有 devtools 套接字）'")
+        print("      模拟器里的 devtools 套接字:")
+        for line in sockets.strip().splitlines()[:5]:
+            print(f"        {line}")
+        print("      当前屏幕上的文字（前 12 条）:")
+        for text, _box in ui_nodes()[:12]:
+            print(f"        {text}")
+    if cdp_ok:
         devtools.call("Runtime.enable")
         title = devtools.evaluate("document.title")
         check("页面标题是韧传", bool(title) and ("韧传" in str(title) or "EverSend" in str(title)), str(title))
@@ -244,7 +340,7 @@ def main() -> int:
     print("\n[2] 桌面 → 手机（Chrome 下载 + adb pull）")
     payload = os.urandom(args.size_mib * 1024 * 1024)
     # Put it where the web UI can serve it from: the engine's receive dir.
-    receive_dir = Path(os.environ.get("EVERSEND_RECEIVE", work / "desktop-recv"))
+    receive_dir = Path(args.receive or os.environ.get("EVERSEND_RECEIVE", "") or work / "desktop-recv")
     receive_dir.mkdir(parents=True, exist_ok=True)
     name = "android-download.bin"
     (receive_dir / name).write_bytes(payload)
@@ -252,12 +348,34 @@ def main() -> int:
 
     adb_shell("rm -f /sdcard/Download/" + name)
     download_url = f"{args.url}api/download?path={name}"
-    adb_shell(f"am start -a android.intent.action.VIEW -d '{download_url}' -n com.android.chrome/com.google.android.apps.chrome.Main")
-    time.sleep(15)
+    open_url(download_url)
+
+    # A download finishes on its own schedule, and Chrome writes it through its
+    # own download manager -- so poll for the file instead of sleeping a fixed
+    # amount and hoping.  (Sleeping 15s was how this failed the first time: the
+    # bytes were still in flight, and the failure looked like "0 字节".)
+    pulled = work / name
+    deadline = time.monotonic() + 90
+    size = 0
+    while time.monotonic() < deadline:
+        reported = adb_shell(f"stat -c %s /sdcard/Download/{name} 2>/dev/null || echo 0").strip()
+        size = int(reported) if reported.isdigit() else 0
+        if size >= len(payload):
+            break
+        time.sleep(3)
+
     drawn = adb("exec-out", "screencap", "-p", binary=True, timeout=120)
     (shots / "02-android-download.png").write_bytes(drawn)
+    if size < len(payload):
+        # Say what the phone was showing: a permission prompt and a failed
+        # download look identical from the outside otherwise.
+        print("      下载没落地，屏幕上现在写着（前 10 条）:")
+        for text, _box in ui_nodes()[:10]:
+            print(f"        {text}")
+        print("      /sdcard/Download 内容:")
+        for line in adb_shell("ls -l /sdcard/Download/").strip().splitlines()[:8]:
+            print(f"        {line}")
 
-    pulled = work / name
     adb("pull", f"/sdcard/Download/{name}", str(pulled), timeout=180)
     if check("下载的文件已取回", pulled.exists() and pulled.stat().st_size > 0,
              f"{pulled.stat().st_size if pulled.exists() else 0} 字节"):

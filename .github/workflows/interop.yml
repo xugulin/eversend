@@ -143,7 +143,8 @@ jobs:
           disable-animations: true
           script: |
             adb devices
-            python tools/ci_android_interop.py --workdir "$RUNNER_TEMP/android" --size-mib 6
+            python tools/ci_android_interop.py --workdir "$RUNNER_TEMP/android" \
+              --receive "$RUNNER_TEMP/recv" --size-mib 6
 
       - name: 桌面端日志
         if: always()
