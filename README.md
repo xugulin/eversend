@@ -41,7 +41,7 @@
 
 | 平台 | 状态 | 怎么验证的 |
 |---|---|---|
-| **Linux** | ✅ 完整支持 | 作者实机 + GitHub Actions `ubuntu-latest` 原生 runner：33 项内核测试、15 项恶劣网络测试、7 项并发测试、99 项浏览器界面自检、真 Qt 离屏渲染 |
+| **Linux** | ✅ 完整支持 | 作者实机 + GitHub Actions `ubuntu-latest` 原生 runner：33 项内核测试、17 项恶劣网络测试、7 项并发测试、99 项浏览器界面自检、真 Qt 离屏渲染 |
 | **Windows** | ✅ 完整支持 | GitHub Actions `windows-latest` 原生 runner 跑同一整套；另有 `interop.yml` 由 **Wine 承载真 Windows CPython + win_amd64 轮子**与 Linux 双向互传 24 MiB，逐字节比对；`ci.yml` 再把**绿色包解压到「我的 U 盘」这样的中文带空格路径**，用包里自带的解释器跑传输与界面 |
 | **安卓** | ✅ 浏览器界面（零安装） | GitHub Actions 真机模拟器（API 34）+ 真 Chrome：CDP 把文件塞进页面的文件选择框再点发送，上传下载都逐字节比对 |
 | **macOS** | ⚠️ 内核已验证，**界面未验证** | GitHub Actions `macos-latest` 跑完整内核测试（含 512 MiB 传输与内存上界），但作者没有 Mac，桌面窗口从未在真机上看过 |
@@ -142,13 +142,13 @@ PySide6 官方不支持 Android，所以手机端走浏览器：电脑上点「�
 | 恶劣网络（8 次 RST 杀连接 + 限速） | **仍然逐字节一致送达** |
 | 512 MiB 传输峰值内存 | 234 MiB，不随文件大小增长 |
 | Linux → Windows（Wine 承载） | 24 MiB，双向逐字节一致 |
-| Windows 绿色包（包里自带的解释器） | 24 MiB 真传 + 内置 Qt 建窗口，CI 在真 Windows runner 上跑 |
+| Windows 绿色包（包里自带的解释器） | 24 MiB 真传 + 内置 Qt 建窗口 + `run.bat --selftest`，CI 在真 Windows runner 上跑 |
 
 ### 测试
 
 ```bash
 python tests/test_loopback.py            # 33 项：基本传输/目录/续传/坏块修复/取消/吞吐/手动接受
-python tests/test_resilience.py          # 15 项：RST 杀连接/限速/512MiB/内存上界
+python tests/test_resilience.py          # 17 项：RST 杀连接/限速/512MiB/内存上界/对端不回话就挂断
 python src/eversend/web/selftest.py      # 99 项：QR/CSRF/路径穿越/Range/完整收发链路
 python tests/test_interop_wine.py --stage tools/.cache/stage-windows   # Linux ↔ Windows 双向
 python tools/ci_android_http.py          # 手机页面的 HTTP 表面（上传/Range/SSE/安全边界）
@@ -173,9 +173,10 @@ python tools/ci_android_http.py          # 手机页面的 HTTP 表面（上传/
   接口留在 `src/eversend/remote/`。局域网部分已完整交付并实测。
 - **macOS 界面从未实机验证过。** CI 会跑完整内核测试（含 512 MiB 与内存上界），作者没有 Mac，
   所以窗口长什么样、便携包能不能双击启动，都还没人看过。
-- **Windows 绿色包的 `run.bat` 只做过人工审查 + 路径引用检查**：CI 是用包里自带的
-  `python.exe` 跑通的（传输、加密、Qt 建窗口、`--cli selftest`），但"在 cmd.exe 里双击
-  `run.bat`"这一步没有人真的做过。
+- **Windows 绿色包已经能被 `cmd.exe` 真正启动**：CI 在真 Windows runner 上执行
+  `cmd /c run.bat --selftest`（批处理解析、参数转发、内置解释器、回环传输全过），
+  并用包里的 `python.exe` 跑完传输、加密与 Qt 建窗口。**没有**验证的只剩"双击时
+  弹出的那个窗口长什么样"——那需要有人坐在 Windows 前面看。
 - **安卓端是浏览器界面，不是原生 App。** 这是 PySide6 的硬限制，也是唯一能做到"零安装"的路径。
 - **同名文件会续传/覆盖，不会自动改名。** 这是续传语义的必然结果；需要保留两份请手动改名。
 
@@ -243,7 +244,7 @@ runs instead of in a second pass.
 | Platform | Status | How it was verified |
 |---|---|---|
 | Linux | ✅ Full | Author's machine: 26 core + 15 resilience checks, 500 MB real transfer |
-| Windows | ✅ Full | GitHub Actions `windows-latest` native runner runs the whole suite, **plus** a bidirectional Linux ↔ Windows transfer with a real Windows CPython under Wine, **plus** the portable zip unzipped into a path with spaces and Chinese characters and driven by its own bundled interpreter |
+| Windows | ✅ Full | GitHub Actions `windows-latest` runs the whole suite, **plus** a bidirectional Linux ↔ Windows transfer with a real Windows CPython under Wine, **plus** the portable zip unzipped into a path with spaces and Chinese characters, launched through `cmd /c run.bat --selftest` and driven by its own bundled interpreter |
 | Android | ✅ Browser UI | A real Android emulator on CI: Chrome loads the page, files are uploaded and downloaded through it and compared byte for byte |
 | macOS | ⚠️ Core verified, GUI not | CI runs the full core suite (including a 512 MiB transfer and the memory bound), but no Mac was available to look at the window |
 
