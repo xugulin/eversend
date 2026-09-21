@@ -459,21 +459,32 @@ def main() -> int:
         # The page's <input type=file> is what a person taps to pick a file.
         node_id = devtools.file_input_node()
         if check("页面上找到文件选择框", bool(node_id)):
-            count = 0
+            picked = ""
             for remote in remote_paths:
                 node_id = devtools.file_input_node()  # the page re-renders
                 if not node_id:
                     break
                 devtools.call("DOM.setFileInputFiles", files=[remote], nodeId=node_id)
-                time.sleep(1)
-                count = devtools.evaluate(
-                    "document.querySelector('input[type=file]').files.length"
+                time.sleep(2)
+                # Ask the *page* what it picked, not the <input>.
+                #
+                # The app re-renders the DOM on every state poll, so by the time
+                # this is read the input that received the files has usually
+                # been replaced by a fresh, empty one: ``input.files.length``
+                # says 0 even though the pick worked (and the upload really
+                # happened -- the two checks below passed while this one said
+                # 0).  What a person would see is this line of text.
+                picked = str(
+                    devtools.evaluate(
+                        "(document.querySelector('#file-total')||{}).textContent||''"
+                    )
+                    or ""
                 )
-                if count == 1:
-                    print(f"      文件从 {remote} 放进了选择框")
+                if "1 " in picked:
+                    print(f"      文件从 {remote} 选中了：{picked.strip()}")
                     break
-                print(f"      {remote} 没被接受（files.length={count}）: {devtools.last_error}")
-            check("文件已放进选择框", count == 1, f"files.length={count}")
+                print(f"      {remote} 没被接受（页面显示 {picked!r}）: {devtools.last_error}")
+            check("页面显示已选中 1 个文件", "1 " in picked, picked.strip())
             # Tap the page's own send button.  Nothing here reaches into the
             # app's internals: if the button is missing or mislabelled, this
             # fails and says so, which is the point of driving a real browser.

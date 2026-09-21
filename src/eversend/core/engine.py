@@ -38,7 +38,7 @@ from .constants import (
     MSG_OFFER_REJECT,
 )
 from .discovery import DiscoveryService
-from .framing import ConnectionClosed
+from .framing import ConnectionClosed, ProtocolError
 from .hashing import DigestCache
 from .model import (
     DeviceInfo,
@@ -453,7 +453,26 @@ class Engine:
                 entry.digest = cached
 
         streams = streams or self.config.streams
-        control = self._open_control(peer)
+        try:
+            control = self._open_control(peer)
+        except (TransferFailed, ConnectionClosed, ProtocolError, HandshakeError, OSError) as exc:
+            # "I could not even reach it" is a *result*, not an exception: every
+            # caller here is a UI of some kind, and a peer that is off, asleep
+            # or gone must come back as a failure it can show.  This used to
+            # escape as TransferFailed from the connect path (and as
+            # ConnectionResetError when something reset the connection after it
+            # was established), which the resilience test caught by killing
+            # connections at random.
+            self.events.emit(
+                "send_finished",
+                transfer_id="",
+                peer=peer.info,
+                status="failed",
+                bytes=0,
+                error=str(exc),
+            )
+            return False
+
         session = SendSession(
             control=control,
             identity=self.identity,
@@ -495,6 +514,25 @@ class Engine:
                 status="rejected",
                 bytes=0,
                 error=str(exc),
+            )
+            self._unregister_active(session.transfer_id)
+            return False
+        except (ConnectionClosed, ProtocolError, HandshakeError, OSError) as exc:
+            # The connection died while the offer was in flight -- the peer
+            # crashed, or something on the path reset it.  That is a *failed
+            # send*, not a crash: the caller (desktop window, CLI, a phone that
+            # walked out of Wi-Fi range) has to get an answer it can show.
+            # Found by the resilience test, which kills connections at random
+            # and occasionally landed on exactly this window.
+            session.error = f"the connection failed before the peer answered: {exc}"
+            control.abort()
+            self.events.emit(
+                "send_finished",
+                transfer_id=session.transfer_id,
+                peer=control.peer.info,
+                status="failed",
+                bytes=0,
+                error=session.error,
             )
             self._unregister_active(session.transfer_id)
             return False

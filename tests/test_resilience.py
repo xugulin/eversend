@@ -24,6 +24,7 @@ import hashlib
 import os
 import random
 import socket
+import struct
 import sys
 import tempfile
 import threading
@@ -340,6 +341,74 @@ def test_kill_all_early() -> None:
             rig.close()
 
 
+def test_peer_vanishes_before_answering() -> None:
+    """A peer that resets the connection instead of answering the offer.
+
+    ``send()`` is called by the desktop window, by the CLI and by the web UI's
+    upload worker, and all three expect a *boolean* -- not an exception.  When
+    something on the path resets the connection after it is established but
+    before the peer answers the offer, the reset used to escape as
+    ``ConnectionResetError`` and take the caller down with it.  This is
+    deterministic where the hostile proxy was only occasionally lucky: the
+    listener accepts the connection and immediately RSTs it.
+    """
+    print("\n[5] The peer resets the connection instead of answering the offer")
+    with scratch() as root:
+        rig = Rig(root, streams=2)
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(8)
+        port = listener.getsockname()[1]
+        stop = threading.Event()
+
+        def hang_up() -> None:
+            while not stop.is_set():
+                try:
+                    listener.settimeout(0.2)
+                    conn, _ = listener.accept()
+                except (OSError, socket.timeout):
+                    continue
+                # SO_LINGER=0 makes close() send a RST rather than a FIN.
+                conn.setsockopt(
+                    socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+                )
+                conn.close()
+
+        try:
+            source = root / "A" / "vanishing.bin"
+            source.write_bytes(os.urandom(2 * 1024 * 1024))
+            worker = threading.Thread(target=hang_up, daemon=True)
+            worker.start()
+
+            peer = Peer(info=rig.engine_b.info, address="127.0.0.1", port=port)
+            try:
+                ok = rig.engine_a.send(peer, [str(source)])
+                raised = ""
+            except Exception as exc:  # noqa: BLE001 - that is the bug
+                ok, raised = False, repr(exc)
+
+            check("send() reports failure instead of raising", not raised, raised)
+            check("send() says the transfer did not happen", ok is False, str(ok))
+            finished = [
+                event
+                for event in rig.engine_a.events.recent
+                if event.get("kind") == "send_finished"
+            ]
+            check(
+                "the failure is visible as an event with a reason",
+                bool(finished) and bool(finished[-1].get("error")),
+                str(finished[-1:]),
+            )
+        finally:
+            stop.set()
+            try:
+                listener.close()
+            except OSError:
+                pass
+            rig.close()
+
+
 def test_throttled_link() -> None:
     print("\n[3] Throttled link (8 MB/s) with latency and jitter — integrity under backpressure")
     with scratch() as root:
@@ -444,6 +513,7 @@ def main() -> int:
         test_kill_all_early,
         test_throttled_link,
         test_large_file,
+        test_peer_vanishes_before_answering,
     ]
     for test in tests:
         try:
