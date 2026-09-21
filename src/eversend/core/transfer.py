@@ -1399,6 +1399,11 @@ class SendSession:
         self.rejected: list[tuple[int, str]] = []
         self.error = ""
         self._readers: dict[int, FileReader] = {}
+        #: Set once the readers are closed for good; see :meth:`_close_readers`.
+        self._readers_closed = False
+        #: Guards "check the flag, then maybe open a reader" against the
+        #: cleanup that sets it, so no reader can slip in after the sweep.
+        self._reader_lock = threading.Lock()
         #: Whole-file hashers fed from the chunks as they are read, so the
         #: digest costs no extra pass over the file in the normal case.
         self._hashers: dict[int, IncrementalFileHasher] = {}
@@ -1548,9 +1553,7 @@ class SendSession:
                 conn.abort()
             for thread in self._threads:
                 thread.join(timeout=2.0)
-            for reader in self._readers.values():
-                reader.close()
-            self._readers.clear()
+            self._close_readers()
 
         if self._finish_status:
             ok = self._finish_status == "done"
@@ -1847,6 +1850,31 @@ class SendSession:
                 self._digest_cache.put(source, entry.size, entry.mtime_ns, digest)
         return digest
 
+    def _close_readers(self) -> None:
+        """Close every source reader, and refuse to open another one.
+
+        The stream threads are joined with a *timeout*, so one of them can
+        still be on its way into :meth:`_send_one_chunk` when the session tears
+        down.  If it then found the cache empty it would open a second reader
+        for a file that nobody will ever close again -- because the cleanup has
+        already run and the session is finished.
+
+        On POSIX that is one leaked descriptor.  On Windows the source file
+        stays **locked**, and that is how this was found: the packaged
+        ``--cli selftest`` could not delete its temporary directory and exited
+        1 with "The process cannot access the file because it is being used by
+        another process" -- a green transfer and a red exit code.
+        """
+        with self._reader_lock:
+            self._readers_closed = True
+            readers = list(self._readers.values())
+            self._readers.clear()
+        for reader in readers:
+            try:
+                reader.close()
+            except Exception:  # pragma: no cover - closing must never raise
+                pass
+
     def _send_one_chunk(self, conn: Connection, file_index: int, chunk_index: int) -> None:
         """Read one chunk from the source file and push it down the stream.
 
@@ -1859,18 +1887,23 @@ class SendSession:
                 f"{sorted(self.accepted)} -- 忽略"
             )
             return
-        reader = self._readers.get(file_index)
-        if reader is None:
-            entry = next((e for e in self.entries if e.index == file_index), None)
-            source = self.sources.get(file_index)
-            if entry is None or not source:
+        with self._reader_lock:
+            if self._readers_closed:
+                # The session is over; a reader opened now would never be
+                # closed again.  See :meth:`_close_readers`.
                 return
-            try:
-                reader = FileReader(source, entry.size, entry.chunk_size)
-            except OSError as exc:
-                self.error = f"cannot read {source}: {exc}"
-                return
-            self._readers[file_index] = reader
+            reader = self._readers.get(file_index)
+            if reader is None:
+                entry = next((e for e in self.entries if e.index == file_index), None)
+                source = self.sources.get(file_index)
+                if entry is None or not source:
+                    return
+                try:
+                    reader = FileReader(source, entry.size, entry.chunk_size)
+                except OSError as exc:
+                    self.error = f"cannot read {source}: {exc}"
+                    return
+                self._readers[file_index] = reader
 
         entry = next(e for e in self.entries if e.index == file_index)
         from .constants import chunk_range
@@ -1878,11 +1911,13 @@ class SendSession:
         _offset, length = chunk_range(chunk_index, entry.chunk_size, entry.size)
         try:
             view = reader.read_chunk(chunk_index, length)
-        except (OSError, TransferFailed) as exc:
+        except (OSError, TransferFailed, ValueError) as exc:
             # Tell the peer.  Returning silently leaves the receiver waiting
             # for a chunk that will never come, and all it can report is a
             # timeout -- which says nothing about the actual problem (a file
-            # that vanished or became unreadable mid-transfer).
+            # that vanished or became unreadable mid-transfer).  ``ValueError``
+            # is in the list because a session that is tearing down closes its
+            # readers, and reading from a closed one says exactly that.
             self.error = str(exc)
             try:
                 conn.send_json(MSG_ERROR, {"message": f"读取 {entry.name} 失败：{exc}"})

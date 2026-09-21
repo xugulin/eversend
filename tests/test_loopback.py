@@ -141,6 +141,15 @@ def test_basic_transfer() -> None:
                 "no leftover .part file",
                 not list((root / "B" / "recv").glob("*.eversend.part")),
             )
+
+            # And the sender must have let go of the file it just read: on
+            # Windows an open handle means the file cannot be deleted or
+            # overwritten, which is how this was found -- the packaged
+            # `--cli selftest` could not remove its own temporary directory and
+            # exited 1 *after* reporting a successful transfer.
+            leaked = fds_open_on(str(source))
+            if os.path.isdir("/proc/self/fd"):
+                check("nothing still holds the source file open", not leaked, str(leaked))
         finally:
             rig.close()
 
