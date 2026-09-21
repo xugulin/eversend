@@ -18,12 +18,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _scratch import scratch  # noqa: E402
+from _scratch import scratch, use_utf8_console  # noqa: E402
 
 OUT = Path(__file__).resolve().parent / "screenshots"
 
 
 def main() -> int:
+    use_utf8_console()
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
     from PySide6.QtCore import QTimer

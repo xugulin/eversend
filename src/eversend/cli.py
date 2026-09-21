@@ -276,6 +276,12 @@ def _cmd_selftest(args: argparse.Namespace) -> int:
         )
         receiver = Engine(receiver_config)
         receiver.start()
+        # Collect both sides' events.  Without this a failed loop transfer
+        # prints `sent=False` and nothing else -- which is exactly what
+        # happened on the CI Linux runner, and it took a second round trip
+        # through the logs to find out the receiver had simply never answered.
+        sender_events = engine.events.subscribe()
+        receiver_events = receiver.events.subscribe()
         try:
             peer = engine.add_manual_device("127.0.0.1", receiver.port, "selftest")
             transferred = engine.send(peer, [source])
@@ -283,6 +289,19 @@ def _cmd_selftest(args: argparse.Namespace) -> int:
             landed = os.path.exists(target)
             same = landed and hashlib.sha256(open(target, "rb").read()).hexdigest() == hashlib.sha256(payload).hexdigest()
             print(f"   loop transfer: sent={transferred} landed={landed} identical={same}")
+            if not (transferred and landed and same):
+                print(f"   发送端: {engine.info.name} 端口 {engine.port}")
+                print(f"   接收端: {receiver.info.name} 端口 {receiver.port} 目录 {receiver_config.receive_dir}")
+                for label, queue_ in (("发送端事件", sender_events), ("接收端事件", receiver_events)):
+                    interesting = []
+                    while not queue_.empty():
+                        event = queue_.get_nowait()
+                        if event.get("kind") in (
+                            "send_finished", "transfer_finished", "transfer_rejected",
+                            "offer_received", "file_failed", "warning", "peer_rejected",
+                        ):
+                            interesting.append({k: v for k, v in event.items() if k not in ("ts", "peer")})
+                    print(f"   {label}: {interesting[-4:] if interesting else '（无）'}")
             ok = ok and transferred and landed and same
         finally:
             receiver.stop()

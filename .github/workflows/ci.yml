@@ -26,6 +26,11 @@ jobs:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    env:
+      # Windows 控制台默认代码页（zh-CN 是 936、en-US 是 1252）打不出中文测试名，
+      # 会直接 UnicodeEncodeError 把脚本打断。脚本自己也做了 reconfigure 兜底，
+      # 这里是第二道。
+      PYTHONIOENCODING: utf-8
     strategy:
       fail-fast: false
       matrix:

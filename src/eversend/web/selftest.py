@@ -45,6 +45,21 @@ _failures: list[str] = []
 _checks = 0
 
 
+def _use_utf8_console() -> None:
+    """Survive a legacy Windows code page.
+
+    This script prints Chinese check names.  On a zh-CN Windows console the
+    default code page is 936 and on an en-US one it is 1252; either way a
+    character it cannot represent raises UnicodeEncodeError and kills the run
+    partway through, which is a miserable way to learn nothing.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def check(name: str, condition: bool, detail: str = "") -> bool:
     global _checks
     _checks += 1
@@ -674,6 +689,7 @@ def check_offer_roundtrip(engine_a: Engine, engine_b: Engine, base: str, token: 
 
 
 def main() -> int:
+    _use_utf8_console()
     print("EverSend web UI self-test")
     print("=" * 62)
 

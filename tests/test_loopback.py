@@ -26,7 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _scratch import scratch  # noqa: E402
+from _scratch import scratch, use_utf8_console  # noqa: E402
 
 from eversend.core.engine import Engine, EngineConfig  # noqa: E402
 from eversend.core.model import DeviceInfo, FileEntry, Peer  # noqa: E402
@@ -357,6 +357,7 @@ def test_speed() -> None:
 
 
 def main() -> int:
+    use_utf8_console()
     print("EverSend core loopback tests")
     print("=" * 60)
     tests = [

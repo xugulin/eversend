@@ -33,7 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _scratch import scratch  # noqa: E402
+from _scratch import peak_rss_mib, scratch, use_utf8_console  # noqa: E402
 
 from eversend.core.engine import Engine, EngineConfig  # noqa: E402
 from eversend.core.model import Peer  # noqa: E402
@@ -397,16 +397,15 @@ def test_large_file() -> None:
             expected = digest.hexdigest()
 
             peer = Peer(info=rig.engine_b.info, address="127.0.0.1", port=rig.engine_b.port)
-            peak_rss = {"value": 0}
+            peak_rss = {"value": 0.0}
             stop_monitor = threading.Event()
 
             def monitor() -> None:
-                import resource
-
+                # peak_rss_mib handles the three platform differences: no
+                # `resource` on Windows, and ru_maxrss in bytes on macOS but
+                # kilobytes on Linux.
                 while not stop_monitor.is_set():
-                    usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-                    # Linux reports kilobytes.
-                    peak_rss["value"] = max(peak_rss["value"], usage // 1024)
+                    peak_rss["value"] = max(peak_rss["value"], peak_rss_mib())
                     time.sleep(0.1)
 
             watcher = threading.Thread(target=monitor, daemon=True)
@@ -423,18 +422,21 @@ def test_large_file() -> None:
             check("512 MiB bytes identical", received.exists() and sha256_file(received) == expected)
             check(
                 "memory stayed bounded",
-                peak_rss["value"] < 900,
-                f"peak RSS was {peak_rss['value']} MiB",
+                # A machine that cannot report memory must not fail the test;
+                # 0 means "unknown" here, not "used nothing".
+                peak_rss["value"] == 0.0 or peak_rss["value"] < 900,
+                f"peak RSS was {peak_rss['value']:.0f} MiB",
             )
             print(
                 f"      512 MiB in {elapsed:.1f}s = {512 / elapsed:.0f} MiB/s, "
-                f"peak RSS {peak_rss['value']} MiB"
+                f"peak RSS {peak_rss['value']:.0f} MiB"
             )
         finally:
             rig.close()
 
 
 def main() -> int:
+    use_utf8_console()
     print("EverSend resilience tests")
     print("=" * 66)
     tests = [
