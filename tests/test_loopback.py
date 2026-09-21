@@ -340,12 +340,16 @@ def test_speed() -> None:
             mbps = 64 / elapsed
             print(f"      64 MiB in {elapsed:.2f}s = {mbps:.0f} MiB/s")
             check("fast transfer succeeded", ok)
-            # The floor is set to catch a real regression rather than to
-            # measure the disk: gigabit Ethernet tops out at 118 MiB/s, so
-            # anything above this is already network-bound on a real LAN.
+            # The floor catches a real regression, it does not measure the
+            # disk.  On a developer machine 60 MiB/s is a low bar (gigabit
+            # Ethernet alone tops out at 118).  But a shared CI runner's disk
+            # is the bottleneck there, not this code -- macOS runners measured
+            # 15 MiB/s -- so CI lowers the bar via the environment rather than
+            # pretending a slow SSD is a protocol bug.
+            floor = float(os.environ.get("EVERSEND_MBPS_FLOOR", "60"))
             check(
-                "throughput clears a gigabit LAN (60 MiB/s floor)",
-                mbps > 60,
+                f"throughput above the floor ({floor:.0f} MiB/s)",
+                mbps > floor,
                 f"got {mbps:.0f} MiB/s",
             )
         finally:
