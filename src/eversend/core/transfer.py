@@ -1623,7 +1623,7 @@ class SendSession:
                 served += 1
                 if not self._handle_control(frame, conn):
                     break
-        except (ConnectionClosed, ProtocolError, OSError) as exc:
+        except (ConnectionClosed, ProtocolError, OSError, AttributeError) as exc:
             # Never let a stream die silently.  A stream that stops answering
             # leaves the receiver waiting for a chunk that will never come, and
             # all it can report is "no reply within Ns" -- which says nothing

@@ -45,6 +45,15 @@ class ConnectionClosed(Exception):
     """Raised when the peer closed the connection cleanly at a frame boundary."""
 
 
+class GatherUnsupported(Exception):
+    """Raised when a socket cannot do scatter/gather at all.
+
+    Distinct from a real I/O error: the caller may retry the *same* bytes with
+    ``sendall``.  It is only ever raised when nothing has been written yet, so
+    that retrying cannot duplicate a partially sent frame.
+    """
+
+
 class Frame:
     """A decoded frame header plus a handle to its payload.
 
@@ -241,7 +250,17 @@ def sendmsg_all(sock: socket.socket, iovecs: list[bytes | memoryview]) -> int:
 
     while index < count:
         batch = [views[index][offset:], *views[index + 1 :]]
-        sent = sock.sendmsg(batch)
+        try:
+            sent = sock.sendmsg(batch)
+        except (AttributeError, OSError) as exc:
+            # Windows CPython has no sendmsg at all (AttributeError), and some
+            # Windows builds have one that rejects the socket outright.  Both
+            # mean "this socket cannot gather", which the caller answers with
+            # sendall -- but only while nothing has been written, otherwise the
+            # retry would send the frame twice.
+            if written == 0:
+                raise GatherUnsupported(str(exc)) from exc
+            raise
         if sent <= 0:
             raise OSError("sendmsg wrote nothing")
         written += sent

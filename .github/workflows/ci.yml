@@ -126,8 +126,15 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
+          # Qt 要的不只是 xvfb：裸 runner 上没有 libEGL/libGL，PySide6
+          # 一 import 就 ImportError: libEGL.so.1。这些是 Qt 的平台运行时依赖，
+          # 在真实桌面上早就装好了，所以本机永远碰不到。
           sudo apt-get update -qq
-          sudo apt-get install -y -qq xvfb
+          sudo apt-get install -y -qq \
+            xvfb libegl1 libgl1 libglx-mesa0 libxkbcommon-x11-0 \
+            libdbus-1-3 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 \
+            libxcb-shape0 libxcb-xinerama0 libxcb-randr0 libxcb-render-util0 \
+            libfontconfig1 libfreetype6
           xvfb-run -a -s "-screen 0 1280x900x24" python tests/test_gui_render.py
 
       - name: 上传界面截图（失败时才有人看，所以成败都传）

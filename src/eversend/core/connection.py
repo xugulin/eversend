@@ -54,6 +54,7 @@ from .constants import (
 from .framing import (
     ConnectionClosed,
     Frame,
+    GatherUnsupported,
     ProtocolError,
     build_header,
     close_quietly,
@@ -108,6 +109,7 @@ class Connection:
         "_bytes_sent",
         "_bytes_received",
         "_encrypt_enabled",
+        "_gather_ok",
     )
 
     def __init__(
@@ -129,6 +131,10 @@ class Connection:
         self._stream_id = stream_id
         self._role = "data" if stream_id else "control"
         self._encrypt_enabled = encrypt and crypto.CRYPTO_AVAILABLE
+        #: Whether this connection can use scatter/gather sends.  ``None``
+        #: until the first chunk decides it; then it stays decided, so a
+        #: platform without sendmsg pays the probe exactly once.
+        self._gather_ok: bool | None = None
         self.created = time.monotonic()
         self.last_activity = self.created
         self._bytes_sent = 0
@@ -437,14 +443,36 @@ class Connection:
                 MSG_CHUNK, flags, self._stream_id, CHUNK_HEADER_SIZE + len(body)
             )
             try:
-                # sendmsg_all, not sendmsg: the latter writes only what fits and
-                # silently drops the rest, which stalls the peer forever.
-                sendmsg_all(self.sock, [frame_header, chunk_header, body])
+                self._send_chunk_body(frame_header, chunk_header, body)
                 self._bytes_sent += len(frame_header) + CHUNK_HEADER_SIZE + len(body)
             except (OSError, BrokenPipeError) as exc:
                 self._closed = True
                 raise ConnectionClosed(str(exc)) from exc
         self.last_activity = time.monotonic()
+
+    def _send_chunk_body(
+        self, frame_header: bytes, chunk_header: bytes, body: bytes | memoryview
+    ) -> None:
+        """Push one chunk frame out, gathering the iovecs where that works.
+
+        Windows CPython has no ``socket.sendmsg`` at all, so the very first
+        chunk probes once and the connection then sticks with that answer.
+        Probing is not just an optimisation: sending a partial frame and then
+        failing leaves the peer waiting forever, so the decision has to be made
+        before any byte goes out.
+        """
+        if self._gather_ok is False:
+            self.sock.sendall(frame_header + chunk_header + bytes(body))
+            return
+
+        try:
+            sendmsg_all(self.sock, [frame_header, chunk_header, body])
+            self._gather_ok = True
+            return
+        except GatherUnsupported:
+            # Nothing was written, so the retry below cannot duplicate data.
+            self._gather_ok = False
+            self.sock.sendall(frame_header + chunk_header + bytes(body))
 
     def recv(self) -> Frame:
         """Read the next frame, decrypting the payload if needed."""
