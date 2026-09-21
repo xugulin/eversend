@@ -104,6 +104,8 @@ class DevTools:
         self.port = port
         self.ws = None
         self.counter = 0
+        #: Error object from the most recent CDP call, if it returned one.
+        self.last_error = None
 
     def connect(self, timeout: float = 60.0) -> bool:
         try:
@@ -170,8 +172,26 @@ class DevTools:
             raw = self.ws.recv()
             data = json.loads(raw)
             if data.get("id") == self.counter:
+                # A CDP error is a *result* here: swallowing it once cost an
+                # hour of "why is files.length still 0".
+                self.last_error = data.get("error")
                 return data.get("result")
         return None
+
+    def file_input_node(self):
+        """The page's ``<input type=file>``, looked up fresh.
+
+        The page re-renders on every state poll, so a node id from an earlier
+        lookup can be stale by the time it is used -- and a stale node makes
+        ``DOM.setFileInputFiles`` do nothing at all.
+        """
+        doc = self.call("DOM.getDocument", depth=-1)
+        if not doc:
+            return None
+        found = self.call(
+            "DOM.querySelector", nodeId=doc["root"]["nodeId"], selector="input[type=file]"
+        )
+        return (found or {}).get("nodeId")
 
     def evaluate(self, expression: str):
         result = self.call("Runtime.evaluate", expression=expression, returnByValue=True)
@@ -421,23 +441,38 @@ def main() -> int:
     # -- 3. 手机 → 桌面 ----------------------------------------------------
     print("\n[3] 手机 → 桌面（页面上的文件选择框 + 点发送）")
     if cdp_ok:
-        remote = f"/sdcard/Download/upload-{name}"
-        adb("push", str(receive_dir / name), remote, timeout=180)
-        probe = adb_shell(f"ls -l {remote}")
-        check("测试文件已推进模拟器", name in probe or "No such" not in probe, probe.strip())
+        # Where to leave the file so Chrome can actually read it.
+        #
+        # Not /sdcard/Download: since Android 11 an app cannot open arbitrary
+        # paths there (scoped storage), and ``DOM.setFileInputFiles`` gives the
+        # *browser* process a raw path -- which then fails silently, leaving
+        # ``files.length`` at 0.  An app can always read its own external files
+        # directory, so that is where the file goes.
+        app_dir = "/sdcard/Android/data/com.android.chrome/files/Download"
+        remote_paths = [f"{app_dir}/upload-{name}", f"/sdcard/Download/upload-{name}"]
+        adb_shell(f"mkdir -p {app_dir}")
+        for remote in remote_paths:
+            adb("push", str(receive_dir / name), remote, timeout=180)
+        probe = adb_shell(f"ls -l {remote_paths[0]}")
+        check("测试文件已推进模拟器", "No such" not in probe, probe.strip())
 
         # The page's <input type=file> is what a person taps to pick a file.
-        doc = devtools.call("DOM.getDocument", depth=-1)
-        node_id = None
-        if doc:
-            found = devtools.call("DOM.querySelector", nodeId=doc["root"]["nodeId"], selector="input[type=file]")
-            node_id = (found or {}).get("nodeId")
+        node_id = devtools.file_input_node()
         if check("页面上找到文件选择框", bool(node_id)):
-            devtools.call("DOM.setFileInputFiles", files=[remote], nodeId=node_id)
-            time.sleep(1)
-            count = devtools.evaluate(
-                "document.querySelector('input[type=file]').files.length"
-            )
+            count = 0
+            for remote in remote_paths:
+                node_id = devtools.file_input_node()  # the page re-renders
+                if not node_id:
+                    break
+                devtools.call("DOM.setFileInputFiles", files=[remote], nodeId=node_id)
+                time.sleep(1)
+                count = devtools.evaluate(
+                    "document.querySelector('input[type=file]').files.length"
+                )
+                if count == 1:
+                    print(f"      文件从 {remote} 放进了选择框")
+                    break
+                print(f"      {remote} 没被接受（files.length={count}）: {devtools.last_error}")
             check("文件已放进选择框", count == 1, f"files.length={count}")
             # Tap the page's own send button.  Nothing here reaches into the
             # app's internals: if the button is missing or mislabelled, this
