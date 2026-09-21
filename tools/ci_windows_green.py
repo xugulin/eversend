@@ -253,6 +253,20 @@ def check_gui(tree: Path, work: Path) -> None:
     engine.stop()
 
 
+def use_tree(tree: Path) -> None:
+    """Put the artifact's own code on ``sys.path``.
+
+    ``run.bat`` does exactly this with ``PYTHONPATH`` before starting
+    ``app/eversend_green.py``.  Doing it here too means the script cannot
+    accidentally measure the *checkout's* code while claiming to test the
+    package -- and it means nobody has to remember to export PYTHONPATH in CI.
+    """
+    for name in ("site", "app"):  # app last: it wins, and must come first
+        path = tree / name
+        if path.is_dir():
+            sys.path.insert(0, str(path))
+
+
 def main() -> int:
     use_utf8_console()
     parser = argparse.ArgumentParser()
@@ -276,6 +290,8 @@ def main() -> int:
     if sys.platform != "win32":
         print("  这个脚本只应该跑在 Windows 上")
         return 2
+
+    use_tree(tree)
 
     if args.phase in ("all", "interpreter"):
         check_interpreter(tree)

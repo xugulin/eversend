@@ -127,8 +127,37 @@ class DevTools:
             time.sleep(2)
         if target is None:
             return False
-        self.ws = create_connection(target["webSocketDebuggerUrl"], timeout=30)
-        return True
+        return self._open_socket(create_connection, target["webSocketDebuggerUrl"])
+
+    def _open_socket(self, create_connection, url: str) -> bool:
+        """Open the DevTools WebSocket without an ``Origin`` header.
+
+        Chrome 111+ rejects the DevTools endpoint when the client sends an
+        ``Origin`` header -- and ``websocket-client`` sends one by default,
+        derived from the URL.  The refusal says so itself::
+
+            Handshake status 403 Forbidden ... Rejected an incoming WebSocket
+            connection from the http://127.0.0.1:9222 origin.
+
+        On the desktop that is fixed with ``--remote-allow-origins``; Chrome on
+        a phone takes no such flag, so the header has to go instead.
+        """
+        last_error: Exception | None = None
+        for options in ({"suppress_origin": True}, {}):
+            try:
+                self.ws = create_connection(url, timeout=30, **options)
+                return True
+            except TypeError as exc:
+                # websocket-client older than 1.7 has no ``suppress_origin``.
+                last_error = exc
+                continue
+            except Exception as exc:
+                last_error = exc
+        print(f"      CDP 握手失败: {last_error}")
+        body = getattr(last_error, "resp_body", b"") or b""
+        if body:
+            print(f"      Chrome 说: {body[:180].decode('utf-8', 'replace')}")
+        return False
 
     def call(self, method: str, **params):
         if self.ws is None:
