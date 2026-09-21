@@ -40,6 +40,19 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+def use_utf8_console() -> None:
+    """让中文输出在旧版 Windows 控制台上也能活下来。
+
+    zh-CN 的 Windows 控制台默认代码页是 936、en-US 是 1252，打印中文检查名会
+    抛 UnicodeEncodeError 把整个脚本打断——CI 在 Windows runner 上就是这么挂的。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -161,6 +174,7 @@ def wait_for_http(url: str, timeout: float = 60.0) -> bool:
 
 
 def main() -> int:
+    use_utf8_console()
     parser = argparse.ArgumentParser()
     parser.add_argument("--workdir", required=True)
     parser.add_argument("--url", default="http://localhost:52119/")

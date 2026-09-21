@@ -18,6 +18,19 @@ import sys
 from pathlib import Path
 
 
+def use_utf8_console() -> None:
+    """让中文输出在旧版 Windows 控制台上也能活下来。
+
+    zh-CN 的 Windows 控制台默认代码页是 936、en-US 是 1252，打印中文检查名会
+    抛 UnicodeEncodeError 把整个脚本打断——CI 在 Windows runner 上就是这么挂的。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def wine_path(posix_path: str) -> str:
     return "Z:" + str(posix_path).replace("/", "\\")
 
@@ -34,6 +47,7 @@ def run_wine_python(python: str, site: Path, code: str, timeout: int = 240) -> s
 
 
 def main() -> int:
+    use_utf8_console()
     parser = argparse.ArgumentParser()
     parser.add_argument("--stage", required=True)
     args = parser.parse_args()

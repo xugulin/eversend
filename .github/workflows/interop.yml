@@ -59,6 +59,18 @@ jobs:
       - name: 取 Windows 版运行时（真 Windows CPython + win_amd64 轮子）
         run: python tools/fetch_runtime.py --platform windows --out tools/.cache/stage-windows
 
+      - name: 初始化 Wine prefix
+        run: |
+          # 第一次调用 wine 要建 prefix，在共享 runner 上可能要几十秒。
+          # 放进流水线里先做掉，测试就不用把这段时间算进自己的等待预算。
+          # 这个 job 里 windows 端既当发送方也当接收方，接收方要先能 listen，
+          # 而 listen 失败在 CI 上表现为"接收端一直没就绪"。
+          export WINEDEBUG=-all
+          wineboot --init || true
+          sleep 5
+          echo "--- prefix 状态 ---"
+          ls -d ~/.wine 2>/dev/null && du -sh ~/.wine 2>/dev/null || echo "（没有 ~/.wine）"
+
       - name: 确认 Wine 下的 Windows Python 与加密库可用
         run: python tools/ci_check_wine.py --stage tools/.cache/stage-windows
 

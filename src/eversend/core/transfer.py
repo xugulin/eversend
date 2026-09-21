@@ -1624,12 +1624,23 @@ class SendSession:
                 if not self._handle_control(frame, conn):
                     break
         except (ConnectionClosed, ProtocolError, OSError, AttributeError) as exc:
-            # Never let a stream die silently.  A stream that stops answering
+            # Never let a stream die silently: a stream that stops answering
             # leaves the receiver waiting for a chunk that will never come, and
             # all it can report is "no reply within Ns" -- which says nothing
-            # about why.  This is exactly the shape of the CI failure that took
-            # several rounds to pin down.
-            self._log(f"stream {index}: died after {served} request(s): {type(exc).__name__}: {exc}")
+            # about why, and cost several CI rounds to pin down.
+            #
+            # But do not cry wolf during an orderly shutdown.  serve() sets
+            # _stop and then closes the data connections, which wakes every
+            # stream thread parked in recv() with a socket error (WSAENOTSOCK
+            # on Windows).  That is the shutdown working, not a failure, and
+            # reporting it as one buries the real errors.
+            if self._stop.is_set() or self.cancel_event.is_set():
+                self._log(f"stream {index}: closed during shutdown (served {served})")
+            else:
+                self._log(
+                    f"stream {index}: died after {served} request(s): "
+                    f"{type(exc).__name__}: {exc}"
+                )
         finally:
             self._log(f"stream {index}: exiting (served {served})")
             try:

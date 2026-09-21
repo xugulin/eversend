@@ -178,9 +178,20 @@ def run_direction(
     try:
         # Wine needs several seconds to warm up its prefix; wait for the port
         # rather than sleeping a fixed amount, so a slow CI box does not flake.
-        ready = wait_for_port(port, timeout=90)
+        ready = wait_for_port(port, timeout=120)
         check(f"{label}: 接收端已就绪", ready)
         if not ready:
+            # Say why.  "not ready" alone sent me looking at the wrong end of
+            # the transfer twice: the receiver had simply failed to start, and
+            # its exit code and output were the only things that showed it.
+            print(f"      接收端进程退出码: {server.poll()}")
+            try:
+                text = log_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = ""
+            print(f"      接收端输出（{len(text)} 字节）:")
+            for line in (text.strip().splitlines() or ["（空）"])[-20:]:
+                print(f"      {line}")
             return
         # Give the process a moment past the TCP bind so the handshake handler
         # is actually installed, not merely listening.
