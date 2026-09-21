@@ -356,15 +356,18 @@ class QrDialog(QDialog):
             clients = list(self._clients() or [])
         except Exception:
             clients = []
-        phones = [c for c in clients if not c.get("isLocal")]
+        from ..web.server import is_mobile_client
+
+        phones = [c for c in clients if is_mobile_client(c)]
         if phones:
             who = "、".join(
                 f"{c.get('address', '?')}（{c.get('label', '浏览器')}）" for c in phones[:3]
             )
             self.status.setText(f"✅ 已连上：{who}\n现在可以在手机上选文件发送，或下载电脑上的文件。")
-        elif clients:
-            self.status.setText("✅ 本机浏览器已打开页面；等待手机扫码…")
         else:
+            # Only phones count.  A local script polling the API is not "已连上",
+            # and saying so once made this dialog congratulate itself while the
+            # phone was still stuck on a welcome screen.
             self.status.setText("等待手机打开页面…（手机是浏览器客户端，连上后这里会显示）")
 
 

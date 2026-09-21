@@ -29,6 +29,7 @@ Design constraints, in order of importance
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -95,6 +96,10 @@ def describe_agent(agent: str) -> str:
     text = (agent or "").lower()
     if not text:
         return "未知客户端"
+    # Scripts and health checks are not "a browser someone is holding": saying
+    # so keeps the desktop's list from showing a mystery client.
+    if any(token in text for token in ("urllib", "curl/", "wget", "http-client", "python-requests", "okhttp", "axios")):
+        return "命令行/脚本"
     if "micromessenger" in text:
         browser = "微信内置浏览器"
     elif "edg" in text:
@@ -126,6 +131,19 @@ def describe_agent(agent: str) -> str:
     if system:
         return f"{system} 上的 {browser}"
     return browser
+
+
+def is_mobile_client(client: dict[str, Any]) -> bool:
+    """True when a connected client looks like a phone or tablet.
+
+    Not simply "not loopback": a phone that arrives through a port forward (an
+    emulator, a reverse proxy, a hotspot) presents itself as 127.0.0.1, and the
+    desktop should still recognise it as a phone.
+    """
+    label = str(client.get("label") or "")
+    if any(word in label for word in ("Android", "iPhone", "iPad")):
+        return True
+    return not client.get("isLocal")
 
 #: Content type per extension.  Spelled out rather than left to
 #: :mod:`mimetypes` because the registry differs wildly between platforms and
@@ -499,16 +517,22 @@ class WebUI:
     def touch_client(self, address: str, agent: str = "") -> None:
         """Remember that a browser at ``address`` just did something.
 
-        Keyed by IP, not by socket: every request arrives on a fresh port, and
-        keying on that would list one phone as a dozen clients.
+        Keyed by address **and** User-Agent.  Address alone is not enough: a
+        phone reaching us through a port forward (``adb reverse``, a reverse
+        proxy, an SSH tunnel) arrives from the same 127.0.0.1 as a local health
+        check, and the two would collapse into one entry -- which is exactly
+        how the Android CI check first "saw" a client that was really its own
+        probe.  One phone in a normal LAN still gets exactly one entry.
         """
         if not address:
             return
         now = time.time()
+        digest = hashlib.sha1((agent or "").encode("utf-8", "replace")).hexdigest()[:8]
+        key = f"{address}|{digest}"
         with self._state_lock:
-            known = self._clients.get(address)
+            known = self._clients.get(key)
             if known is None:
-                self._clients[address] = {
+                self._clients[key] = {
                     "address": address,
                     "agent": agent[:200],
                     "label": describe_agent(agent),
@@ -517,16 +541,13 @@ class WebUI:
                 }
             else:
                 known["lastSeen"] = now
-                if agent and not known.get("agent"):
-                    known["agent"] = agent[:200]
-                    known["label"] = describe_agent(agent)
 
     def clients(self, ttl: float = CLIENT_TTL) -> list[dict[str, Any]]:
         """Browsers with the page open right now, newest activity first."""
         cutoff = time.time() - ttl
         with self._state_lock:
-            for address in [a for a, c in self._clients.items() if c["lastSeen"] < cutoff]:
-                del self._clients[address]
+            for key in [k for k, c in self._clients.items() if c["lastSeen"] < cutoff]:
+                del self._clients[key]
             found = [dict(c) for c in self._clients.values()]
         for client in found:
             client["isLocal"] = client["address"] in ("127.0.0.1", "::1")

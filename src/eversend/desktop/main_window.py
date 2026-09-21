@@ -811,21 +811,31 @@ class MainWindow(QMainWindow):
             clients = ui.clients()
         except Exception:
             return
-        phones = [c for c in clients if not c.get("isLocal")]
+        from ..web.server import is_mobile_client
+
+        phones = [c for c in clients if is_mobile_client(c)]
+        others = [c for c in clients if not is_mobile_client(c)]
         if not clients:
             self.web_clients_label.setText(
                 "还没有连上。手机扫码打开页面后，这里会显示出来（手机不会出现在左侧设备列表里）。"
             )
             return
-        parts = []
-        for client in (phones or clients)[:3]:
-            where = client.get("address", "?")
-            parts.append(f"{where}（{client.get('label', '浏览器')}）")
+        if not phones:
+            # Something is polling us (a health check, a script) but no phone
+            # has opened the page yet.  Saying "已连接" here would be a lie.
+            self.web_clients_label.setText(
+                "还没有手机连上。手机扫码打开页面后，这里会显示出来"
+                "（手机不会出现在左侧设备列表里）。"
+            )
+            return
+        parts = [
+            f"{c.get('address', '?')}（{c.get('label', '浏览器')}）" for c in phones[:3]
+        ]
         more = "" if len(phones) <= 3 else f" 等 {len(phones)} 台"
-        if phones:
-            self.web_clients_label.setText("✅ 已连接：" + "、".join(parts) + more)
-        else:
-            self.web_clients_label.setText("✅ 本机浏览器已连接：" + "、".join(parts))
+        text = "✅ 已连接：" + "、".join(parts) + more
+        if others:
+            text += f"（另有 {len(others)} 个本机/脚本连接）"
+        self.web_clients_label.setText(text)
 
     def _show_qr(self) -> None:
         url = self.web_url_label.text()

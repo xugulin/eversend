@@ -262,8 +262,15 @@ def check_http_surface(base: str, token: str) -> None:
               bool(me.get("address")) and bool(me.get("label")), str(me)[:120])
         check("a loopback client is flagged as local", me.get("isLocal") is True, str(me)[:120])
         check("the label names the browser family",
-              any(word in str(me.get("label")) for word in ("浏览器", "Chrome", "Firefox", "Safari", "urllib")),
+              any(
+                  word in str(me.get("label"))
+                  for word in ("浏览器", "Chrome", "Firefox", "Safari", "Edge", "命令行", "未知")
+              ),
               str(me.get("label")))
+        # The self-test talks HTTP with urllib, which must be recognised as a
+        # script rather than announced to the user as a mystery browser.
+        check("a script is labelled as one, not as a browser",
+              "命令行" in str(me.get("label")), str(me.get("label")))
 
     status, _headers, body = http(base + "/api/devices")
     devices = json.loads(body.decode("utf-8")) if status == 200 else {}
