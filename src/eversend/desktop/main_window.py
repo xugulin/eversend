@@ -80,6 +80,10 @@ class MainWindow(QMainWindow):
         self.resize(1080, 760)
         self.setMinimumSize(880, 620)
 
+        #: Set by :meth:`on_web_ui_started`; ``None`` until (and unless) the
+        #: browser interface is up.
+        self._web_ui = None
+
         self._build_ui()
         self._connect_bridge()
 
@@ -93,7 +97,16 @@ class MainWindow(QMainWindow):
         self._discovery_tick.timeout.connect(self._refresh_devices)
         self._discovery_tick.start()
 
+        # Same cadence as the device list: the phone's page polls us every few
+        # seconds, so this shows it within a couple of seconds of it connecting
+        # (and stops showing it a few seconds after it leaves).
+        self._clients_tick = QTimer(self)
+        self._clients_tick.setInterval(2000)
+        self._clients_tick.timeout.connect(self._refresh_web_clients)
+        self._clients_tick.start()
+
         self._refresh_devices()
+        self._refresh_web_clients()
         self._update_header()
 
     # ------------------------------------------------------------------
@@ -410,6 +423,14 @@ class MainWindow(QMainWindow):
         web_hint.setObjectName("Subtitle")
         web_hint.setWordWrap(True)
         form3.addRow(web_hint)
+
+        # Phones are browser clients, so they never appear in the peer list on
+        # the left -- which made 「手机连接」 look like it had done nothing.
+        # This is the line that answers "did my phone actually connect?".
+        self.web_clients_label = QLabel("")
+        self.web_clients_label.setObjectName("Subtitle")
+        self.web_clients_label.setWordWrap(True)
+        form3.addRow(form_label("已连接的手机"), self.web_clients_label)
         layout.addWidget(web)
 
         save = QPushButton("保存设置")
@@ -759,15 +780,52 @@ class MainWindow(QMainWindow):
         self._update_header()
         self._save_settings(silent=True)
 
-    def on_web_ui_started(self, port: int) -> None:
+    def on_web_ui_started(self, port: int, ui=None) -> None:
         """Record the browser UI's real port and refresh the header."""
         self.engine.config.web_port = port
         self.engine.info.web_port = port
+        self._web_ui = ui
         self._update_header()
+        self._refresh_web_clients()
 
     def on_web_ui_failed(self, reason: str) -> None:
         """Surface a browser-UI failure without blocking the desktop app."""
         self.status_left.setText(f"浏览器界面未启动：{reason}（桌面端不受影响）")
+        self.web_clients_label.setText("浏览器界面没有启动，手机连不上。")
+
+    def _refresh_web_clients(self) -> None:
+        """Say who is connected, so 「手机连接」 is not a silent act.
+
+        A phone talks to this app through a web page, not through the peer
+        protocol, so it will never appear in the device list however long you
+        wait; without this line the honest reading of the UI was "it found
+        nothing".
+        """
+        ui = getattr(self, "_web_ui", None)
+        if ui is None:
+            # Before the browser UI is up (or if it failed to start), say that
+            # instead of showing an empty row that looks like a rendering bug.
+            self.web_clients_label.setText("浏览器界面未启动，手机连不上（见下方提示）。")
+            return
+        try:
+            clients = ui.clients()
+        except Exception:
+            return
+        phones = [c for c in clients if not c.get("isLocal")]
+        if not clients:
+            self.web_clients_label.setText(
+                "还没有连上。手机扫码打开页面后，这里会显示出来（手机不会出现在左侧设备列表里）。"
+            )
+            return
+        parts = []
+        for client in (phones or clients)[:3]:
+            where = client.get("address", "?")
+            parts.append(f"{where}（{client.get('label', '浏览器')}）")
+        more = "" if len(phones) <= 3 else f" 等 {len(phones)} 台"
+        if phones:
+            self.web_clients_label.setText("✅ 已连接：" + "、".join(parts) + more)
+        else:
+            self.web_clients_label.setText("✅ 本机浏览器已连接：" + "、".join(parts))
 
     def _show_qr(self) -> None:
         url = self.web_url_label.text()
@@ -778,7 +836,17 @@ class MainWindow(QMainWindow):
                 "没有检测到局域网地址，请检查网络连接后重试。",
             )
             return
-        QrDialog(url, self).exec()
+        # Hand the dialog a way to see connected browsers, so it can say
+        # "已连上" the moment the phone opens the page.
+        ui = getattr(self, "_web_ui", None)
+        providers = ui.clients if ui is not None else None
+        alternatives: list[str] = []
+        if ui is not None:
+            try:
+                alternatives = [u for u in ui.urls() if u != url]
+            except Exception:
+                alternatives = []
+        QrDialog(url, self, clients=providers, alternatives=alternatives).exec()
 
     def _save_settings(self, silent: bool = False) -> None:
         config = self.engine.config

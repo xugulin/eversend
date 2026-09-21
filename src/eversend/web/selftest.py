@@ -251,6 +251,20 @@ def check_http_surface(base: str, token: str) -> None:
     check("state reports receiveDir", isinstance(state.get("receiveDir"), str) and bool(state["receiveDir"]))
     check("state reports freeSpace", isinstance(state.get("freeSpace"), int) and state["freeSpace"] >= 0)
 
+    # Who is connected has to be visible: a phone is a browser client and never
+    # shows up in the peer list, so this list is the desktop's only way to say
+    # "your phone is talking to me".
+    clients = state.get("webClients")
+    check("state reports connected browsers", isinstance(clients, list) and bool(clients), str(clients)[:120])
+    if clients:
+        me = clients[0]
+        check("the client carries an address and a label",
+              bool(me.get("address")) and bool(me.get("label")), str(me)[:120])
+        check("a loopback client is flagged as local", me.get("isLocal") is True, str(me)[:120])
+        check("the label names the browser family",
+              any(word in str(me.get("label")) for word in ("浏览器", "Chrome", "Firefox", "Safari", "urllib")),
+              str(me.get("label")))
+
     status, _headers, body = http(base + "/api/devices")
     devices = json.loads(body.decode("utf-8")) if status == 200 else {}
     check("/api/devices returns 200 + a list", status == 200 and isinstance(devices.get("devices"), list))

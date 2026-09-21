@@ -71,6 +71,30 @@ def main() -> int:
 
     window = MainWindow(engine, os.path.join(tmp, "data", "settings.json"))
     window.resize(1080, 760)
+
+    # A stand-in for the browser UI that has one Android phone connected, wired
+    # in from the start: this is the line that tells the user 「手机连接」 worked
+    # (a phone is a browser client, so it never shows up in the peer list), and
+    # it should be visible in the screenshots this test produces.
+    demo_phone = {
+        "address": "192.168.1.23",
+        "label": "Android 上的 Chrome",
+        "isLocal": False,
+    }
+
+    class _DemoWebUI:
+        """Just enough of WebUI for the two questions the window asks."""
+
+        def clients(self):
+            return [demo_phone]
+
+        def urls(self):
+            return [self.url]
+
+    demo_ui = _DemoWebUI()
+    demo_ui.url = "http://192.168.1.5:52119/"
+    window.on_web_ui_started(52119, demo_ui)
+    window._refresh_web_clients()
     window.show()
 
     # Put some content in the send tab so the screenshot shows a real state.
@@ -120,7 +144,12 @@ def main() -> int:
         try:
             ifaces = list_interfaces(include_virtual=False)
             url = f"http://{ifaces[0].address}:52119/" if ifaces else "http://127.0.0.1:52119/"
-            dialog = QrDialog(url, window)
+            # Same client list the window has: the dialog shows "已连上：…"
+            # the moment a phone opens the page, which is the whole point of
+            # that line (see the note in QrDialog).
+            dialog = QrDialog(
+                url, window, clients=lambda: [demo_phone], alternatives=["http://10.0.0.7:52119/"]
+            )
             dialog.resize(420, 600)
             dialog.show()
             dialog.raise_()

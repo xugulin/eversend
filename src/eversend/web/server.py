@@ -79,6 +79,54 @@ _SPOOL_DIRNAME = ".eversend-uploads"
 #: How long a resolved local-address list is reused, in seconds.
 _ADDRESS_TTL = 30.0
 
+#: How long an open page counts as "connected" after its last request.  The
+#: page polls ``/api/state`` every three seconds and keeps an event stream
+#: open, so this survives a few dropped polls without leaving a phone listed
+#: forever after it walks out of Wi-Fi range.
+CLIENT_TTL = 15.0
+
+
+def describe_agent(agent: str) -> str:
+    """A short human label for a browser's ``User-Agent``.
+
+    The desktop shows this next to the connected client, because "已连接手机：
+    1 台" is much easier to trust when it also says *which* phone.
+    """
+    text = (agent or "").lower()
+    if not text:
+        return "未知客户端"
+    if "micromessenger" in text:
+        browser = "微信内置浏览器"
+    elif "edg" in text:
+        browser = "Edge"
+    elif "firefox" in text:
+        browser = "Firefox"
+    elif "chrome" in text or "crios" in text:
+        browser = "Chrome"
+    elif "safari" in text:
+        browser = "Safari"
+    else:
+        browser = "浏览器"
+
+    if "android" in text:
+        system = "Android"
+    elif "iphone" in text:
+        system = "iPhone"
+    elif "ipad" in text:
+        system = "iPad"
+    elif "windows" in text:
+        system = "Windows"
+    elif "mac os" in text or "macintosh" in text:
+        system = "macOS"
+    elif "linux" in text:
+        system = "Linux"
+    else:
+        system = ""
+
+    if system:
+        return f"{system} 上的 {browser}"
+    return browser
+
 #: Content type per extension.  Spelled out rather than left to
 #: :mod:`mimetypes` because the registry differs wildly between platforms and
 #: a wrong type silently breaks the app (a ``.js`` served as ``text/plain`` is
@@ -391,6 +439,12 @@ class WebUI:
         self._uploads: dict[str, dict[str, Any]] = {}
         self._uploads_done: list[dict[str, Any]] = []
         self._sse_sockets: set[socket.socket] = set()
+        #: Who has a page open, keyed by IP address.  A phone is a *browser*
+        #: client, so it can never show up in the peer list the way another
+        #: computer does -- without this the desktop had no way at all to tell
+        #: the user "your phone is connected", and clicking 「手机连接」 looked
+        #: like it had done nothing.
+        self._clients: dict[str, dict[str, Any]] = {}
         self._workers: set[threading.Thread] = set()
         self._upload_lock = threading.Lock()
         self._index_cache: tuple[float, str] | None = None
@@ -439,6 +493,46 @@ class WebUI:
         if directory:
             return str(directory)
         return str(getattr(getattr(self.engine, "config", None), "receive_dir", "") or "")
+
+    # -- connected browsers ------------------------------------------------
+
+    def touch_client(self, address: str, agent: str = "") -> None:
+        """Remember that a browser at ``address`` just did something.
+
+        Keyed by IP, not by socket: every request arrives on a fresh port, and
+        keying on that would list one phone as a dozen clients.
+        """
+        if not address:
+            return
+        now = time.time()
+        with self._state_lock:
+            known = self._clients.get(address)
+            if known is None:
+                self._clients[address] = {
+                    "address": address,
+                    "agent": agent[:200],
+                    "label": describe_agent(agent),
+                    "since": now,
+                    "lastSeen": now,
+                }
+            else:
+                known["lastSeen"] = now
+                if agent and not known.get("agent"):
+                    known["agent"] = agent[:200]
+                    known["label"] = describe_agent(agent)
+
+    def clients(self, ttl: float = CLIENT_TTL) -> list[dict[str, Any]]:
+        """Browsers with the page open right now, newest activity first."""
+        cutoff = time.time() - ttl
+        with self._state_lock:
+            for address in [a for a, c in self._clients.items() if c["lastSeen"] < cutoff]:
+                del self._clients[address]
+            found = [dict(c) for c in self._clients.values()]
+        for client in found:
+            client["isLocal"] = client["address"] in ("127.0.0.1", "::1")
+            client["secondsAgo"] = round(max(0.0, time.time() - client["lastSeen"]), 1)
+        found.sort(key=lambda c: c["lastSeen"], reverse=True)
+        return found
 
     @property
     def port_bound(self) -> int:
@@ -643,6 +737,9 @@ class WebUI:
             "recentUploads": recent_uploads,
             "receiveDir": receive_dir,
             "freeSpace": free_space(receive_dir),
+            # Who has this page open.  The phone sees itself here, and the
+            # desktop reads the same list to show "手机已连接".
+            "webClients": self.clients(),
             "serverTime": time.time(),
         }
 
@@ -1039,6 +1136,14 @@ class _Handler(BaseHTTPRequestHandler):
         if method == "POST" and not self._token_ok(path, query) and not self._token_from_body():
             self._fail(HTTPStatus.FORBIDDEN, "缺少或错误的防跨站令牌，请刷新页面")
             return
+
+        # Any accepted request means a browser is there.  Recorded *after* the
+        # gates, so a rejected request cannot make the desktop announce a
+        # connection that never happened.
+        ui.touch_client(
+            self.client_address[0] if self.client_address else "",
+            self.headers.get("User-Agent", ""),
+        )
 
         try:
             self._route(method, path, query)

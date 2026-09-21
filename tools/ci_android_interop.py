@@ -393,6 +393,22 @@ def main() -> int:
         print(f"      UA: {str(ua)[:100]}")
         devtools.call("Page.enable")
 
+        # And the *desktop* has to be able to see that the phone is there.
+        # That is the whole point of 「手机连接」: the phone is a browser client,
+        # so it never appears in the peer list, and /api/state is the only place
+        # it can show up.  (Note the address looks like loopback here because
+        # the emulator reaches us through `adb reverse`; the Android label is
+        # what identifies it.)
+        try:
+            with urllib.request.urlopen(args.host_url + "api/state", timeout=10) as resp:
+                host_state = json.load(resp)
+        except Exception as exc:
+            host_state = {}
+            print(f"      读取桌面端 /api/state 失败: {exc}")
+        labels = [str(c.get("label", "")) for c in host_state.get("webClients", [])]
+        print(f"      桌面端看到的浏览器: {labels}")
+        check("桌面端能看到连上的手机", any("Android" in label for label in labels), str(labels))
+
     # -- 2. 桌面 → 手机 ----------------------------------------------------
     print("\n[2] 桌面 → 手机（Chrome 下载 + adb pull）")
     payload = os.urandom(args.size_mib * 1024 * 1024)

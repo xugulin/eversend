@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
+import urllib.parse
 from typing import Iterable
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -241,13 +242,36 @@ class TransferRow(QFrame):
         self.cancel_button.clicked.connect(self.deleteLater)
 
 
-class QrDialog(QDialog):
-    """Shows a QR code and the URL a phone should open."""
+def _is_loopback_url(url: str) -> bool:
+    """True for a URL only this machine can open."""
+    try:
+        host = urllib.parse.urlsplit(url).hostname or ""
+    except ValueError:
+        return False
+    return host in ("127.0.0.1", "::1", "localhost")
 
-    def __init__(self, url: str, parent: QWidget | None = None) -> None:
+class QrDialog(QDialog):
+    """Shows a QR code and the URL a phone should open.
+
+    It also **watches for the phone to arrive**.  Without that, the dialog was
+    a dead end: the phone is a browser client rather than a peer, so scanning
+    the code produces no visible change anywhere in the desktop app, and the
+    only sane conclusion for the user was "it did not find my phone".
+    """
+
+    def __init__(
+        self,
+        url: str,
+        parent: QWidget | None = None,
+        clients=None,
+        alternatives: Iterable[str] = (),
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("手机扫码连接")
         self.setMinimumWidth(420)
+        #: ``clients()`` of the running browser UI, or ``None`` when there is
+        #: no browser UI to ask.
+        self._clients = clients
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -282,9 +306,66 @@ class QrDialog(QDialog):
         note.setAlignment(Qt.AlignCenter)
         layout.addWidget(note)
 
+        # Multi-homed machines (VPN, docker0, several Wi-Fi cards) are common
+        # enough that the *right* address is not always the first one we found.
+        # When the phone cannot open the first address, the only difference the
+        # user sees is that nothing happened -- so offer the others right here.
+        others = [u for u in alternatives if u and u != url]
+        if others:
+            alt = QLabel("连不上？换成这个地址试试：\n" + "\n".join(others[:3]))
+            alt.setObjectName("Subtitle")
+            alt.setAlignment(Qt.AlignCenter)
+            alt.setWordWrap(True)
+            alt.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            layout.addWidget(alt)
+
+        if _is_loopback_url(url):
+            warn = QLabel(
+                "⚠️ 这个地址是 127.0.0.1，只有本机能打开。\n"
+                "说明没有检测到局域网地址——请先连上 Wi-Fi 或网线，手机才连得过来。"
+            )
+            warn.setObjectName("Subtitle")
+            warn.setAlignment(Qt.AlignCenter)
+            warn.setWordWrap(True)
+            layout.addWidget(warn)
+
+        self.status = QLabel("")
+        self.status.setObjectName("Subtitle")
+        self.status.setAlignment(Qt.AlignCenter)
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+
         close = QPushButton("关闭")
         close.clicked.connect(self.accept)
         layout.addWidget(close, alignment=Qt.AlignCenter)
+
+        if self._clients is not None:
+            self._watch = QTimer(self)
+            self._watch.setInterval(1000)
+            self._watch.timeout.connect(self._refresh_status)
+            self._watch.start()
+            self._refresh_status()
+        else:
+            # No browser UI to ask: saying so here is better than a dialog that
+            # silently waits for something that cannot happen.
+            self.status.setText("⚠️ 浏览器界面没有启动，手机现在连不上。请看主窗口的提示。")
+
+    def _refresh_status(self) -> None:
+        """Show whether the phone has actually opened the page."""
+        try:
+            clients = list(self._clients() or [])
+        except Exception:
+            clients = []
+        phones = [c for c in clients if not c.get("isLocal")]
+        if phones:
+            who = "、".join(
+                f"{c.get('address', '?')}（{c.get('label', '浏览器')}）" for c in phones[:3]
+            )
+            self.status.setText(f"✅ 已连上：{who}\n现在可以在手机上选文件发送，或下载电脑上的文件。")
+        elif clients:
+            self.status.setText("✅ 本机浏览器已打开页面；等待手机扫码…")
+        else:
+            self.status.setText("等待手机打开页面…（手机是浏览器客户端，连上后这里会显示）")
 
 
 def render_qr(text: str, size: int = 320) -> QPixmap:

@@ -177,7 +177,9 @@ def start_web_ui(engine: Engine, config: EngineConfig, window=None):
         bound = ui.start(config.web_port)
         engine.info.web_port = bound
         if window is not None:
-            window.on_web_ui_started(bound)
+            # The window keeps the object, not just the port: it needs to be
+            # able to ask who is connected (see MainWindow._refresh_web_clients).
+            window.on_web_ui_started(bound, ui)
         return ui
     except Exception as exc:
         # Port already in use almost always means a second instance of this app
