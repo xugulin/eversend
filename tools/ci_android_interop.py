@@ -69,14 +69,15 @@ def check(name: str, condition: bool, detail: str = "") -> None:
 
 
 def adb(*args: str, timeout: int = 120, binary: bool = False):
-    """Run ``adb`` and return its output."""
-    result = subprocess.run(
-        ["adb", *args], capture_output=True, timeout=timeout,
-        text=not binary,
-    )
+    """Run ``adb`` and return its output.
+
+    ``adb`` insists on CRLF even on Linux, so the text path normalises line
+    endings; binary output (``exec-out``) is handed back untouched.
+    """
+    result = subprocess.run(["adb", *args], capture_output=True, timeout=timeout)
     if binary:
         return result.stdout
-    return result.stdout.decode("utf-8", "replace")
+    return result.stdout.decode("utf-8", "replace").replace("\r\n", "\n")
 
 
 def adb_shell(command: str, timeout: int = 120) -> str:
@@ -221,7 +222,6 @@ def main() -> int:
         timeout=60,
     )
     time.sleep(12)
-    adb("exec-out", "screencap", "-p", binary=True)
     shot = adb("exec-out", "screencap", "-p", binary=True, timeout=120)
     (shots / "01-android-page.png").write_bytes(shot)
     check("拿到模拟器截图", len(shot) > 10_000, f"{len(shot)} 字节")
@@ -284,13 +284,14 @@ def main() -> int:
                 "document.querySelector('input[type=file]').files.length"
             )
             check("文件已放进选择框", count == 1, f"files.length={count}")
-            devtools.evaluate("window.__eversendTestUpload && window.__eversendTestUpload()")
-            # Fall back to clicking the send button if the page does not expose
-            # a hook; either way the page's own uploader runs.
-            devtools.evaluate(
+            # Tap the page's own send button.  Nothing here reaches into the
+            # app's internals: if the button is missing or mislabelled, this
+            # fails and says so, which is the point of driving a real browser.
+            clicked = devtools.evaluate(
                 "(function(){var b=[...document.querySelectorAll('button')]"
-                ".find(x=>/发送|Send/.test(x.textContent));if(b)b.click();return !!b;})()"
+                ".find(x=>/发送|Send/.test(x.textContent));if(b){b.click();return true;}return false;})()"
             )
+            check("找到并点击了发送按钮", clicked is True, str(clicked))
             time.sleep(20)
             shot3 = adb("exec-out", "screencap", "-p", binary=True, timeout=120)
             (shots / "03-android-upload.png").write_bytes(shot3)

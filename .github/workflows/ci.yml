@@ -116,10 +116,21 @@ jobs:
 
       - name: 并发正确性（AEAD nonce 不能复用）
         shell: bash
-        run: python tests/test_concurrency.py
+        env:
+          PYTHONPATH: src
+        run: |
+          # 前两项只在装了 cryptography 时才真的测加密，没有就整个跳过，而
+          # "跳过"在日志里长得太像"通过"了，所以先钉住它必须可用。
+          python -c "from eversend.core.crypto import CRYPTO_AVAILABLE as c; assert c, 'cryptography 没装上，加密路径没被测'"
+          python tests/test_concurrency.py
 
       - name: 浏览器界面自检（99 项）
         shell: bash
+        env:
+          # 传输路径的逐步追踪。这个用例是唯一一处「同一个进程里两个引擎真的
+          # 互传」的地方，而它恰恰在 Windows 和 macOS 上挂过；失败时日志里
+          # 只有一行 False，读不出原因，打开追踪至少能看见卡在哪一步。
+          EVERSEND_DEBUG: '1'
         run: python src/eversend/web/selftest.py
 
       - name: 桌面界面离屏渲染（真 Qt，无显示器）

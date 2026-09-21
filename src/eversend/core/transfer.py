@@ -350,6 +350,9 @@ class ReceiveSession:
         #: Whole-file digests the sender supplied on demand, by file index.
         self._digests: dict[int, str] = {}
         self._digest_waiters: dict[int, threading.Event] = {}
+        #: Cached :meth:`decide` result: see the note there about opening the
+        #: part files exactly once.
+        self._decision: OfferDecision | None = None
 
     # -- properties --------------------------------------------------------
 
@@ -369,7 +372,22 @@ class ReceiveSession:
         Called before OFFER_ACK is sent.  It touches the filesystem (it has to:
         the decision depends on which chunks are already on disk), so it runs
         before the sender starts pushing anything.
+
+        The answer is cached, and the cache is what makes the manual-accept
+        path work at all.  ``decide`` opens a :class:`PartFile` per accepted
+        file, and it runs twice: once when the offer arrives (the UI needs the
+        resume state to show "还有 3.2 GB 要传") and once when the user answers.
+        Rebuilding the decision opened a *second* set of part files and threw
+        the first away without closing it, which on Windows meant the part file
+        was still open when the transfer ended -- so ``os.replace`` failed with
+        "共享冲突" (ERROR_SHARING_VIOLATION) and **every manually accepted
+        transfer lost its file after transferring all of it**.  POSIX lets a
+        rename succeed with the file open, so this was invisible on Linux; the
+        only trace there was one leaked descriptor per accepted file.
         """
+        if self._decision is not None:
+            return self._decision
+
         accepted: list[int] = []
         rejected: list[tuple[int, str]] = []
 
@@ -429,7 +447,7 @@ class ReceiveSession:
         elif not accepted:
             reason = "no files accepted"
 
-        return OfferDecision(
+        self._decision = OfferDecision(
             accepted=accepted,
             rejected=rejected,
             streams=streams,
@@ -437,6 +455,7 @@ class ReceiveSession:
             pin_ok=pin_ok,
             reason=reason,
         )
+        return self._decision
 
     def reject(self, reason: str, status: str = "rejected") -> None:
         """Tell the sender the offer was declined and clean up."""

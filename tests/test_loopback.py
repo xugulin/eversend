@@ -356,6 +356,107 @@ def test_speed() -> None:
             rig.close()
 
 
+def fds_open_on(fragment: str) -> list[str]:
+    """Descriptors this process still holds on a matching path.  Linux only.
+
+    Empty on platforms without ``/proc`` (the check is then skipped): this is a
+    *diagnostic*, not the thing being tested -- the thing being tested fails on
+    Windows and is invisible on Linux, so Linux needs a way to see it at all.
+    """
+    hits: list[str] = []
+    try:
+        entries = os.listdir("/proc/self/fd")
+    except OSError:
+        return hits
+    for entry in entries:
+        try:
+            target = os.readlink(f"/proc/self/fd/{entry}")
+        except OSError:
+            continue
+        if fragment in target:
+            hits.append(f"{entry}->{target}")
+    return hits
+
+
+def test_manual_accept() -> None:
+    """The "ask first" path: the receiver answers an offer instead of auto-taking it.
+
+    This is the path the desktop dialog and the phone's Web UI both use, and it
+    is *not* what the other tests here exercise -- they all auto-accept.  It
+    broke on Windows for a reason worth remembering: the decision is computed
+    twice (once to show the user what is on offer, once when they answer), and
+    each computation opened its own set of part files.  The first set was
+    dropped without being closed, so the part file was still open when the
+    transfer finished and ``os.replace`` failed with "共享冲突"
+    (ERROR_SHARING_VIOLATION).  Every manually accepted transfer lost its file
+    after sending all of it.  Linux renames an open file happily, so the only
+    visible symptom there was a slow descriptor leak.
+    """
+    print("\n[7] Manual accept: the offer is answered by the receiver")
+    with scratch() as root:
+        rig = Rig(root)
+        try:
+            rig.engine_a.config.auto_accept_all = False
+            source = root / "A" / "payload-manual.bin"
+            expected = make_random_file(source, 4 * 1024 * 1024)
+
+            offers: list[dict] = []
+            rig.engine_a.events.subscribe(offers.append)
+
+            result: list[bool] = []
+            peer = rig.peer_for(rig.engine_b, rig.engine_a)
+
+            def send() -> None:
+                try:
+                    result.append(rig.engine_b.send(peer, [str(source)]))
+                except Exception:
+                    result.append(False)
+
+            received_name = "payload-manual.bin"
+            before = fds_open_on(f"/recv/{received_name}")
+            thread = threading.Thread(target=send, daemon=True)
+            thread.start()
+
+            deadline = time.monotonic() + 30
+            request_id = ""
+            while time.monotonic() < deadline and not request_id:
+                for event in list(offers):
+                    if event.get("kind") == "offer_received":
+                        request_id = str(event.get("request_id", ""))
+                        break
+                time.sleep(0.05)
+            check("the offer reaches the receiver and waits for an answer", bool(request_id))
+
+            if request_id:
+                check("accepting the offer is accepted", rig.engine_a.resolve_offer(request_id, True))
+
+            thread.join(timeout=60)
+            check("the sender reports success", result == [True], str(result))
+
+            # The receiver is engine_a, so that is the receive directory that
+            # has to grow -- checking B here silently asserted nothing.
+            received = root / "A" / "recv" / received_name
+            check("the file lands even though the transfer had to be accepted first", received.exists())
+            if received.exists():
+                check("content matches (sha256)", sha256_file(received) == expected)
+
+            # The invariant Windows enforces for us: once the transfer is done,
+            # nothing in this process may still hold the received file open, or
+            # the rename that puts it in place fails with a sharing violation.
+            # ``before`` is read before the transfer starts, so a descriptor
+            # that was already there (the test's own read handle, say) is not
+            # counted against us.
+            leaked = fds_open_on(f"recv/{received_name}")
+            if os.path.isdir("/proc/self/fd"):
+                check(
+                    "nothing still holds the received file open (Windows needs this to rename it)",
+                    not leaked,
+                    f"{leaked} (before: {before})",
+                )
+        finally:
+            rig.close()
+
+
 def main() -> int:
     use_utf8_console()
     print("EverSend core loopback tests")
@@ -367,6 +468,7 @@ def main() -> int:
         test_corruption_repair,
         test_cancel,
         test_speed,
+        test_manual_accept,
     ]
     for test in tests:
         try:

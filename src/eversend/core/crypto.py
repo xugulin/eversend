@@ -67,6 +67,15 @@ except Exception:  # pragma: no cover
     CRYPTO_AVAILABLE = False
 
 
+class CryptoUnavailable(RuntimeError):
+    """Raised when something needs ``cryptography`` and it is not installed.
+
+    A plain ``NameError: name 'AESGCM' is not defined`` is what this used to
+    look like from the outside, which tells the reader nothing about the actual
+    problem (a missing optional wheel) or what to do about it.
+    """
+
+
 NONCE_SIZE = 12
 TAG_SIZE = 16
 KEY_SIZE = 32
@@ -367,6 +376,11 @@ class Cipher:
         self._nonce_prefix = prefix
         self._counter = 0
         self._lock = threading.Lock()
+        if not CRYPTO_AVAILABLE:
+            raise CryptoUnavailable(
+                "需要 cryptography 才能加密：pip install cryptography"
+                "（绿色版已内置，源码运行需要自己装）"
+            )
         if algorithm == "aes256gcm":
             self._aead = AESGCM(key)
         else:

@@ -698,7 +698,21 @@ class Engine:
             decision.accepted = [i for i in decision.accepted if i in wanted]
         if trust:
             self.trust(session.peer.device_id, True)
-        self._execute_receive(session, decision, conn, transfer_id)
+        # Hand the transfer to its own thread instead of running it here.
+        # ``resolve_offer`` is called *by the UI*: the Qt slot behind the
+        # accept dialog, and the HTTP handler serving ``/api/offer/respond``.
+        # Running the whole receive inline froze the desktop window until the
+        # last byte arrived (no progress, no cancel button -- for a 10 GB file
+        # that is minutes of a dead UI) and held the phone's POST open for just
+        # as long, which every proxy and every doze-happy Android browser
+        # eventually kills.  The caller already learns the outcome from the
+        # event stream, so it only needs to know the offer was taken.
+        threading.Thread(
+            target=self._execute_receive,
+            args=(session, decision, conn, transfer_id),
+            name=f"recv-{transfer_id[:8]}",
+            daemon=True,
+        ).start()
         return True
 
     def _execute_receive(

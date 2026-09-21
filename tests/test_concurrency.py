@@ -253,11 +253,24 @@ def main() -> int:
     use_utf8_console()
     print("EverSend 并发与短写正确性测试")
     print("=" * 66)
-    for test in (
-        test_concurrent_seal_order,
-        test_nonce_never_repeats,
-        test_gather_write_is_complete,
-    ):
+
+    if not crypto.CRYPTO_AVAILABLE:
+        # 前两项测的是 AEAD 路径，没有 cryptography 就无从测起。以前这会以
+        # "NameError: name 'AESGCM' is not defined" 收场，看起来像代码坏了，
+        # 其实只是这台机器没装那个可选的加密轮子。CI 一定会装上（工作流里
+        # 有一步专门钉住它必须可用），所以这里的跳过不会让加密路径失去覆盖。
+        print("跳过：[1][2] 需要 cryptography，这台机器没装，加密路径无法测试。")
+        print("      装上再跑：pip install cryptography")
+        print("      仍然会测：[3] 多线程整帧写入（不依赖加密）。\n")
+        tests = (test_gather_write_is_complete,)
+    else:
+        tests = (
+            test_concurrent_seal_order,
+            test_nonce_never_repeats,
+            test_gather_write_is_complete,
+        )
+
+    for test in tests:
         try:
             test()
         except Exception:
@@ -271,6 +284,9 @@ def main() -> int:
         for name in _failures:
             print(f"  - {name}")
         return 1
+    if not crypto.CRYPTO_AVAILABLE:
+        print("（部分测试被跳过：本机没有 cryptography。）")
+        return 0
     print("全部通过。")
     return 0
 

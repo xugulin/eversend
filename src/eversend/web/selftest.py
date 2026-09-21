@@ -681,11 +681,56 @@ def check_offer_roundtrip(engine_a: Engine, engine_b: Engine, base: str, token: 
 
     thread.join(timeout=40)
     held = os.path.join(receive_dir(engine_a), "incoming.txt")
-    check("the accepted file arrives", wait_for(lambda: os.path.exists(held), timeout=20), held)
+    arrived = wait_for(lambda: os.path.exists(held), timeout=20)
+    check("the accepted file arrives", arrived, held)
     if os.path.exists(held):
         with open(held, "rb") as handle:
             check("the received content is intact", handle.read() == payload)
     check("the sending side reported success", result == [True], str(result))
+
+    if not arrived or result != [True]:
+        # "it failed" is not a diagnosis.  Both engines keep their recent events
+        # in memory, and those hold the sender's status and the receiver's
+        # error -- the only two places that say *why*.
+        for label, engine in (("NodeA/接收端", engine_a), ("NodeB/发送端", engine_b)):
+            print(f"      ── {label} 最近事件 ──")
+            interesting = [
+                event
+                for event in engine.events.recent
+                if event.get("kind")
+                in (
+                    "offer_received",
+                    "transfer_accepted",
+                    "transfer_started",
+                    "transfer_finished",
+                    "transfer_rejected",
+                    "peer_rejected",
+                    "file_failed",
+                    "file_unverified",
+                    "send_offering",
+                    "send_started",
+                    "send_finished",
+                    "stream_error",
+                )
+            ]
+            for event in interesting[-8:]:
+                detail = {
+                    key: value
+                    for key, value in event.items()
+                    if key
+                    in (
+                        "kind",
+                        "status",
+                        "error",
+                        "reason",
+                        "bytes",
+                        "total",
+                        "name",
+                        "resumed",
+                    )
+                }
+                print(f"        {detail}")
+        print(f"      发送端返回: {result!r}")
 
 
 def main() -> int:

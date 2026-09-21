@@ -250,6 +250,67 @@ def event_dict(event: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _usable_address(address: str) -> bool:
+    """True for an address a phone on the LAN could actually dial."""
+    try:
+        parsed = ipaddress.IPv4Address(address)
+    except ValueError:
+        return False
+    return not (parsed.is_loopback or parsed.is_link_local or parsed.is_unspecified)
+
+
+#: How long a caller waits for the resolver before giving up on it.
+_RESOLVER_WAIT = 0.35
+
+_resolver_lock = threading.Lock()
+_resolver_done = threading.Event()
+_resolver_found: list[str] = []
+_resolver_launched = False
+
+
+def _resolve_own_name() -> None:
+    """Look our own host name up, on a thread nobody waits for."""
+    found: list[str] = []
+    try:
+        for entry in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            address = entry[4][0]
+            if _usable_address(address):
+                found.append(address)
+    except OSError:
+        pass
+    with _resolver_lock:
+        for address in found:
+            if address not in _resolver_found:
+                _resolver_found.append(address)
+    _resolver_done.set()
+
+
+def resolved_addresses(wait: float = _RESOLVER_WAIT) -> list[str]:
+    """Addresses the system resolver has for our host name, maybe.
+
+    The lookup runs on a daemon thread and this only waits ``wait`` seconds for
+    it -- because ``getaddrinfo`` on our own name can block for tens of seconds
+    and there is no way to time it out.  Measured on a macOS runner, where the
+    very first ``/api/state`` request (a phone opening the page) took longer
+    than the browser was willing to wait; on Linux the same call returns in
+    microseconds, which is why only one platform ever showed it.
+
+    A slow answer is not thrown away: the thread keeps running and the *next*
+    call -- the page polls every three seconds -- picks it up.
+    """
+    global _resolver_launched
+    if not _resolver_done.is_set():
+        with _resolver_lock:
+            if not _resolver_launched:
+                _resolver_launched = True
+                threading.Thread(
+                    target=_resolve_own_name, name="eversend-resolver", daemon=True
+                ).start()
+        _resolver_done.wait(wait)
+    with _resolver_lock:
+        return list(_resolver_found)
+
+
 def local_addresses() -> list[str]:
     """IPv4 addresses a phone on the same LAN could use to reach us.
 
@@ -259,13 +320,6 @@ def local_addresses() -> list[str]:
     """
     found: list[str] = []
 
-    def usable(address: str) -> bool:
-        try:
-            parsed = ipaddress.IPv4Address(address)
-        except ValueError:
-            return False
-        return not (parsed.is_loopback or parsed.is_link_local or parsed.is_unspecified)
-
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
             probe.settimeout(0.5)
@@ -273,18 +327,14 @@ def local_addresses() -> list[str]:
             # nothing is transmitted, so this works with no internet at all.
             probe.connect(("10.255.255.255", 1))
             candidate = probe.getsockname()[0]
-        if usable(candidate):
+        if _usable_address(candidate):
             found.append(candidate)
     except OSError:
         pass
 
-    try:
-        for entry in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            address = entry[4][0]
-            if usable(address) and address not in found:
-                found.append(address)
-    except OSError:
-        pass
+    for address in resolved_addresses():
+        if address not in found:
+            found.append(address)
 
     return found
 
@@ -908,6 +958,9 @@ class _Handler(BaseHTTPRequestHandler):
     _head_only = False
     #: Body parsed by the CSRF gate, reused by the route handler.
     _json_cache: dict[str, Any] | None = None
+    #: Body bytes consumed so far, so a rejection knows how much is still on
+    #: the wire and can swallow it before closing (see ``_drain_unread_body``).
+    _body_read = 0
 
     # -- logging -----------------------------------------------------------
 
@@ -962,6 +1015,7 @@ class _Handler(BaseHTTPRequestHandler):
         # request's JSON, and a leftover HEAD flag would blank the next body.
         self._head_only = self.command == "HEAD"
         self._json_cache = None
+        self._body_read = 0
         try:
             parsed = urllib.parse.urlsplit(self.path)
             path = urllib.parse.unquote(parsed.path or "/", errors="replace")
@@ -1149,6 +1203,7 @@ class _Handler(BaseHTTPRequestHandler):
             if not chunk:
                 raise _BadRequest("请求体不完整")
             remaining -= len(chunk)
+            self._body_read += len(chunk)
             total += len(chunk)
             if total > limit:
                 raise _BodyTooLarge(f"请求体超过上限 {limit} 字节")
@@ -1185,6 +1240,7 @@ class _Handler(BaseHTTPRequestHandler):
                 if not chunk:
                     raise _BadRequest("请求体不完整")
                 remaining -= len(chunk)
+                self._body_read += len(chunk)
                 yield chunk
             self.rfile.read(2)  # trailing CRLF
 
@@ -1264,6 +1320,52 @@ class _Handler(BaseHTTPRequestHandler):
             content_type,
             extra={"Connection": "close"} if self.close_connection else None,
         )
+        if self.close_connection:
+            self._drain_unread_body()
+
+    #: How much of a rejected body is swallowed before the socket is closed.
+    #: Comfortably above the JSON endpoints' own cap, far below an upload.
+    DRAIN_LIMIT = 8 * 1024 * 1024
+
+    def _drain_unread_body(self, limit: int = DRAIN_LIMIT) -> None:
+        """Read and discard what is left of a rejected request body.
+
+        Closing a socket that still has unread data in its receive buffer makes
+        the kernel answer with a RST rather than a FIN -- and a RST *throws the
+        response away*, so the client reports "connection reset" instead of the
+        413 (or 403) that was just sent.  Which of the two happens is a race
+        between the response and the rest of the body, so the same request
+        passes on Linux and fails on Windows/Wine: exactly what the browser
+        self-test showed, once in every few runs.
+
+        Only what the client *declared* is drained, and never more than
+        ``limit``: a hostile or merely oversized upload must not be read to the
+        end just to deliver an error page.
+        """
+        try:
+            length = self._body_length()
+        except _BadRequest:
+            return
+        if length is None:  # chunked: the framing is unusable once we bail out
+            return
+        remaining = min(length - self._body_read, limit)
+        if remaining <= 0:
+            return
+        try:
+            self.connection.settimeout(2.0)
+        except OSError:
+            return
+        try:
+            while remaining > 0:
+                block = self.rfile.read(min(IO_CHUNK, remaining))
+                if not block:
+                    break
+                remaining -= len(block)
+                self._body_read += len(block)
+        except (OSError, ValueError):
+            # A client that stopped sending (or a half-closed socket) leaves
+            # nothing more to drain; closing now is the only option anyway.
+            pass
 
     # -- static content ----------------------------------------------------
 

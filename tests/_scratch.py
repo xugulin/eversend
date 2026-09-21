@@ -78,12 +78,26 @@ def peak_rss_mib() -> float:
                     ("PeakPagefileUsage", ctypes.c_size_t),
                 ]
 
+            # Both prototypes matter.  ``GetCurrentProcess`` returns the
+            # pseudo-handle -1, and ctypes' default ``restype`` is a 32-bit
+            # ``int``: on 64-bit Windows that truncated it to 0xFFFFFFFF, which
+            # is *not* the current process, so ``GetProcessMemoryInfo`` failed
+            # and this quietly returned 0.0.  The memory-bound check then
+            # "passed" on Windows by measuring nothing at all.
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            psapi = ctypes.WinDLL("psapi", use_last_error=True)
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            psapi.GetProcessMemoryInfo.argtypes = [
+                wintypes.HANDLE,
+                ctypes.POINTER(_Counters),
+                wintypes.DWORD,
+            ]
+            psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+
             counters = _Counters()
             counters.cb = ctypes.sizeof(counters)
-            ok = ctypes.windll.psapi.GetProcessMemoryInfo(  # type: ignore[attr-defined]
-                ctypes.windll.kernel32.GetCurrentProcess(),  # type: ignore[attr-defined]
-                ctypes.byref(counters),
-                counters.cb,
+            ok = psapi.GetProcessMemoryInfo(
+                kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb
             )
             if ok:
                 return counters.PeakWorkingSetSize / 1048576

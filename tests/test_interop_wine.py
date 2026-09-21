@@ -41,6 +41,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -128,11 +129,45 @@ class Peer:
         # Wine a piped stdout is buffered inside the Windows process and is
         # simply lost when the process is killed -- which is precisely when
         # you need it.  A file always has whatever was written.
+        #
+        # The pipe is still what the child gets, and we drain it into the file
+        # ourselves: handing the file itself to the child as its stdout made
+        # Wine produce an *invalid* standard handle on the CI runner, and
+        # ``python.exe`` then died before running a line of our code with
+        # "Fatal Python error: init_sys_streams: can't initialize sys standard
+        # streams / OSError: [WinError 6] Invalid handle".  A pipe is the one
+        # shape Wine always gets right.
         if log_path is not None:
             handle = open(log_path, "wb")
-            return subprocess.Popen(cmd, env=env, stdout=handle, stderr=subprocess.STDOUT)
+
+            def drain(stream, sink) -> None:
+                try:
+                    while True:
+                        block = stream.read(4096)
+                        if not block:
+                            break
+                        sink.write(block)
+                        sink.flush()
+                except (OSError, ValueError):
+                    pass
+                finally:
+                    for closeable in (stream, sink):
+                        try:
+                            closeable.close()
+                        except OSError:
+                            pass
+
+            proc = subprocess.Popen(
+                cmd, env=env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            )
+            threading.Thread(
+                target=drain, args=(proc.stdout, handle), name="wine-log", daemon=True
+            ).start()
+            return proc
         return subprocess.Popen(
-            cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            cmd, env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, errors="replace",
         )
 
@@ -142,8 +177,8 @@ class Peer:
             ["-m", "eversend", "--cli", "send", path,
              "--to", f"127.0.0.1:{port}", "--name", self.name]
         )
-        return subprocess.run(cmd, env=env, capture_output=True, text=True,
-                              errors="replace", timeout=timeout)
+        return subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                              text=True, errors="replace", timeout=timeout)
 
 
 def sha256_of(path: Path) -> str:
