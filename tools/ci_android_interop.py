@@ -466,25 +466,29 @@ def main() -> int:
                     break
                 devtools.call("DOM.setFileInputFiles", files=[remote], nodeId=node_id)
                 time.sleep(2)
-                # Ask the *page* what it picked, not the <input>.
+                # Ask the *page* whether it took the file, via the button it
+                # gates on that file -- not via ``input.files``.
                 #
-                # The app re-renders the DOM on every state poll, so by the time
-                # this is read the input that received the files has usually
-                # been replaced by a fresh, empty one: ``input.files.length``
-                # says 0 even though the pick worked (and the upload really
-                # happened -- the two checks below passed while this one said
-                # 0).  What a person would see is this line of text.
-                picked = str(
-                    devtools.evaluate(
-                        "(document.querySelector('#file-total')||{}).textContent||''"
-                    )
-                    or ""
+                # The app re-renders the DOM on every state poll, so the input
+                # that received the files is usually already replaced by a
+                # fresh, empty one: ``input.files.length`` reads 0 even though
+                # the pick worked and the upload really happened.  The send
+                # button is the app's own answer to "is anything picked", and it
+                # is also what the next step clicks -- so it is the honest thing
+                # to assert on.
+                state = devtools.evaluate(
+                    "(function(){var b=document.querySelector('#btn-send');"
+                    "if(!b)return null;"
+                    "return {disabled:b.disabled,label:b.textContent,"
+                    "total:(document.querySelector('#file-total')||{}).textContent||''};})()"
                 )
-                if "1 " in picked:
-                    print(f"      文件从 {remote} 选中了：{picked.strip()}")
+                picked = str((state or {}).get("label") or "")
+                if state and not state.get("disabled"):
+                    print(f"      文件从 {remote} 选中了：{picked.strip()}（{state.get('total')}）")
                     break
-                print(f"      {remote} 没被接受（页面显示 {picked!r}）: {devtools.last_error}")
-            check("页面显示已选中 1 个文件", "1 " in picked, picked.strip())
+                print(f"      {remote} 没被接受（按钮 {picked!r} disabled={state and state.get('disabled')}）"
+                      f": {devtools.last_error}")
+            check("页面已把文件收下（发送按钮可用）", bool(picked) and "1 " in picked, picked.strip())
             # Tap the page's own send button.  Nothing here reaches into the
             # app's internals: if the button is missing or mislabelled, this
             # fails and says so, which is the point of driving a real browser.
