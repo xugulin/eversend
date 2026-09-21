@@ -59,14 +59,8 @@ jobs:
       - name: 取 Windows 版运行时（真 Windows CPython + win_amd64 轮子）
         run: python tools/fetch_runtime.py --platform windows --out tools/.cache/stage-windows
 
-      - name: 确认 Wine 下的 Windows Python 可用
-        run: |
-          WINPY=tools/.cache/stage-windows/runtime/python.exe
-          WINEDEBUG=-all wine "$WINPY" -c "import sys,platform;print('Windows Python',sys.version.split()[0],platform.system(),platform.machine())"
-          WINEDEBUG=-all wine "$WINPY" -c "
-import sys; sys.path.insert(0,r'Z:\\$(pwd|sed 's|/|\\\\|g')\\tools\\.cache\\stage-windows\\site'.replace('\\\\\\\\','\\\\'))
-import cryptography; print('cryptography', cryptography.__version__)
-"
+      - name: 确认 Wine 下的 Windows Python 与加密库可用
+        run: python tools/ci_check_wine.py --stage tools/.cache/stage-windows
 
       - name: 两个方向的真机互传
         run: python tests/test_interop_wine.py --stage tools/.cache/stage-windows --size 24
