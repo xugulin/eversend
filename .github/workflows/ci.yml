@@ -156,3 +156,73 @@ jobs:
           path: tests/screenshots/*.png
           if-no-files-found: warn
           retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # 绿色包：在真 Windows 上把它解压出来，用它**自带的**解释器跑一遍。
+  #
+  # 上面那些 job 跑的都是仓库里的源码。用户拿到的是 zip，里面是另一个
+  # python.exe、另一份 site-packages。没被执行过的成品只是猜测 —— 这个项目
+  # 历史上最严重的两个 bug（Windows 没有 os.pwrite、os.open 默认文本模式）
+  # 都能通过任何"结构检查"。
+  # ---------------------------------------------------------------------------
+  portable-windows:
+    name: Windows 绿色包（真 Windows 上解压运行）
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: 缓存内置运行时（约 200 MiB）
+        uses: actions/cache@v4
+        with:
+          path: tools/.cache
+          key: runtime-${{ runner.os }}-${{ hashFiles('tools/fetch_runtime.py') }}
+
+      - name: 取 Windows 版运行时并组装绿色包
+        shell: bash
+        run: |
+          python tools/fetch_runtime.py --platform windows --out tools/.cache/stage-windows
+          python tools/build_green.py --platform windows --out tools/.build --strip
+
+      - name: 结构验证（文件齐全、启动器指向真实存在的路径）
+        shell: bash
+        run: python tools/verify_green.py tools/.build/EverSend-1.0.0-windows.zip --platform windows
+
+      - name: 解压到带空格和中文的目录（真实用户的路径就长这样）
+        shell: pwsh
+        run: |
+          $dest = "$env:RUNNER_TEMP\我的 U 盘"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Expand-Archive -Path "tools\.build\EverSend-1.0.0-windows.zip" -DestinationPath $dest
+          Get-ChildItem "$dest\EverSend" | Select-Object Name
+
+      - name: 用包里的解释器跑一遍（加密、传输、界面）
+        shell: pwsh
+        run: |
+          $tree = "$env:RUNNER_TEMP\我的 U 盘\EverSend"
+          & "$tree\runtime\python.exe" tools\ci_windows_green.py --tree $tree
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: 绿色包自检（run.bat 那条路：--cli selftest）
+        shell: pwsh
+        run: |
+          $tree = "$env:RUNNER_TEMP\我的 U 盘\EverSend"
+          $env:PYTHONPATH = "$tree\app;$tree\site"
+          $env:EVERSEND_HOME = $tree
+          & "$tree\runtime\python.exe" -m eversend --cli selftest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: 上传绿色包里的界面截图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: green-windows-shots
+          path: ${{ runner.temp }}/eversend-green-check/*.png
+          if-no-files-found: warn
+          retention-days: 14
