@@ -277,7 +277,14 @@ def check_structure(tree: Path, report: Report, origin: str) -> None:
     run_sh = tree / "run.sh"
     if run_sh.exists():
         mode = run_sh.stat().st_mode
-        report.add("run.sh is executable", bool(mode & stat.S_IXUSR), f"mode {oct(mode & 0o777)}")
+        if sys.platform == "win32":
+            # Windows has no execute bit: every extracted file comes back 0o666,
+            # so this check can only ever fail there -- and it says nothing about
+            # the artifact.  What matters is the bit *inside the zip*, which the
+            # Linux run verifies.
+            report.skip("run.sh is executable", "Windows 没有执行位；zip 内的权限由 Linux 侧验证")
+        else:
+            report.add("run.sh is executable", bool(mode & stat.S_IXUSR), f"mode {oct(mode & 0o777)}")
 
     links = [p for p in tree.rglob("*") if p.is_symlink()]
     report.add("no symlinks in the tree", not links, f"{len(links)} found" if links else "FAT32/exFAT safe")

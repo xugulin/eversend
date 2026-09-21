@@ -173,25 +173,11 @@ _FIRST_RUN_LABELS = (
     "接受并继续",
     "No thanks",
     "以后再说",
+    "Got it",
+    "知道了",
 )
 
 _CHROME_ACTIVITY = "com.android.chrome/com.google.android.apps.chrome.Main"
-
-
-def prepare_chrome() -> None:
-    """Ask Chrome to skip its first-run wizard.
-
-    The command-line file is the documented way to do this on an emulator, but
-    Chrome only reads it when it is also the "debug app", hence the second
-    call.  Best effort: :func:`dismiss_first_run` catches the case where it
-    does not take.
-    """
-    flags = "--no-first-run --no-default-browser-check --disable-fre --disable-sync"
-    adb_shell(f"echo '{flags}' > /data/local/tmp/chrome-command-line")
-    adb_shell("chmod 644 /data/local/tmp/chrome-command-line")
-    adb_shell("am set-debug-app --persistent com.android.chrome")
-    adb_shell("am force-stop com.android.chrome")
-    time.sleep(2)
 
 
 def open_url(url: str, timeout: int = 60) -> None:
@@ -228,9 +214,24 @@ def tap_text(labels: tuple[str, ...]) -> str:
     return ""
 
 
-def dismiss_first_run() -> str:
-    """Dismiss Chrome's welcome screen if it is up.  Returns what was tapped."""
-    return tap_text(_FIRST_RUN_LABELS)
+def dismiss_first_run(rounds: int = 3) -> list[str]:
+    """Click through Chrome's welcome screens.  Returns the buttons tapped.
+
+    Deliberately *not* done by writing ``/data/local/tmp/chrome-command-line``
+    and calling ``am set-debug-app``: that combination made Chrome fail to
+    start at all on the emulator (the screenshot showed the Android home
+    screen, and there was no ``chrome_devtools_remote`` socket), and the flag
+    file needs the program name as its first token or Chrome misparses it.
+    Tapping what is actually on screen has no such failure mode.
+    """
+    tapped: list[str] = []
+    for _ in range(rounds):
+        hit = tap_text(_FIRST_RUN_LABELS)
+        if not hit:
+            break
+        tapped.append(hit)
+        time.sleep(2)
+    return tapped
 
 
 # ---------------------------------------------------------------------------
@@ -298,13 +299,12 @@ def main() -> int:
     reverse = adb("reverse", "tcp:52119", "tcp:52119")
     check("adb reverse 建立成功", "error" not in reverse.lower(), reverse.strip())
 
-    prepare_chrome()
     open_url(args.url)
     time.sleep(12)
 
-    dismissed = dismiss_first_run()
-    if dismissed:
-        print(f"      关掉了 Chrome 首次运行向导（点了「{dismissed}」），重新打开页面")
+    tapped = dismiss_first_run()
+    if tapped:
+        print("      关掉了 Chrome 首次运行的拦路屏：" + "、".join(f"「{t}」" for t in tapped))
         open_url(args.url)
         time.sleep(10)
 
@@ -316,6 +316,14 @@ def main() -> int:
     print(f"      adb forward: {forward.strip()}")
     devtools = DevTools()
     cdp_ok = devtools.connect(timeout=60)
+    if not cdp_ok:
+        # Chrome may have spent the first launch on its welcome screens and
+        # dropped the URL on the floor.  Open it once more before giving up.
+        print("      没连上，再打开一次页面并重试")
+        open_url(args.url)
+        time.sleep(10)
+        adb("forward", "tcp:9222", "localabstract:chrome_devtools_remote")
+        cdp_ok = devtools.connect(timeout=45)
     if not check("Chrome 调试端口已连上", cdp_ok):
         # 连不上时唯一有用的信息是"套接字到底有没有"，所以直接问内核。
         sockets = adb_shell("cat /proc/net/unix | grep -i devtools || echo '（没有 devtools 套接字）'")
