@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<!-- viewport-fit=cover + env(safe-area-inset-*) in the CSS keep the layout
+     clear of the notch and the home indicator on modern phones. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0f766e" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1220" media="(prefers-color-scheme: dark)">
+<meta name="description" content="韧传 EverSend 手机网页版：在同一局域网内收发文件，无需安装任何应用。">
+<meta name="robots" content="noindex, nofollow">
+<!-- The CSRF token for this server run.  Every POST echoes it back in the
+     X-EverSend-Token header; without it the server answers 403. -->
+<meta name="eversend-token" content="__EVERSEND_TOKEN__">
+<title>韧传 EverSend · 手机互传</title>
+<link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<noscript>
+  <p class="noscript">韧传网页版需要 JavaScript 才能收发文件，请在浏览器设置中启用后重试。</p>
+</noscript>
+
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">⚡</span>
+      <h1>韧传<small>EverSend</small></h1>
+    </div>
+    <div class="conn" id="conn" role="status" aria-live="off">
+      <span class="dot" aria-hidden="true"></span><span id="conn-text">连接中…</span>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="功能切换">
+    <button class="tab is-active" data-view="send" role="tab" aria-selected="true" aria-controls="view-send">发送</button>
+    <button class="tab" data-view="receive" role="tab" aria-selected="false" aria-controls="view-receive">
+      接收<span class="badge" id="offer-badge" hidden>0</span>
+    </button>
+    <button class="tab" data-view="about" role="tab" aria-selected="false" aria-controls="view-about">设置</button>
+  </nav>
+
+  <main class="views">
+    <!-- ---------------------------------------------------------- 发送 -->
+    <section class="view" id="view-send" role="tabpanel" aria-label="发送">
+      <div class="card">
+        <div class="card-head">
+          <h2>目标设备</h2>
+          <button class="ghost" id="btn-refresh-devices" type="button">刷新</button>
+        </div>
+        <div class="device-list" id="device-list"></div>
+        <div class="empty" id="device-empty" hidden>
+          <p class="empty-title">未找到设备</p>
+          <p class="hint">请确认两台设备在同一局域网，并且对方的韧传正在运行。</p>
+          <button class="primary" id="btn-rescan" type="button">重新扫描</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>选择文件</h2>
+          <span class="muted" id="file-total"></span>
+        </div>
+        <label class="dropzone" id="dropzone" for="file-input">
+          <strong>点击选择文件</strong>
+          <span>或把文件拖到这里（支持多选）</span>
+        </label>
+        <!-- multiple is what makes a phone's photo picker usable. -->
+        <input type="file" id="file-input" multiple hidden>
+        <ul class="file-list" id="file-list"></ul>
+        <label class="field">
+          <span>PIN 码（可选）</span>
+          <input type="text" id="pin" inputmode="numeric" autocomplete="off" enterkeyhint="send"
+                 placeholder="对方设置了 PIN 才需要填写">
+        </label>
+        <button class="primary block" id="btn-send" type="button" disabled>发送</button>
+      </div>
+
+      <div class="card" id="upload-card" hidden>
+        <div class="card-head"><h2>上传到本机</h2><span class="muted">手机 → 电脑</span></div>
+        <div id="upload-body"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>正在发送</h2></div>
+        <div class="transfer-list" id="send-transfers"></div>
+      </div>
+    </section>
+
+    <!-- ---------------------------------------------------------- 接收 -->
+    <section class="view" id="view-receive" role="tabpanel" aria-label="接收" hidden>
+      <div class="card">
+        <div class="card-head"><h2>待确认</h2><span class="muted" id="offer-count"></span></div>
+        <div class="transfer-list" id="offer-list"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>正在接收</h2></div>
+        <div class="transfer-list" id="receive-transfers"></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>已接收的文件</h2>
+          <button class="ghost" id="btn-refresh-files" type="button">刷新</button>
+        </div>
+        <p class="hint" id="receive-dir"></p>
+        <ul class="file-list" id="received-files"></ul>
+      </div>
+    </section>
+
+    <!-- ---------------------------------------------------------- 设置 -->
+    <section class="view" id="view-about" role="tabpanel" aria-label="设置" hidden>
+      <div class="card">
+        <div class="card-head"><h2>手机扫码打开</h2></div>
+        <div class="qr-wrap">
+          <img id="qr" src="/api/qr.svg" alt="指向本机韧传网页版的二维码" width="280" height="280">
+        </div>
+        <p class="url" id="qr-url">读取中…</p>
+        <p class="hint">手机与本机需在同一局域网。上面的地址也可以手动输入浏览器。</p>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>本机信息</h2></div>
+        <dl class="kv" id="self-info"></dl>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>关于</h2></div>
+        <p class="hint">
+          韧传 EverSend 手机网页版：在浏览器里直接收发文件，无需安装应用。<br>
+          传输全程在本局域网内完成，不经过任何服务器。
+        </p>
+        <p class="hint" id="about-version"></p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+<script src="/assets/app.js" defer></script>
+</body>
+</html>

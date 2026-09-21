@@ -1,0 +1,97 @@
+name: 三平台自检
+
+# 为什么要有它：这是个跨平台程序，而"在 Linux 上能跑"完全说明不了 Windows 上的
+# 情况。实测抓到过两个只在 Windows 上存在、且本机测试永远是绿的缺陷：
+#
+#   1. os.pread / os.pwrite 是 POSIX 专有，Windows 上根本没有这两个函数 ——
+#      接收端写第一个分片就 AttributeError，Windows 版一个字都收不了。
+#   2. Windows 的 os.open 默认是**文本模式**，会把每个 0x0A 悄悄改写成 0x0D 0x0A。
+#      落盘文件比源文件大几千字节，而程序自己的校验和发现不了 —— 因为读的时候
+#      文本模式又原样翻译了回来。
+#
+# 所以这里在三个系统的**原生 runner** 上各跑一遍完整内核测试，谁也不代表谁。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  label: 'Linux 原生' }
+          - { os: windows-latest, label: 'Windows 原生' }
+          - { os: macos-latest,   label: 'macOS 原生' }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: 环境信息
+        shell: bash
+        run: |
+          python -V
+          echo "runner: $RUNNER_OS $RUNNER_ARCH"
+          python -c "import platform,sys; print(platform.platform()); print('os.pread:', hasattr(__import__('os'),'pread'), ' os.pwrite:', hasattr(__import__('os'),'pwrite'))"
+
+      - name: 安装依赖
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install PySide6-Essentials cryptography
+
+      - name: 语法检查
+        shell: bash
+        run: python -m compileall -q src tests tools || true
+
+      - name: 引擎自检
+        shell: bash
+        env:
+          PYTHONPATH: src
+        run: python -m eversend --cli selftest
+
+      - name: 内核测试（回环 / 续传 / 坏块修复 / 取消）
+        shell: bash
+        env:
+          SWIFTDROP_TEST_TMP: ${{ runner.temp }}/scratch
+        run: python tests/test_loopback.py
+
+      - name: 恶劣网络测试（RST 杀连接 / 限速 / 512MiB / 内存上界）
+        shell: bash
+        env:
+          SWIFTDROP_TEST_TMP: ${{ runner.temp }}/scratch
+        run: python tests/test_resilience.py
+
+      - name: 浏览器界面自检（99 项）
+        shell: bash
+        run: python src/eversend/web/selftest.py
+
+      - name: 桌面界面离屏渲染（真 Qt，无显示器）
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb
+          xvfb-run -a -s "-screen 0 1280x900x24" python tests/test_gui_render.py
+
+      - name: 上传界面截图（失败时才有人看，所以成败都传）
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-shots-${{ runner.os }}
+          path: tests/screenshots/*.png
+          if-no-files-found: warn
+          retention-days: 14

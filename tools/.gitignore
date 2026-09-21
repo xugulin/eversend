@@ -1,0 +1,10 @@
+# 构建产物与缓存（可以安全删除，下次构建会自动重新下载）
+.cache/
+.build/
+.build-strip/
+*.zip
+
+# 本地临时文件
+*.part
+__pycache__/
+*.pyc

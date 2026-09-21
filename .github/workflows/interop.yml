@@ -1,0 +1,191 @@
+name: 两两互传
+
+# 这是这个仓库里最有价值的一条流水线，原因很简单：
+#
+# 三平台各自跑回环测试，只能证明「Linux 和 Linux 说话没问题」「Windows 和
+# Windows 说话没问题」——**证明不了 Linux 和 Windows 能互相说话**。而跨系统的
+# 差异恰恰最容易出事，实测已经抓到两个（见 ci.yml 的说明），全都是本机测试
+# 永远抓不到的那种。
+#
+# 难点在于：GitHub 的 Linux runner 和 Windows runner 互相连不上（都没有公网入口，
+# 也没有固定的可达地址）。所以这里不用两个 runner，而是**在同一个 Linux runner 上
+# 用 Wine 承载真正的 Windows CPython 和 win_amd64 轮子**，让它成为一个货真价实的
+# Windows 协议对端——跑的是 Windows 解释器、Windows 二进制扩展、Windows 的系统
+# 调用语义。两个方向都测，因为发送路径和接收路径各自一半的代码不同。
+#
+# 安卓端更特殊：它的载体是浏览器，不是我们自己的进程，桌面端的测试一行都覆盖不到。
+# 所以真的起一个 Android 模拟器，用真的 Chrome 打开页面，并用 CDP 把文件塞进
+# 页面上的 <input type=file> 再点「发送」——和真人操作走同一条路。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: interop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Linux ↔ Windows：真 TCP，两个方向，逐字节比对
+  # -------------------------------------------------------------------------
+  linux-windows:
+    name: 'Linux ↔ Windows（Wine 承载 Windows 端）'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: 安装 Wine
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update -qq
+          # wine64 足够跑 64 位 CPython；i386 架构只是为了让依赖解得开
+          sudo apt-get install -y -qq wine64 || sudo apt-get install -y -qq wine
+          wine --version
+
+      - name: 缓存内嵌运行时与依赖轮子
+        uses: actions/cache@v4
+        with:
+          path: tools/.cache
+          key: runtime-${{ runner.os }}-${{ hashFiles('tools/fetch_runtime.py') }}
+
+      - name: 取 Windows 版运行时（真 Windows CPython + win_amd64 轮子）
+        run: python tools/fetch_runtime.py --platform windows --out tools/.cache/stage-windows
+
+      - name: 确认 Wine 下的 Windows Python 可用
+        run: |
+          WINPY=tools/.cache/stage-windows/runtime/python.exe
+          WINEDEBUG=-all wine "$WINPY" -c "import sys,platform;print('Windows Python',sys.version.split()[0],platform.system(),platform.machine())"
+          WINEDEBUG=-all wine "$WINPY" -c "
+import sys; sys.path.insert(0,r'Z:\\$(pwd|sed 's|/|\\\\|g')\\tools\\.cache\\stage-windows\\site'.replace('\\\\\\\\','\\\\'))
+import cryptography; print('cryptography', cryptography.__version__)
+"
+
+      - name: 两个方向的真机互传
+        run: python tests/test_interop_wine.py --stage tools/.cache/stage-windows --size 24
+
+      - name: 上传日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interop-linux-windows
+          path: tools/.cache/stage-windows/manifest.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # -------------------------------------------------------------------------
+  # 安卓 ↔ Linux：真模拟器、真 Chrome、真上传下载
+  # -------------------------------------------------------------------------
+  android-linux:
+    name: '安卓 ↔ Linux（真模拟器 + 真 Chrome）'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install PySide6-Essentials cryptography websocket-client
+
+      - name: 启用 KVM（模拟器要它才跑得动）
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: 启动桌面端（浏览器界面）
+        run: |
+          mkdir -p "$RUNNER_TEMP/recv"
+          export PYTHONPATH=src
+          export EVERSEND_RECEIVE="$RUNNER_TEMP/recv"
+          nohup python -m eversend --cli serve --auto-accept --name CI-Desktop \
+            --port 52117 --receive "$RUNNER_TEMP/recv" \
+            --web --no-broadcast --no-mdns > "$RUNNER_TEMP/desktop.log" 2>&1 &
+          # 桌面端会自己起浏览器界面；等它就绪
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:52119/api/state > /dev/null; then
+              echo "浏览器界面已就绪"; break
+            fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:52119/api/state | head -c 400; echo
+
+      - name: 模拟器里跑互传
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          EVERSEND_RECEIVE: ${{ runner.temp }}/recv
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          # Chrome 在 google_apis 镜像里；headless 模拟器不需要显卡
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          disable-animations: true
+          script: |
+            adb devices
+            python tools/ci_android_interop.py --workdir "$RUNNER_TEMP/android" --size-mib 6
+
+      - name: 桌面端日志
+        if: always()
+        run: cat "$RUNNER_TEMP/desktop.log" || true
+
+      - name: 上传模拟器截图与日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-shots
+          path: |
+            ${{ runner.temp }}/android/shots/*.png
+            ${{ runner.temp }}/desktop.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  # -------------------------------------------------------------------------
+  # 安卓 ↔ Windows：Windows runner 上起不了模拟器（没有嵌套虚拟化），
+  # 所以这一条测的是**手机页面发出的那套 HTTP 请求**打到 Windows 原生构建上。
+  # 诚实标注：它不是从模拟器里点出来的。
+  # -------------------------------------------------------------------------
+  android-windows:
+    name: '安卓(HTTP 表面) ↔ Windows 原生'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install PySide6-Essentials cryptography
+
+      - name: 手机 ↔ Windows 的 HTTP 互传
+        shell: bash
+        env:
+          PYTHONPATH: src
+        run: python tools/ci_android_http.py --size-mib 8
+
+      - name: 上传证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-windows-evidence
+          path: ${{ runner.temp }}/android-http/*.json
+          if-no-files-found: warn
+          retention-days: 14
