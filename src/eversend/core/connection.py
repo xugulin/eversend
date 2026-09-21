@@ -59,6 +59,7 @@ from .framing import (
     close_quietly,
     read_frame,
     send_frame,
+    sendmsg_all,
 )
 from .model import DeviceInfo
 from .sockutil import tune_socket
@@ -436,13 +437,9 @@ class Connection:
                 MSG_CHUNK, flags, self._stream_id, CHUNK_HEADER_SIZE + len(body)
             )
             try:
-                if hasattr(self.sock, "sendmsg"):
-                    try:
-                        self.sock.sendmsg([frame_header, chunk_header, body])
-                    except (OSError, TypeError):
-                        self.sock.sendall(frame_header + chunk_header + bytes(body))
-                else:
-                    self.sock.sendall(frame_header + chunk_header + bytes(body))
+                # sendmsg_all, not sendmsg: the latter writes only what fits and
+                # silently drops the rest, which stalls the peer forever.
+                sendmsg_all(self.sock, [frame_header, chunk_header, body])
                 self._bytes_sent += len(frame_header) + CHUNK_HEADER_SIZE + len(body)
             except (OSError, BrokenPipeError) as exc:
                 self._closed = True

@@ -18,6 +18,7 @@ Both of those matter: at 10 Gbps a naive implementation spends more time in
 
 from __future__ import annotations
 
+import errno
 import socket
 import struct
 from typing import Final
@@ -214,6 +215,50 @@ def send_frame(sock: socket.socket, type: int, payload: bytes = b"", flags: int 
         sock.sendall(header)
 
 
+def sendmsg_all(sock: socket.socket, iovecs: list[bytes | memoryview]) -> int:
+    """Write every byte of ``iovecs``, looping until it is all out.
+
+    :meth:`socket.sendmsg` behaves like :meth:`socket.send`, **not** like
+    :meth:`socket.sendall`: it returns how many bytes it managed to write and
+    stops there.  Handing it a whole multi-megabyte frame therefore silently
+    truncates that frame whenever the kernel send buffer cannot take all of it
+    at once -- and the peer then waits forever for bytes that were never
+    written.  There is no error, no short write reported anywhere, just a
+    transfer that stalls.
+
+    It hides well: with a large send buffer (the engine asks for 8 MiB) a
+    chunk usually fits in one call and everything looks perfect.  It only
+    appears when the buffer is smaller or the reader is slower -- a busy CI
+    runner, a small `net.core.wmem_max`, a slow peer.
+
+    Returns the total number of bytes written.
+    """
+    views = [v if isinstance(v, memoryview) else memoryview(v) for v in iovecs]
+    index = 0
+    offset = 0
+    written = 0
+    count = len(views)
+
+    while index < count:
+        batch = [views[index][offset:], *views[index + 1 :]]
+        sent = sock.sendmsg(batch)
+        if sent <= 0:
+            raise OSError("sendmsg wrote nothing")
+        written += sent
+
+        # Walk the iovecs forward by ``sent`` bytes.
+        while index < count:
+            available = len(views[index]) - offset
+            if sent < available:
+                offset += sent
+                break
+            sent -= available
+            index += 1
+            offset = 0
+
+    return written
+
+
 def send_frame_gather(
     sock: socket.socket,
     type: int,
@@ -223,21 +268,24 @@ def send_frame_gather(
 ) -> None:
     """Send a frame whose payload is the concatenation of ``parts``.
 
-    Uses :meth:`socket.sendmsg` so the kernel gathers the iovecs; the payload
-    is never copied in user space.  Falls back to ``sendall`` if the platform
-    or socket does not support scatter/gather.
+    Uses scatter/gather so the kernel collects the iovecs and the payload is
+    never copied in user space, but writes all of it (see :func:`sendmsg_all`).
+    Falls back to ``sendall`` where ``sendmsg`` is unavailable.
     """
     total = 0
     for part in parts:
         total += len(part)
     header = _header_pack(MAGIC, type, flags, stream, total)
-    iovecs = [header, *parts]
+    iovecs: list[bytes | memoryview] = [header, *parts]
     try:
-        sock.sendmsg(iovecs)
-    except (AttributeError, OSError):
-        # AttributeError: no sendmsg on this platform (Windows before 3.12
-        # lacks it for some socket types).  OSError with EINVAL: socket type
-        # does not support it.
+        sendmsg_all(sock, iovecs)
+    except (AttributeError, OSError) as exc:
+        # AttributeError: no sendmsg on this platform.  OSError with EINVAL:
+        # the socket type does not support scatter/gather.
+        if isinstance(exc, OSError) and getattr(exc, "errno", None) not in (
+            None, errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP,
+        ):
+            raise
         flat = b"".join(bytes(p) for p in iovecs)
         sock.sendall(flat)
 
@@ -280,5 +328,6 @@ __all__ = [
     "send_encrypted_frame",
     "send_frame",
     "send_frame_gather",
+    "sendmsg_all",
     "PROTOCOL_VERSION",
 ]
