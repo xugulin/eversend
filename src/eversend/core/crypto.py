@@ -47,6 +47,7 @@ import os
 import platform
 import secrets
 import struct
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -349,16 +350,23 @@ def _prefer_aesgcm() -> bool:
 class Cipher:
     """Seals and opens frame payloads for one direction of one session.
 
-    Not thread safe: each connection owns one instance per direction.
+    The seal side is internally locked.  The connection layer already holds its
+    own send lock around sealing, so this is a second line of defence rather
+    than the primary one -- but a nonce is a counter, two threads sealing at
+    once would reuse one, and nonce reuse is the single AEAD mistake that
+    breaks confidentiality rather than merely integrity.  That is worth a lock
+    that costs nothing next to the encryption itself.  Opening stays
+    single-threaded: exactly one reader owns a connection.
     """
 
-    __slots__ = ("_aead", "_nonce_prefix", "_counter", "_algorithm")
+    __slots__ = ("_aead", "_nonce_prefix", "_counter", "_algorithm", "_lock")
 
     def __init__(self, key: bytes, direction: bytes, algorithm: str) -> None:
         self._algorithm = algorithm
         prefix = _DIRECTION_INITIATOR if direction == b"i" else _DIRECTION_RESPONDER
         self._nonce_prefix = prefix
         self._counter = 0
+        self._lock = threading.Lock()
         if algorithm == "aes256gcm":
             self._aead = AESGCM(key)
         else:
@@ -375,7 +383,8 @@ class Cipher:
 
     def seal(self, plaintext: bytes | memoryview, aad: bytes = b"") -> bytes:
         """Encrypt and authenticate; returns ciphertext||tag."""
-        return self._aead.encrypt(self._next_nonce(), bytes(plaintext), aad)
+        with self._lock:
+            return self._aead.encrypt(self._next_nonce(), bytes(plaintext), aad)
 
     def open(self, ciphertext: bytes | memoryview, aad: bytes = b"") -> bytes:
         """Verify and decrypt.  Raises ``InvalidTag`` on tampering."""

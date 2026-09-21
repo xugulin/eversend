@@ -111,6 +111,10 @@ jobs:
           EVERSEND_TEST_TMP: ${{ runner.temp }}/scratch
         run: python tests/test_resilience.py
 
+      - name: 并发正确性（AEAD nonce 不能复用）
+        shell: bash
+        run: python tests/test_concurrency.py
+
       - name: 浏览器界面自检（99 项）
         shell: bash
         run: python src/eversend/web/selftest.py

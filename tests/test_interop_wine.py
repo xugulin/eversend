@@ -183,8 +183,15 @@ def run_direction(
         elapsed = max(1e-6, time.monotonic() - started)
 
         if result.returncode != 0:
-            tail = "\n".join((result.stdout or "").strip().splitlines()[-6:])
-            print(f"      发送端返回码 {result.returncode}\n{tail}\n{result.stderr[-800:]}")
+            tail = "\n".join(
+                line for line in (result.stdout or "").replace("\r", "\n").splitlines()
+                if line.strip() and not line.strip().startswith("0 B")
+            )[-600:]
+            print(f"      发送端返回码 {result.returncode}")
+            if tail:
+                print(f"      发送端输出: {tail}")
+            if result.stderr.strip():
+                print(f"      发送端 stderr: {result.stderr[-800:]}")
         check(f"{label}: 发送端返回 0", result.returncode == 0)
 
         landed = receive_dir / payload_path.name
@@ -207,6 +214,17 @@ def run_direction(
             server.wait(timeout=10)
         except Exception:
             pass
+        # Always show what the receiver said.  When the Wine side rejects an
+        # offer, its own output is the only place the reason appears -- the
+        # sender just reports "returned 1".
+        try:
+            output = (server.stdout.read() or "") if server.stdout else ""
+        except Exception:
+            output = ""
+        if output.strip():
+            print(f"      ── 接收端输出 ──")
+            for line in output.strip().splitlines()[-12:]:
+                print(f"      {line}")
 
 
 def main() -> int:

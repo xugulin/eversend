@@ -374,12 +374,22 @@ class Connection:
         if self._closed:
             raise ConnectionClosed("connection is closed")
         raw = bytes(payload) if not isinstance(payload, bytes) else payload
-        flags = 0
-        if self._session is not None and self._session.algorithm != "none":
-            raw = self._session.send.seal(raw, _aad(type))
-            flags = FLAG_ENCRYPTED
-        header = build_header(type, flags, self._stream_id, len(raw))
+        # Encryption happens *inside* the lock, and that is load-bearing rather
+        # than tidiness.  An AEAD nonce here is a counter owned by the cipher,
+        # so two threads sealing concurrently would hand the same nonce to two
+        # different frames -- and then write them out in whichever order they
+        # won the lock, which need not match the order the nonces were handed
+        # out.  The peer decrypts with its own counter, sees a tag mismatch and
+        # reports "authentication failed" with no hint as to why.  Reusing a
+        # nonce is also the one AEAD mistake that breaks confidentiality, not
+        # just integrity.  Sealing and sending under one lock makes nonce order
+        # and wire order the same thing by construction.
         with self._send_lock:
+            flags = 0
+            if self._session is not None and self._session.algorithm != "none":
+                raw = self._session.send.seal(raw, _aad(type))
+                flags = FLAG_ENCRYPTED
+            header = build_header(type, flags, self._stream_id, len(raw))
             try:
                 if raw:
                     self.sock.sendall(header + raw)
@@ -410,19 +420,21 @@ class Connection:
             raise ConnectionClosed("connection is closed")
 
         chunk_header = _chunk_struct.pack(seq, index, offset, len(data), crc)
-        flags = 0
 
-        if self._session is not None and self._session.algorithm != "none":
-            sealed = self._session.send.seal(data, _aad(MSG_CHUNK) + chunk_header)
-            flags = FLAG_ENCRYPTED
-            body: bytes | memoryview = sealed
-        else:
-            body = data if isinstance(data, memoryview) else memoryview(data)
-
-        frame_header = build_header(
-            MSG_CHUNK, flags, self._stream_id, CHUNK_HEADER_SIZE + len(body)
-        )
+        # Same reason as in send(): the AEAD counter must be advanced and the
+        # result written under one lock, or nonces and wire order can disagree.
         with self._send_lock:
+            flags = 0
+            if self._session is not None and self._session.algorithm != "none":
+                sealed = self._session.send.seal(data, _aad(MSG_CHUNK) + chunk_header)
+                flags = FLAG_ENCRYPTED
+                body: bytes | memoryview = sealed
+            else:
+                body = data if isinstance(data, memoryview) else memoryview(data)
+
+            frame_header = build_header(
+                MSG_CHUNK, flags, self._stream_id, CHUNK_HEADER_SIZE + len(body)
+            )
             try:
                 if hasattr(self.sock, "sendmsg"):
                     try:
