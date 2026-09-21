@@ -142,9 +142,11 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           disable-animations: true
           script: |
+            # 一行一条命令：android-emulator-runner 把 script 按行拆开执行，
+            # 行尾的反斜杠不会被当成续行，而是原样当成一个参数传给 python
+            # （上一次就是这么失败的：unrecognized arguments: \）。
             adb devices
-            python tools/ci_android_interop.py --workdir "$RUNNER_TEMP/android" \
-              --receive "$RUNNER_TEMP/recv" --size-mib 6
+            python tools/ci_android_interop.py --workdir "$RUNNER_TEMP/android" --receive "$RUNNER_TEMP/recv" --size-mib 6
 
       - name: 桌面端日志
         if: always()
