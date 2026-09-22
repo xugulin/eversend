@@ -1211,7 +1211,14 @@ def check_mdns_answer_against(engine: Engine) -> None:
     check("能加入 mDNS 组播组", joined)
     sock.settimeout(0.5)
     try:
-        sock.sendto(mdns.build_query(MDNS_SERVICE_TYPE), (MDNS_GROUP_V4, MDNS_PORT))
+        try:
+            sock.sendto(mdns.build_query(MDNS_SERVICE_TYPE), (MDNS_GROUP_V4, MDNS_PORT))
+        except OSError as exc:
+            # 有些环境根本没有组播路由（CI 的 macOS runner 就是：Errno 65
+            # No route to host）。那是环境限制，不是程序的缺陷 —— 说清楚跳过，
+            # 别把它记成失败，也别假装验证过了。
+            print(f"  (跳过：这台机器发不出组播 —— {exc})")
+            return
         deadline = time.monotonic() + 4
         records = []
         while time.monotonic() < deadline and not records:
