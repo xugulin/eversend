@@ -468,6 +468,15 @@ class WebUI:
         #: the user "your phone is connected", and clicking 「手机连接」 looked
         #: like it had done nothing.
         self._clients: dict[str, dict[str, Any]] = {}
+        #: Every browser this desktop has paired with, keyed like ``_clients``.
+        #: A phone is a *device you own*, not a session: its page gets frozen
+        #: the moment the screen goes off or the user switches apps, so a list
+        #: that forgot it after fifteen seconds would force the user to keep
+        #: the phone awake and in the browser to stay paired.  It stays listed
+        #: until the phone says goodbye (「断开连接」) or the user removes it.
+        self._known: dict[str, dict[str, Any]] = {}
+        self._known_path = os.path.join(engine.config.data_dir, "web_clients.json")
+        self._load_known()
         #: Files the desktop handed to the browser, by share id.  A browser has
         #: no receiving service, so "send to phone" cannot be a push: the
         #: desktop publishes the file and the phone picks it up with one tap.
@@ -540,7 +549,21 @@ class WebUI:
         now = time.time()
         digest = hashlib.sha1((agent or "").encode("utf-8", "replace")).hexdigest()[:8]
         key = f"{address}|{digest}"
+        remember = False
         with self._state_lock:
+            entry = self._known.get(key)
+            if entry is None:
+                self._known[key] = {
+                    "key": key,
+                    "address": address,
+                    "agent": agent[:200],
+                    "label": describe_agent(agent),
+                    "firstSeen": now,
+                    "lastSeen": now,
+                }
+                remember = True
+            else:
+                entry["lastSeen"] = now
             known = self._clients.get(key)
             if known is None:
                 self._clients[key] = {
@@ -552,6 +575,8 @@ class WebUI:
                 }
             else:
                 known["lastSeen"] = now
+        if remember:
+            self._save_known()
 
     def share_files(self, paths: Iterable[str]) -> list[dict[str, Any]]:
         """Publish local files for the connected browser to download.
@@ -633,16 +658,74 @@ class WebUI:
         with self._state_lock:
             self._shares.clear()
 
-    def forget_client(self, address: str, agent: str = "") -> bool:
-        """Drop one browser from the connected list right now.
-
-        Called when the page says goodbye (the phone's 「断开连接」 button) so
-        the desktop reflects it immediately instead of waiting for the TTL.
-        """
+    @staticmethod
+    def client_key(address: str, agent: str = "") -> str:
         digest = hashlib.sha1((agent or "").encode("utf-8", "replace")).hexdigest()[:8]
-        key = f"{address}|{digest}"
+        return f"{address}|{digest}"
+
+    def known_clients(self) -> list[dict[str, Any]]:
+        """Every phone this desktop has paired with, newest activity first.
+
+        Unlike :meth:`clients` this does not expire: the phone keeps its place
+        in the device list while its screen is off, while it is in another app,
+        or while its page is closed.  ``online`` says whether it is talking to
+        us *right now*.
+        """
+        now = time.time()
         with self._state_lock:
-            return self._clients.pop(key, None) is not None
+            found = [dict(c) for c in self._known.values()]
+            live = {k: c["lastSeen"] for k, c in self._clients.items()}
+        for client in found:
+            client["isLocal"] = client["address"] in ("127.0.0.1", "::1")
+            client["secondsAgo"] = round(max(0.0, now - client["lastSeen"]), 1)
+            client["online"] = client["key"] in live
+        found.sort(key=lambda c: c["lastSeen"], reverse=True)
+        return found
+
+    def forget_client(self, address: str, agent: str = "") -> bool:
+        """Forget one browser entirely — the phone's 「断开连接」 button.
+
+        Both the live list and the remembered one: the user asked to be
+        disconnected, so the desktop must stop listing it as its phone.
+        """
+        key = self.client_key(address, agent)
+        with self._state_lock:
+            gone = self._clients.pop(key, None) is not None
+            gone = self._known.pop(key, None) is not None or gone
+        if gone:
+            self._save_known()
+        return gone
+
+    def remove_client(self, key: str) -> bool:
+        """Forget a remembered browser by key (the desktop's 移除 action)."""
+        with self._state_lock:
+            self._clients.pop(key, None)
+            gone = self._known.pop(key, None) is not None
+        if gone:
+            self._save_known()
+        return gone
+
+    def _load_known(self) -> None:
+        try:
+            with open(self._known_path, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return
+        for entry in data.get("clients", []):
+            if isinstance(entry, dict) and entry.get("key"):
+                self._known[str(entry["key"])] = entry
+
+    def _save_known(self) -> None:
+        import json as _json
+
+        try:
+            payload = {"clients": list(self._known.values())}
+            tmp = self._known_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                _json.dump(payload, handle, ensure_ascii=False, indent=2)
+            os.replace(tmp, self._known_path)
+        except OSError:
+            pass  # a read-only medium must not break the UI
 
     def clients(self, ttl: float = CLIENT_TTL) -> list[dict[str, Any]]:
         """Browsers with the page open right now, newest activity first."""
@@ -863,6 +946,10 @@ class WebUI:
             # Who has this page open.  The phone sees itself here, and the
             # desktop reads the same list to show "手机已连接".
             "webClients": self.clients(),
+            # The remembered ones too: the phone stays in the list while its
+            # screen is off, so the desktop never has to be told "keep the
+            # browser open" to stay paired.
+            "knownClients": self.known_clients(),
             "shares": self.shares(),
             "serverTime": time.time(),
         }

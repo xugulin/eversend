@@ -10,12 +10,15 @@ from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QMenu,
     QCheckBox,
     QDialog,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QProgressBar,
     QPushButton,
     QSizePolicy,
@@ -97,25 +100,176 @@ class DropZone(QFrame):
             event.acceptProposedAction()
 
 
-class DeviceTable(QTableWidget):
-    """The list of discovered peers."""
+class DeviceCard(QFrame):
+    """One device, drawn large enough to tell apart at a glance.
 
-    COLUMNS = ("设备", "类型", "地址", "状态")
+    The old table gave every device a single line of small text, so two phones
+    with similar names -- or the same laptop seen twice -- looked identical.
+    Choosing the wrong one sends a file to the wrong person, so the card spends
+    the space: a big platform glyph, the name, two lines of detail (kind,
+    platform, version, address, how it was found, how long ago it was seen,
+    short device id) and a status chip.
+    """
+
+    def __init__(self, peer: Peer, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.peer = peer
+        self.setObjectName("DeviceCard")
+        info = peer.info
+        online = info.capabilities.get("online", True)
+        is_web = bool(info.capabilities.get("web"))
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 10, 12, 10)
+        row.setSpacing(12)
+
+        glyph = QLabel(theme.platform_glyph(info.platform))
+        glyph.setObjectName("DeviceGlyph")
+        glyph.setFixedWidth(52)
+        glyph.setAlignment(Qt.AlignCenter)
+        row.addWidget(glyph)
+
+        text = QVBoxLayout()
+        text.setSpacing(2)
+
+        title = QLabel(info.name or "（没有名字的设备）")
+        title.setObjectName("DeviceName")
+        title.setWordWrap(True)
+        text.addWidget(title)
+
+        detail1 = QLabel(_device_detail_line(info))
+        detail1.setObjectName("DeviceDetail")
+        detail1.setWordWrap(True)
+        text.addWidget(detail1)
+
+        detail2 = QLabel(_device_where_line(peer, is_web, online))
+        detail2.setObjectName("DeviceDetail")
+        detail2.setWordWrap(True)
+        text.addWidget(detail2)
+        row.addLayout(text, 1)
+
+        chip = QLabel(_device_status_text(peer, is_web, online))
+        chip.setObjectName("DeviceStatus")
+        chip.setProperty("state", "online" if online else "offline")
+        chip.setAlignment(Qt.AlignCenter)
+        row.addWidget(chip, 0, Qt.AlignTop)
+
+        self.setToolTip(_device_tooltip(peer, is_web, online))
+
+
+def _device_detail_line(info: DeviceInfo) -> str:
+    """What the device *is*: kind, platform, version, and its short id."""
+    kind = {"desktop": "电脑", "mobile": "手机", "server": "服务器"}.get(info.kind, info.kind or "设备")
+    parts = [kind]
+    if info.platform and info.platform != "browser":
+        parts.append(info.platform)
+    if info.version and info.version != "web":
+        parts.append("v" + info.version)
+    if info.device_id and not info.device_id.startswith("web:"):
+        # Two devices can share a name; the id is what actually differs.  A
+        # browser client has no such id (it is synthesised from address + UA),
+        # so printing its first eight characters would be pure noise.
+        parts.append("ID " + info.device_id[:8])
+    return " · ".join(parts)
+
+
+def _device_where_line(peer: Peer, is_web: bool, online: bool) -> str:
+    """Where it is and how we know about it."""
+    parts = [f"{peer.address}:{peer.port}" if peer.address else "地址未知"]
+    if is_web:
+        parts.append("网页客户端（手机浏览器）")
+    else:
+        parts.append(_source_label(peer.source))
+    if peer.same_host:
+        parts.append("就在本机")
+    if not online:
+        ago = float(peer.info.capabilities.get("secondsAgo") or 0)
+        parts.append("最后在线 " + _ago_label(ago))
+    elif peer.rtt_ms and not is_web:
+        parts.append(f"{peer.rtt_ms:.0f} ms")
+    if is_web:
+        parts.append("网页版")
+    return " · ".join(parts)
+
+
+def _source_label(source: str) -> str:
+    return {
+        "multicast": "组播发现",
+        "broadcast": "广播发现",
+        "mdns": "mDNS 发现",
+        "scan": "扫描发现",
+        "manual": "手动添加",
+        "incoming": "它连过来的",
+        "local": "本机",
+        "web": "网页客户端",
+    }.get(source or "", source or "未知来源")
+
+
+def _device_status_text(peer: Peer, is_web: bool, online: bool) -> str:
+    if is_web:
+        return "在线" if online else "未连接"
+    if peer.same_host:
+        return "本机实例"
+    if peer.trusted:
+        return "已信任"
+    return "在线"
+
+
+def _ago_label(seconds: float) -> str:
+    seconds = max(0.0, float(seconds))
+    if seconds < 60:
+        return "刚刚"
+    if seconds < 3600:
+        return f"{int(seconds // 60)} 分钟前"
+    return f"{int(seconds // 3600)} 小时前"
+
+
+def _device_tooltip(peer: Peer, is_web: bool, online: bool) -> str:
+    info = peer.info
+    lines = [info.name or "（没有名字的设备）", _device_detail_line(info), _device_where_line(peer, is_web, online)]
+    if is_web:
+        lines.append(
+            "手机是通过浏览器连接的，所以它不在对端列表里。\n"
+            + ("现在页面开着，可以直接发送。" if online else "现在不在线（熄屏或离开页面）——文件会留着等它回来。")
+        )
+    if peer.same_host:
+        lines.append("这台设备就在本机上——通常是又开了一个韧传实例。")
+    if peer.addresses:
+        lines.append("它自报的地址：" + "、".join(peer.addresses[:4]))
+    return "\n".join(lines)
+
+
+class DeviceTable(QListWidget):
+    """The list of known devices: one big card each.
+
+    Keeps the old API (``set_peers`` / ``peers`` / ``selected_peer``) so the
+    window does not care how the list is drawn.
+    """
+
+    #: Right-click a phone → 移除（它下次打开页面还会重新出现，只是不再记着）
+    remove_requested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(0, len(self.COLUMNS), parent)
-        self.setHorizontalHeaderLabels(self.COLUMNS)
-        self.verticalHeader().setVisible(False)
-        self.setSelectionBehavior(QAbstractItemView.SelectRows)
+        super().__init__(parent)
+        self.setObjectName("DeviceTable")
         self.setSelectionMode(QAbstractItemView.SingleSelection)
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.setShowGrid(False)
-        self.setAlternatingRowColors(False)
-        header = self.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        for column in range(1, len(self.COLUMNS)):
-            header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        self.setUniformItemSizes(False)
+        self.setWordWrap(True)
+        self.setSpacing(4)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._peers: list[Peer] = []
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._on_context_menu)
+
+    def _on_context_menu(self, position) -> None:
+        peer = self.selected_peer()
+        if peer is None or not peer.info.capabilities.get("web"):
+            return
+        menu = QMenu(self)
+        action = menu.addAction(f"移除「{peer.info.name}」")
+        action.triggered.connect(lambda: self.remove_requested.emit(peer))
+        menu.exec(self.mapToGlobal(position))
 
     @property
     def peers(self) -> list[Peer]:
@@ -129,59 +283,70 @@ class DeviceTable(QTableWidget):
 
     def select_first(self) -> None:
         if self._peers and self.currentRow() < 0:
-            self.selectRow(0)
+            self.setCurrentRow(0)
+
+    def select_row(self, row: int) -> None:
+        if 0 <= row < len(self._peers):
+            self.setCurrentRow(row)
 
     def set_peers(self, peers: list[Peer]) -> None:
-        selected_key = None
         current = self.selected_peer()
-        if current is not None:
-            selected_key = current.key
+        selected_key = current.key if current is not None else None
 
+        self.clear()
         self._peers = list(peers)
-        self.setRowCount(len(self._peers))
-        for row, peer in enumerate(self._peers):
-            info: DeviceInfo = peer.info
-            name = QTableWidgetItem(f"{theme.platform_glyph(info.platform)}  {info.name}")
-            if peer.trusted:
-                name.setToolTip("已信任的设备")
-            elif peer.same_host:
-                name.setToolTip(
-                    "这台设备就在本机上——通常是又开了一个 EverSend 实例。\n"
-                    "如果不是你有意开的，可以把那个多余的窗口关掉。"
-                )
-            kind = QTableWidgetItem(_kind_label(info))
-            address = QTableWidgetItem(f"{peer.address}:{peer.port}")
-            if info.capabilities.get("web"):
-                # A phone is a browser: it is online when its page is talking to
-                # us, and "asleep" (not gone) when the screen went off.
-                if info.capabilities.get("online"):
-                    status = QTableWidgetItem("在线")
-                    status.setForeground(QColor(theme.SUCCESS))
-                    name.setToolTip(
-                        "这台手机正开着韧传网页版。\n"
-                        "往它发送 = 把文件交给它的页面，在手机上点「下载」取走。"
-                    )
-                else:
-                    status = QTableWidgetItem("已离线")
-                    status.setForeground(QColor(theme.WARNING))
-                    name.setToolTip(
-                        "手机不响应了：多半是熄屏或被系统挂起。\n"
-                        "交给它的文件会留着，等它回来再点下载即可。"
-                    )
-            else:
-                status = QTableWidgetItem("已信任" if peer.trusted else "在线")
-                if peer.trusted:
-                    status.setForeground(QColor(theme.SUCCESS))
-            for column, item in enumerate((name, kind, address, status)):
-                self.setItem(row, column, item)
+        for peer in self._peers:
+            card = DeviceCard(peer)
+            item = QListWidgetItem()
+            # The card is decoration: clicks must reach the list item, or
+            # selection and double-click stop working.
+            card.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            item.setData(Qt.UserRole, peer.key)
+            self.addItem(item)
+            self.setItemWidget(item, card)
+
+        if not self._peers:
+            empty = QListWidgetItem("还没有发现设备。点下面的「扫描局域网」，或让对方发一次。")
+            empty.setFlags(Qt.NoItemFlags)
+            self.addItem(empty)
+
+        self._fit_cards()
 
         if selected_key is not None:
             for row, peer in enumerate(self._peers):
                 if peer.key == selected_key:
-                    self.selectRow(row)
-                    break
-        else:
-            self.select_first()
+                    self.setCurrentRow(row)
+                    return
+        self.select_first()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        super().resizeEvent(event)
+        self._fit_cards()
+
+    def _fit_cards(self) -> None:
+        """Give every card the viewport's width so its text wraps.
+
+        Without this a card keeps the width its (long) text asks for: the row
+        then scrolls sideways and the status chip disappears off the right
+        edge -- which is exactly how the first version of this list looked.
+        """
+        width = max(240, self.viewport().width() - 6)
+        for row in range(self.count()):
+            item = self.item(row)
+            if item is None:
+                continue
+            card = self.itemWidget(item)
+            if card is None:
+                continue
+            card.setMinimumWidth(0)
+            layout = card.layout()
+            height = -1
+            if layout is not None:
+                layout.activate()
+                height = layout.heightForWidth(width)
+            if height <= 0:
+                height = card.sizeHint().height()
+            item.setSizeHint(QSize(width, max(height, 60) + 6))
 
 
 def _kind_label(info: DeviceInfo) -> str:

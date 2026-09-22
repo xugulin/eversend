@@ -198,6 +198,7 @@ class MainWindow(QMainWindow):
 
         self.device_table = DeviceTable()
         self.device_table.doubleClicked.connect(lambda _index: self._pick_files())
+        self.device_table.remove_requested.connect(self._remove_device)
         left.addWidget(self.device_table, 1)
 
         device_buttons = QHBoxLayout()
@@ -588,6 +589,18 @@ class MainWindow(QMainWindow):
         self.web_url_label.setText(url or "（未找到可用的局域网地址）")
         self.receive_dir_label.setText(self.engine.config.receive_dir)
 
+    def _remove_device(self, peer: Peer) -> None:
+        """Forget a phone (it comes back the next time its page opens)."""
+        key = str(peer.info.capabilities.get("clientKey") or "")
+        ui = getattr(self, "_web_ui", None)
+        if ui is None or not key:
+            return
+        if ui.remove_client(key):
+            self._refresh_devices()
+            self.status_left.setText(
+                f"已移除「{peer.info.name}」——它下次打开页面会重新出现在这里。"
+            )
+
     def _phone_peers(self) -> list[Peer]:
         """Connected phones, as rows the device list can show.
 
@@ -602,13 +615,12 @@ class MainWindow(QMainWindow):
         try:
             from ..web.server import is_mobile_client
 
-            # Keep a phone listed for a few minutes after it stops answering:
-            # its screen went off, or the page was backgrounded.  Dropping the
-            # row instantly made the list flicker and hid the fact that a
-            # hand-off is still waiting for it.
-            clients = [
-                c for c in ui.clients(ttl=PHONE_OFFLINE_GRACE) if is_mobile_client(c)
-            ]
+            # Remembered, not "currently online": a phone's page is frozen the
+            # moment its screen goes off or the user switches apps, and the
+            # user should not have to keep the phone awake (and in the browser)
+            # to stay paired.  It stays in the list until it says 断开连接 or
+            # the user removes it here.
+            clients = [c for c in ui.known_clients() if is_mobile_client(c)]
         except Exception:
             return []
         peers: list[Peer] = []
@@ -627,8 +639,11 @@ class MainWindow(QMainWindow):
                         capabilities={
                             "web": True,
                             "handoff": True,
-                            # The device table reads this to say 在线 / 已离线.
-                            "online": float(client.get("secondsAgo") or 0) <= ONLINE_WINDOW,
+                            # The device card reads these to say 在线 / 未连接
+                            # and "最后在线 x 分钟前".
+                            "online": bool(client.get("online")),
+                            "secondsAgo": float(client.get("secondsAgo") or 0),
+                            "clientKey": str(client.get("key") or ""),
                         },
                     ),
                     address=address,

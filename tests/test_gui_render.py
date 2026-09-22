@@ -85,13 +85,20 @@ def main() -> int:
         "address": "192.168.1.23",
         "label": "Android 上的 Chrome",
         "isLocal": False,
+        "online": True,
+        "secondsAgo": 1.0,
     }
 
     class _DemoWebUI:
-        """Just enough of WebUI for the two questions the window asks."""
+        """Just enough of WebUI for the questions the window asks."""
 
         def clients(self):
             return [demo_phone]
+
+        def known_clients(self):
+            # The window lists *remembered* phones, not just the ones talking
+            # right now: a phone stays paired while its screen is off.
+            return [dict(demo_phone, key="192.168.1.23|abc12345", online=True, secondsAgo=1.0)]
 
         def urls(self):
             return [self.url]

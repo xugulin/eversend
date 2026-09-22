@@ -120,6 +120,43 @@ def stylesheet(dark: bool) -> str:
     QTabBar::tab:selected {{ background: {surface}; border-color: {border}; border-bottom-color: {surface}; color: {text}; font-weight: 600; }}
     QTabBar::tab:hover:!selected {{ color: {text}; }}
 
+    /* One big card per device: a large glyph, a wrapping name, two detail
+       lines and a status chip.  Telling two devices apart has to be possible
+       at a glance -- picking the wrong one sends a file to the wrong person. */
+    QListWidget#DeviceTable {{
+        background: {surface};
+        border: 1px solid {border};
+        border-radius: 8px;
+        padding: 6px;
+        outline: none;
+    }}
+    QListWidget#DeviceTable::item {{
+        border: 1px solid transparent;
+        border-radius: 8px;
+        margin: 2px 0;
+    }}
+    QListWidget#DeviceTable::item:selected {{
+        background: {ACCENT};
+        border-color: {ACCENT};
+    }}
+    QFrame#DeviceCard {{
+        background: {surface_alt};
+        border: 1px solid {border};
+        border-radius: 8px;
+    }}
+    QLabel#DeviceGlyph {{ font-size: 34px; }}
+    QLabel#DeviceName {{ font-size: 15px; font-weight: 600; color: {text}; }}
+    QLabel#DeviceDetail {{ font-size: 12px; color: {text_dim}; }}
+    QLabel#DeviceStatus {{
+        font-size: 12px;
+        padding: 2px 8px;
+        border-radius: 9px;
+        border: 1px solid {border};
+        color: {text_dim};
+    }}
+    QLabel#DeviceStatus[state="online"] {{ color: {SUCCESS}; border-color: {SUCCESS}; }}
+    QLabel#DeviceStatus[state="offline"] {{ color: {WARNING}; border-color: {WARNING}; }}
+
     QTableWidget, QListWidget, QTreeWidget {{
         background: {surface};
         border: 1px solid {border};

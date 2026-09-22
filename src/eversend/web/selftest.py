@@ -567,6 +567,40 @@ def check_share_handoff(ui, base: str, root: Path) -> None:
     check("a missing file is not shared",
           ui.share_files([str(root / "nope.bin")]) == [])
 
+    # A phone is a *paired device*, not a session: its page freezes the moment
+    # the screen goes off, and the desktop must keep listing it.  Only an
+    # explicit goodbye removes it.
+    # 一台"手机"（用另一个地址 + 安卓 UA 模拟），这样不会干扰后面针对本机
+    # 客户端的检查。
+    phone_agent = (
+        "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/146.0.7680.178 Mobile Safari/537.36"
+    )
+    ui.touch_client("10.9.9.9", phone_agent)
+    check(
+        "a phone that is talking right now is online",
+        any(c.get("online") for c in ui.known_clients() if c["address"] == "10.9.9.9"),
+    )
+    # Now it "goes to sleep": the live record expires (the normal TTL rule), but
+    # the phone must still be remembered -- that is the whole point of pairing
+    # it instead of treating every page as a session.
+    with ui._state_lock:
+        ui._clients.pop(ui.client_key("10.9.9.9", phone_agent), None)
+    remembered = [c for c in ui.known_clients() if c["address"] == "10.9.9.9"]
+    check("a phone that went quiet is still remembered", bool(remembered), str(remembered)[:120])
+    if remembered:
+        entry = remembered[0]
+        check("but it is no longer marked online",
+              entry.get("online") is False, str(entry)[:100])
+        check("the remembered phone carries address, label and a key",
+              bool(entry.get("address")) and bool(entry.get("label")) and bool(entry.get("key")),
+              str(entry)[:120])
+        check("state publishes the remembered phones too",
+              bool(json.loads(http(base + "/api/state")[2].decode("utf-8")).get("knownClients")))
+        check("removing a remembered phone works", ui.remove_client(entry["key"]) is True)
+        check("and it is really gone", not any(
+            c.get("key") == entry["key"] for c in ui.known_clients()))
+
     # The phone's 「断开连接」 button: the desktop must stop showing it at once.
     # Only *this* client may disappear -- the raw-socket probes above have no
     # User-Agent and are therefore a different entry.

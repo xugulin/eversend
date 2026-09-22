@@ -806,7 +806,9 @@
     queue: [],
     active: null,
     loaded: 0,
-    done: []
+    done: [],
+    //: The file whose upload died mid-flight (usually a screen-off freeze).
+    interrupted: null
   };
 
   function enqueueFiles(fileList) {
@@ -864,8 +866,12 @@
       finishOne(ok);
     };
     request.onerror = function () {
-      uploader.done.push({ name: file.name, ok: false, error: '网络中断' });
-      toast('上传中断：' + file.name, 'error');
+      // Almost always the phone's screen went off and the system froze the
+      // page mid-upload.  Keep the file at the head of the queue so it resumes
+      // when the user comes back, instead of losing the upload silently.
+      uploader.interrupted = file;
+      uploader.done.push({ name: file.name, ok: false, error: '网络中断（熄屏？）' });
+      toast('上传中断：' + file.name + '——回到页面会自动重试', 'error');
       finishOne(false);
     };
     request.ontimeout = request.onerror;
@@ -883,6 +889,22 @@
     renderUpload();
     updateSendButton();
     if (ok) scheduleRefresh(300);
+    pump();
+  }
+
+  function retryInterrupted() {
+    // Called when the page comes back to the foreground (and when the network
+    // returns): an upload that died while the phone was asleep is put back in
+    // the queue.  The server resumes from the byte count it already has.
+    var file = uploader.interrupted;
+    if (!file) return;
+    uploader.interrupted = null;
+    uploader.queue.unshift(file);
+    renderUpload();
+    // A retry starts the upload over (the spool file is written fresh), so say
+    // 重试 rather than 继续 -- promising a resume we do not do would be worse
+    // than the extra wait.
+    toast('重试上传：' + file.name);
     pump();
   }
 
@@ -984,7 +1006,7 @@
     $('#pin').addEventListener('keydown', function (event) {
       if (event.key === 'Enter') pump();
     });
-    window.addEventListener('online', function () { scheduleRefresh(0); });
+    window.addEventListener('online', function () { scheduleRefresh(0); retryInterrupted(); });
     document.addEventListener('visibilitychange', function () {
       if (document.hidden || disconnected) return;
       // Back from a locked screen: reconnect *now* rather than waiting for the
@@ -992,6 +1014,7 @@
       scheduleRefresh(0);
       refreshFiles();
       if (!eventSource || eventSource.readyState === 2) connectEvents();
+      retryInterrupted();
     });
     var keepaliveBox = $('#keepalive');
     if (keepaliveBox) {
