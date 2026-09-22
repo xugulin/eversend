@@ -43,7 +43,8 @@
 |---|---|---|
 | **Linux** | ✅ 完整支持 | 作者实机 + GitHub Actions `ubuntu-latest` 原生 runner：33 项内核测试、17 项恶劣网络测试、7 项并发测试、143 项浏览器界面自检、真 Qt 离屏渲染 |
 | **Windows** | ✅ 完整支持 | GitHub Actions `windows-latest` 原生 runner 跑同一整套；另有 `interop.yml` 由 **Wine 承载真 Windows CPython + win_amd64 轮子**与 Linux 双向互传 24 MiB，逐字节比对；`ci.yml` 再把**绿色包解压到「我的 U 盘」这样的中文带空格路径**，用包里自带的解释器跑传输与界面 |
-| **安卓** | ✅ 浏览器界面（零安装） | GitHub Actions 真机模拟器（API 34）+ 真 Chrome：CDP 把文件塞进页面的文件选择框再点发送，上传下载都逐字节比对 |
+| **安卓 App** | ✅ 原生 App（推荐） | GitHub Actions 真机模拟器（API 34）**装真 APK 跑真机测试**：instrumentation 在设备上真的连电脑、真的发带 emoji 的中文并回查电脑端收到（且方向标为"收到"）、真的上传图片再按消息 id 取回逐字节比对，还有一条界面级测试断言会话页渲染出来 |
+| **安卓（网页版）** | ✅ 浏览器界面（零安装，保留） | 同一个模拟器 + 真 Chrome：CDP 把文件塞进页面的文件选择框再点发送，上传下载都逐字节比对 |
 | **macOS** | ⚠️ 内核已验证，**界面未验证** | GitHub Actions `macos-latest` 跑完整内核测试（含 512 MiB 传输与内存上界），但作者没有 Mac，桌面窗口从未在真机上看过 |
 
 > **这些不是"应该能跑"，是 CI 上真跑过。** 跨系统的测试至今抓到 4 个只在某个平台上
@@ -153,8 +154,28 @@ python -m eversend --cli selftest              # 自检
 
 ### 手机怎么用
 
-PySide6 官方不支持 Android，所以手机端走浏览器：电脑上点「📱 手机连接」，用相机扫码，
-手机浏览器里就是完整界面。手机和电脑在同一个 Wi-Fi 下即可，**手机上不需要安装任何东西**。
+手机有两个入口，都保留：**安卓 App**（推荐）和**网页版**（零安装）。
+
+|  | 安卓 App | 网页版 |
+|---|---|---|
+| 熄屏 / 锁屏 / 切后台 | ✅ 前台服务常驻连接，照常收消息 | ❌ 页面被系统冻结，连接会断 |
+| 语音消息 | ✅ 直接录（权限在 App 手里） | ⚠️ 需要 HTTPS 地址（浏览器只在安全上下文给麦克风） |
+| 系统通知（锁屏可见） | ✅ | ❌ |
+| Emoji | ✅ 系统彩色 emoji | ✅ 系统彩色 emoji |
+| 安装 | 装一个 APK | 什么都不用装，扫码即用 |
+
+**网页版吃亏在浏览器的硬限制**：熄屏、后台挂起、麦克风要 HTTPS——这些改不了，所以才
+做了原生 App。两个入口各有用途：临时给别人的手机传个文件，扫码最快；自己的手机日常用，
+装 App。
+
+App 真机截图（Emoji 由系统字体渲染，和微信、相册一个水平）：
+
+| 会话列表 | 聊天 |
+|---|---|
+| ![安卓 App 会话](docs/screenshots/android-app-chat.png) | ![安卓 App 聊天](docs/screenshots/android-app-conversation.png) |
+
+装法：下载 `EverSend-1.0.0-android.apk` 安装即可（**debug 签名**，自用/测试没问题；
+正式分发请用自己的密钥重新签名）。打开后填电脑地址，或点「搜索电脑」自动发现。
 
 手机**只要连过一次就会被记住**（写进 `data_dir/web_clients.json`）：熄屏、切到别的
 App、甚至把浏览器整个关掉，它都留在设备列表里，状态只是从「在线」变成
@@ -207,6 +228,7 @@ curl -X POST -H "X-EverSend-Token: $TOKEN" -H 'Content-Type: application/json' \
 ```bash
 python tests/test_loopback.py            # 33 项：基本传输/目录/续传/坏块修复/取消/吞吐/手动接受
 python tests/test_resilience.py          # 17 项：RST 杀连接/限速/512MiB/内存上界/对端不回话就挂断
+cd android && gradle assembleDebug       # 安卓 App（Kotlin + Compose，无第三方依赖）
 python tests/test_chat.py                # 33 项：会话存储/一对一/群聊扇出/附件落位
 python src/eversend/web/selftest.py      # 143 项：QR/CSRF/路径穿越/Range/完整收发链路/交给手机
 python tests/test_interop_wine.py --stage tools/.cache/stage-windows   # Linux ↔ Windows 双向
@@ -226,6 +248,7 @@ python tools/ci_android_http.py          # 手机页面的 HTTP 表面（上传/
 | [`docs/REMOTE_DESIGN.md`](docs/REMOTE_DESIGN.md) | 远程（互联网）传输设计：会合 + TCP 打洞 + 中继 |
 | [`docs/PACKAGING.md`](docs/PACKAGING.md) | 绿色包打包说明 |
 | [`docs/CALLS_DESIGN.md`](docs/CALLS_DESIGN.md) | 音视频通话方案（WebRTC + 自建信令），暂未实现 |
+| [`android/`](android/) | 安卓原生 App（Kotlin + Jetpack Compose）：聊天、附件、语音、前台服务 |
 
 ### 已知限制
 
