@@ -442,6 +442,35 @@ def main() -> int:
         print(f"      UA: {str(ua)[:100]}")
         devtools.call("Page.enable")
 
+        # The two controls the phone needs: a way to keep the link alive with
+        # the screen off, and a way to hang up on purpose.
+        devtools.evaluate(
+            "(function(){var t=[...document.querySelectorAll('.tab')]"
+            ".find(x=>/设置/.test(x.textContent));if(t)t.click();return !!t;})()"
+        )
+        time.sleep(1)
+        keep = devtools.evaluate(
+            "(function(){var c=document.querySelector('#keepalive');if(!c)return null;"
+            "c.click();return {checked:c.checked,"
+            "text:(document.querySelector('#keepalive-state')||{}).textContent||''};})()"
+        )
+        check("手机上能打开「熄屏保持连接」", bool(keep) and keep.get("checked") is True, str(keep)[:90])
+        check("页面说明了保持连接的手段与代价",
+              bool(keep) and ("无声" in str(keep.get("text")) or "后台" in str(keep.get("text"))),
+              str(keep)[:90] if keep else "")
+        check(
+            "手机上有断开按钮",
+            devtools.evaluate("!!document.querySelector('#btn-disconnect')") is True,
+        )
+        shot_settings = adb("exec-out", "screencap", "-p", binary=True, timeout=120)
+        (shots / "01b-android-settings.png").write_bytes(shot_settings)
+        # Back to the send view for the steps below.
+        devtools.evaluate(
+            "(function(){var t=[...document.querySelectorAll('.tab')]"
+            ".find(x=>/发送/.test(x.textContent));if(t)t.click();return !!t;})()"
+        )
+        time.sleep(1)
+
         # And the *desktop* has to be able to see that the phone is there.
         # That is the whole point of 「手机连接」: the phone is a browser client,
         # so it never appears in the peer list, and /api/state is the only place
