@@ -41,7 +41,7 @@
 
 | 平台 | 状态 | 怎么验证的 |
 |---|---|---|
-| **Linux** | ✅ 完整支持 | 作者实机 + GitHub Actions `ubuntu-latest` 原生 runner：33 项内核测试、17 项恶劣网络测试、7 项并发测试、99 项浏览器界面自检、真 Qt 离屏渲染 |
+| **Linux** | ✅ 完整支持 | 作者实机 + GitHub Actions `ubuntu-latest` 原生 runner：33 项内核测试、17 项恶劣网络测试、7 项并发测试、115 项浏览器界面自检、真 Qt 离屏渲染 |
 | **Windows** | ✅ 完整支持 | GitHub Actions `windows-latest` 原生 runner 跑同一整套；另有 `interop.yml` 由 **Wine 承载真 Windows CPython + win_amd64 轮子**与 Linux 双向互传 24 MiB，逐字节比对；`ci.yml` 再把**绿色包解压到「我的 U 盘」这样的中文带空格路径**，用包里自带的解释器跑传输与界面 |
 | **安卓** | ✅ 浏览器界面（零安装） | GitHub Actions 真机模拟器（API 34）+ 真 Chrome：CDP 把文件塞进页面的文件选择框再点发送，上传下载都逐字节比对 |
 | **macOS** | ⚠️ 内核已验证，**界面未验证** | GitHub Actions `macos-latest` 跑完整内核测试（含 512 MiB 传输与内存上界），但作者没有 Mac，桌面窗口从未在真机上看过 |
@@ -131,14 +131,27 @@ python -m eversend --cli selftest              # 自检
 PySide6 官方不支持 Android，所以手机端走浏览器：电脑上点「📱 手机连接」，用相机扫码，
 手机浏览器里就是完整界面。手机和电脑在同一个 Wi-Fi 下即可，**手机上不需要安装任何东西**。
 
-> **手机不会出现在左侧的设备列表里——它不是一个"设备"，而是一个浏览器客户端。**
-> 想知道手机到底连上没有，看两处：扫码弹窗里那行状态（手机一打开页面就变成
-> 「✅ 已连上：192.168.1.23（Android 上的 Chrome）」），以及「设置 → 已连接的手机」。
-> 这两处显示的客户端信息也来自接口的 `webClients` 字段，所以脚本同样能查。
+手机一打开页面，就会出现三个地方：**左侧设备列表里多一行**
+「📱 Android 上的 Chrome（浏览器）｜手机 · browser｜192.168.1.23:52119」、
+扫码弹窗里那行状态变成「✅ 已连上：…」、「设置 → 已连接的手机」也列出来。
+（这些信息同时是接口 `/api/state` 的 `webClients` 字段，脚本一样能查。）
 
-连上之后两个方向都能用：手机上选文件发给电脑（网页直传，支持 32 GB 以内的单个文件），
-或者从电脑的接收目录里下载文件（支持断点续传的 HTTP Range）。反过来，电脑端往手机推
-是不行的——浏览器没有常驻的传输服务，这是"手机零安装"的代价。
+**两个方向都能用，但机制不同，界面上也如实写明：**
+
+- **手机 → 电脑**：手机上选文件，页面直接传过来（单个文件上限 32 GB）。
+- **电脑 → 手机**：选中设备列表里那台手机，点「发送」——文件会被**交给手机页面**，
+  手机「接收」页出现「电脑发来的文件」，点一下「下载」就取走（HTTP Range 断点续传）。
+  浏览器里没有常驻的接收服务，所以这不是推送，而是一次交接；传输行会显示
+  「已放到手机页面，等它在手机上点下载」，手机取走后变成「手机已取走」。
+  把这件事说清楚，比给一个永远不会到达的「已发送」要好。
+
+脚本也能做同样的事（仅本机可调）：
+
+```bash
+TOKEN=$(curl -s http://127.0.0.1:52119/ | grep -o 'name="eversend-token" content="[^"]*"' | cut -d'"' -f4)
+curl -X POST -H "X-EverSend-Token: $TOKEN" -H 'Content-Type: application/json' \
+     -d '{"paths":["/home/me/报告.pdf"]}' http://127.0.0.1:52119/api/share
+```
 
 这个界面是纯本地页面：没有 CDN、没有外部字体、没有构建步骤，**手机没外网也能用**。
 
@@ -152,13 +165,14 @@ PySide6 官方不支持 Android，所以手机端走浏览器：电脑上点「�
 | 512 MiB 传输峰值内存 | 234 MiB，不随文件大小增长 |
 | Linux → Windows（Wine 承载） | 24 MiB，双向逐字节一致 |
 | Windows 绿色包（包里自带的解释器） | 24 MiB 真传 + 内置 Qt 建窗口 + `run.bat --selftest`，CI 在真 Windows runner 上跑 |
+| 电脑 → 手机（真浏览器） | CI 里把文件交给手机页面，真 Chrome 点「下载」取走，逐字节一致，桌面端确认已被取走 |
 
 ### 测试
 
 ```bash
 python tests/test_loopback.py            # 33 项：基本传输/目录/续传/坏块修复/取消/吞吐/手动接受
 python tests/test_resilience.py          # 17 项：RST 杀连接/限速/512MiB/内存上界/对端不回话就挂断
-python src/eversend/web/selftest.py      # 99 项：QR/CSRF/路径穿越/Range/完整收发链路
+python src/eversend/web/selftest.py      # 115 项：QR/CSRF/路径穿越/Range/完整收发链路/交给手机
 python tests/test_interop_wine.py --stage tools/.cache/stage-windows   # Linux ↔ Windows 双向
 python tools/ci_android_http.py          # 手机页面的 HTTP 表面（上传/Range/SSE/安全边界）
 ```
