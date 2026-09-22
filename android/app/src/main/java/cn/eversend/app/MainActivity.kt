@@ -275,7 +275,7 @@ fun SettingsScreen(store: AppState) {
                             return@launch
                         }
                         discovered = withContext(Dispatchers.IO) {
-                            ApiClient.discover(context = context)
+                            ApiClient.discover(context = context, hint = remembered)
                         }
                         scanning = false
                         if (discovered.isEmpty()) {
@@ -451,6 +451,11 @@ fun ChatScreen(store: AppState) {
     var open by remember { mutableStateOf<Conversation?>(null) }
     var messages by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }
     var error by remember { mutableStateOf("") }
+    // 群聊：先选成员（电脑 + 已配对的手机），再建一个 g: 会话。
+    var pickingGroup by remember { mutableStateOf(false) }
+    var members by remember { mutableStateOf<List<DeviceRow>>(emptyList()) }
+    var chosen by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var groupTitle by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
     fun reload(active: ApiClient) {
@@ -470,6 +475,8 @@ fun ChatScreen(store: AppState) {
                         messages = (0 until (array?.length() ?: 0)).mapNotNull { index ->
                             array?.optJSONObject(index)?.toMessage()
                         }
+                        // 副标题要写清成员规格，所以顺带把设备列表读回来。
+                        members = loadMembers(active, store)
                     }
                 } catch (problem: Exception) {
                     error = "读取失败：${problem.message}"
@@ -517,7 +524,87 @@ fun ChatScreen(store: AppState) {
             Text(error, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
         }
         val current = open
-        if (current == null) {
+        if (pickingGroup) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { pickingGroup = false }) { Icon(Icons.Filled.ArrowBack, "返回") }
+                Text("新建群聊", fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
+            }
+            OutlinedTextField(
+                value = groupTitle,
+                onValueChange = { groupTitle = it },
+                singleLine = true,
+                placeholder = { Text("群名称（可留空）") },
+                modifier = Modifier.fillMaxWidth().testTag("group-title"),
+            )
+            Text("选成员（可以多选）", fontSize = 13.sp, color = Color(0xFF5B6470))
+            LazyColumn(Modifier.weight(1f)) {
+                items(members) { member ->
+                    val picked = chosen.contains(member.id)
+                    Card(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .clickable {
+                                chosen = if (picked) chosen - member.id else chosen + member.id
+                            }
+                            .testTag("member-${member.name}"),
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text(
+                                (if (picked) "☑ " else "☐ ") + member.name,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text("${member.kind} · ${statusText(member)}", fontSize = 12.sp)
+                            if (member.facts.isNotBlank()) {
+                                Text(member.facts, fontSize = 11.sp, color = Color(0xFF8B949E))
+                            }
+                        }
+                    }
+                }
+            }
+            Button(
+                enabled = chosen.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth().testTag("btn-create-group"),
+                onClick = {
+                    val active = client ?: return@Button
+                    val picked = members.filter { chosen.contains(it.id) }
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            try {
+                                // 群 id 用 g: 开头，和电脑端、网页版一致；成员是
+                                // 各自在电脑端登记的身份（电脑是设备号，手机是 web:<key>）。
+                                val payload = JSONObject()
+                                    .put("conv", "g:" + java.util.UUID.randomUUID().toString().replace("-", "").take(16))
+                                    .put("title", groupTitle.ifBlank { "群聊" })
+                                    .put(
+                                        "members",
+                                        org.json.JSONArray().apply { picked.forEach { put(it.id) } },
+                                    )
+                                    .put("kind", "text")
+                                    .put("text", "群聊建好了 👋")
+                                val response = active.postJson("/api/chat/send", payload)
+                                val created = response.optString("conversationId")
+                                    .ifBlank { payload.optString("conv") }
+                                withContext(Dispatchers.Main) {
+                                    pickingGroup = false
+                                    chosen = emptySet()
+                                    groupTitle = ""
+                                    val list = active.getJson("/api/state")
+                                        .optJSONObject("chat")?.optJSONArray("conversations")
+                                    conversations = (0 until (list?.length() ?: 0)).mapNotNull { index ->
+                                        list?.optJSONObject(index)?.toConversation()
+                                    }
+                                    open = conversations.firstOrNull { it.id == created }
+                                    if (open != null) reload(active)
+                                }
+                            } catch (problem: Exception) {
+                                error = "建群失败：${problem.message ?: problem.javaClass.simpleName}"
+                            }
+                        }
+                    }
+                },
+            ) { Text("创建群聊（已选 ${chosen.size}）") }
+        } else if (current == null) {
             Text("会话", fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
             if (conversations.isEmpty()) {
                 Text(
@@ -539,7 +626,8 @@ fun ChatScreen(store: AppState) {
                     ) {
                         Column(Modifier.padding(12.dp)) {
                             Text(
-                                conversation.title.ifBlank { conversation.id.take(12) },
+                                (if (conversation.id.startsWith("g:")) "👥 " else "")
+                                    + conversation.title.ifBlank { conversation.id.take(12) },
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(conversation.lastText, fontSize = 12.sp)
@@ -547,29 +635,58 @@ fun ChatScreen(store: AppState) {
                     }
                 }
             }
-            Button(
-                onClick = {
-                    scope.launch {
-                        val active = client ?: withContext(Dispatchers.IO) { connect() }
-                        if (active != null) {
-                            withContext(Dispatchers.IO) {
-                                try {
-                                    active.postJson("/api/chat/send", JSONObject().put("text", "你好 👋"))
-                                } catch (problem: Exception) {
-                                    error = "发送失败：" +
-                                        (problem.message ?: problem.javaClass.simpleName)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        scope.launch {
+                            val active = client ?: withContext(Dispatchers.IO) { connect() }
+                            if (active != null) {
+                                withContext(Dispatchers.IO) {
+                                    try {
+                                        active.postJson("/api/chat/send", JSONObject().put("text", "你好 👋"))
+                                    } catch (problem: Exception) {
+                                        error = "发送失败：" +
+                                            (problem.message ?: problem.javaClass.simpleName)
+                                    }
                                 }
+                                reload(active)
                             }
-                            reload(active)
                         }
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().testTag("btn-new-chat"),
-            ) { Text("和电脑开始聊天") }
+                    },
+                    modifier = Modifier.weight(1f).testTag("btn-new-chat"),
+                ) { Text("和电脑聊天") }
+
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            val active = client ?: withContext(Dispatchers.IO) { connect() }
+                            if (active != null) {
+                                members = withContext(Dispatchers.IO) { loadMembers(active, store) }
+                                pickingGroup = true
+                            }
+                        }
+                    },
+                    modifier = Modifier.weight(1f).testTag("btn-new-group"),
+                ) { Text("建群聊") }
+            }
         } else {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { open = null }) { Icon(Icons.Filled.ArrowBack, "返回") }
-                Text(current.title.ifBlank { "会话" }, fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
+                Column {
+                    Text(
+                        (if (current.id.startsWith("g:")) "👥 " else "")
+                            + current.title.ifBlank { "会话" },
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 18.sp,
+                    )
+                    // 规范显示名称：谁在群里、各自是什么系统、什么版本、什么 IP。
+                    Text(
+                        chatMembersLabel(members, current, store),
+                        fontSize = 11.sp,
+                        color = Color(0xFF8B949E),
+                        modifier = Modifier.testTag("chat-members"),
+                    )
+                }
             }
             LazyColumn(Modifier.weight(1f), state = listState) {
                 items(messages) { message ->
@@ -619,6 +736,9 @@ fun Composer(
     var draft by remember { mutableStateOf("") }
     var showEmoji by remember { mutableStateOf(false) }
     var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
+    var voiceFile by remember { mutableStateOf<File?>(null) }
+    var recording by remember { mutableStateOf(false) }
+    var voiceStatus by remember { mutableStateOf("") }
     var startedAt by remember { mutableStateOf(0L) }
     val scope = rememberCoroutineScope()
 
@@ -630,7 +750,13 @@ fun Composer(
     }
 
     if (showEmoji) {
-        EmojiPad(onPick = { draft += it })
+        EmojiPad(client = client, onPick = { draft += it })
+    }
+    // 录音提示单独一行，状态清楚：录音中 → 发送中 → 清空。
+    // 以前"正在录音…"是借 onError 显示的，而且录完就不再更新，于是用户看到的
+    // 永远是"正在录音"（语音其实发了，界面却像卡住了）。
+    if (voiceStatus.isNotBlank()) {
+        Text(voiceStatus, fontSize = 12.sp, color = Color(0xFF5B6470), modifier = Modifier.testTag("voice-status"))
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = { showEmoji = !showEmoji }, modifier = Modifier.testTag("btn-emoji")) {
@@ -639,51 +765,76 @@ fun Composer(
         IconButton(
             onClick = {
                 val active = client ?: return@IconButton
-                val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-                    PackageManager.PERMISSION_GRANTED
-                if (!granted) {
-                    onError("需要麦克风权限才能发语音")
-                    return@IconButton
-                }
-                val current = recorder
-                if (current == null) {
-                    val file = File(context.cacheDir, "voice-${System.currentTimeMillis()}.m4a")
-                    val fresh = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                        MediaRecorder(context)
-                    } else {
-                        @Suppress("DEPRECATION") MediaRecorder()
+                if (!recording) {
+                    val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                        PackageManager.PERMISSION_GRANTED
+                    if (!granted) {
+                        onError("需要麦克风权限才能发语音")
+                        return@IconButton
                     }
-                    fresh.apply {
-                        setAudioSource(MediaRecorder.AudioSource.MIC)
-                        setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                        setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                        setOutputFile(file.absolutePath)
-                        prepare()
-                        start()
-                    }
-                    recorder = fresh
-                    startedAt = System.currentTimeMillis()
-                    onError("正在录音…再按一次结束并发送")
-                } else {
                     try {
-                        current.stop()
+                        val file = File(context.cacheDir, "voice-${System.currentTimeMillis()}.m4a")
+                        val fresh = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            MediaRecorder(context)
+                        } else {
+                            @Suppress("DEPRECATION") MediaRecorder()
+                        }
+                        fresh.apply {
+                            setAudioSource(MediaRecorder.AudioSource.MIC)
+                            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                            setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                            setOutputFile(file.absolutePath)
+                            prepare()
+                            start()
+                        }
+                        recorder = fresh
+                        voiceFile = file      // 记住到底是哪个文件，不靠"最新那个"
+                        startedAt = System.currentTimeMillis()
+                        recording = true
+                        voiceStatus = "正在录音…再按一次 ⏹ 结束并发送"
+                    } catch (problem: Exception) {
+                        recorder = null
+                        recording = false
+                        voiceStatus = ""
+                        onError("录音失败：${problem.message ?: problem.javaClass.simpleName}")
+                    }
+                } else {
+                    val current = recorder
+                    recorder = null
+                    recording = false
+                    try {
+                        current?.stop()
                     } catch (ignored: Exception) {
                     }
-                    current.release()
-                    recorder = null
+                    try {
+                        current?.release()
+                    } catch (ignored: Exception) {
+                    }
                     val seconds = (System.currentTimeMillis() - startedAt) / 1000.0
-                    val file = context.cacheDir.listFiles()
-                        ?.filter { it.name.startsWith("voice-") }
-                        ?.maxByOrNull { it.lastModified() }
-                    if (file != null && seconds >= 0.6) {
-                        scope.launch { uploadFile(active, file, "voice", (seconds * 1000).toInt(), onUploaded) }
+                    val file = voiceFile
+                    voiceFile = null
+                    if (file == null || !file.exists() || file.length() == 0L || seconds < 0.6) {
+                        if (file != null) file.delete()
+                        voiceStatus = "太短了，没发出去"
                     } else {
-                        onError("太短了，没发出去")
+                        voiceStatus = "正在发送语音…（${"%.1f".format(seconds)} 秒）"
+                        scope.launch {
+                            try {
+                                withContext(Dispatchers.IO) {
+                                    uploadFile(active, file, "voice", (seconds * 1000).toInt(), onUploaded)
+                                }
+                                voiceStatus = "语音已发送 ✅"
+                            } catch (problem: Exception) {
+                                voiceStatus = ""
+                                onError("语音发送失败：${problem.message ?: problem.javaClass.simpleName}")
+                            }
+                            file.delete()
+                        }
                     }
                 }
             },
             modifier = Modifier.testTag("btn-voice"),
-        ) { Text(if (recorder == null) "🎤" else "⏹", fontSize = 20.sp) }
+        ) { Text(if (recording) "⏹" else "🎤", fontSize = 20.sp) }
 
         IconButton(onClick = { pickMedia.launch("*/*") }, modifier = Modifier.testTag("btn-attach")) {
             Icon(Icons.Filled.AttachFile, "附件")
@@ -734,18 +885,15 @@ fun Bubble(message: ChatMessage, client: ApiClient?, onError: (String) -> Unit =
     val scope = rememberCoroutineScope()
     var preview by remember { mutableStateOf(false) }
     var playing by remember { mutableStateOf(false) }
-    var player by remember { mutableStateOf<MediaPlayer?>(null) }
+    var player by remember { mutableStateOf<VlcHolder.Player?>(null) }
     var saving by remember { mutableStateOf(false) }
     val hasMedia = message.kind != "text" && message.kind != "system"
 
     DisposableEffect(message.id) {
         onDispose {
+            // 只停自己的播放，共享的 LibVLC 实例留着给下一条消息用。
             try {
                 player?.stop()
-            } catch (ignored: Exception) {
-            }
-            try {
-                player?.release()
             } catch (ignored: Exception) {
             }
             player = null
@@ -782,36 +930,33 @@ fun Bubble(message: ChatMessage, client: ApiClient?, onError: (String) -> Unit =
                 "voice" -> MediaCard(
                     icon = if (playing) "⏹" else "🎤",
                     title = "语音 " + (message.durationMs / 1000) + " 秒",
-                    detail = if (playing) "点击停止" else "点击播放",
+                    detail = if (playing) "点击停止" else "点击播放（内置解码器）",
                     tag = "voice-card",
                 ) {
                     val active = client
                     if (active == null) {
                         onError("还没有连上电脑")
                     } else if (playing) {
-                        try {
-                            player?.stop()
-                        } catch (ignored: Exception) {
-                        }
                         playing = false
+                        player?.stop()
                     } else {
-                        try {
-                            val media = MediaPlayer()
-                            media.setDataSource(active.mediaUrl(message.id))
-                            media.setOnPreparedListener {
-                                it.start()
+                        // libVLC：自带 opus/webm/m4a 解码。网页录的是 webm/opus，
+                        // App 录的是 m4a —— 系统解码器不保证两样都能放。
+                        val vlc = VlcHolder.player(context) { problem ->
+                            playing = false
+                            onError("播放失败：$problem")
+                        }
+                        if (vlc == null) {
+                            onError("内置播放器初始化失败")
+                        } else {
+                            try {
+                                player = vlc
                                 playing = true
-                            }
-                            media.setOnCompletionListener { playing = false }
-                            media.setOnErrorListener { _, _, _ ->
+                                vlc.play(active.mediaUrl(message.id)) { playing = false }
+                            } catch (problem: Exception) {
                                 playing = false
-                                onError("这段语音播不了")
-                                true
+                                onError("语音播放失败：${problem.message}")
                             }
-                            media.prepareAsync()
-                            player = media
-                        } catch (problem: Exception) {
-                            onError("语音播放失败：${problem.message}")
                         }
                     }
                 }
@@ -986,7 +1131,11 @@ fun MediaCard(icon: String, title: String, detail: String, tag: String, onClick:
 @Composable
 fun MediaViewer(message: ChatMessage, client: ApiClient?, onClose: () -> Unit) {
     val context = LocalContext.current
-    Dialog(onDismissRequest = { onClose() }) {
+    var videoLayout by remember { mutableStateOf<org.videolan.libvlc.util.VLCVideoLayout?>(null) }
+    Dialog(onDismissRequest = {
+        videoLayout?.let { VlcHolder.detach(it) }
+        onClose()
+    }) {
         Card(Modifier.fillMaxWidth().padding(8.dp)) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
@@ -1023,57 +1172,126 @@ fun MediaViewer(message: ChatMessage, client: ApiClient?, onClose: () -> Unit) {
                         }
                     }
                     else -> {
+                        // 视频用 libVLC 渲染：MKV/HEVC/VP9 这些安卓不保证能解的
+                        // 格式，靠内置的 FFmpeg 软解，不再看设备的脸色。
                         val url = client?.mediaUrl(message.id).orEmpty()
                         AndroidView(
                             factory = { ctx ->
-                                android.widget.VideoView(ctx).apply {
-                                    setVideoURI(Uri.parse(url))
-                                    setOnPreparedListener { it.isLooping = false; start() }
-                                    setMediaController(android.widget.MediaController(ctx).also { it.setAnchorView(this) })
-                                }
+                                org.videolan.libvlc.util.VLCVideoLayout(ctx).also { videoLayout = it }
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(240.dp)
                                 .testTag("viewer-video"),
+                            update = { layout ->
+                                VlcHolder.attach(context, layout, url) { problem ->
+                                    android.widget.Toast
+                                        .makeText(context, "播放失败：$problem", android.widget.Toast.LENGTH_LONG)
+                                        .show()
+                                }
+                            },
                         )
-                        Text("视频走局域网直连播放，拖动进度条即可跳转。", fontSize = 12.sp, color = Color(0xFF5B6470))
+                        Text(
+                            "内置播放器（libVLC，自带 FFmpeg 解码），局域网直连播放。",
+                            fontSize = 12.sp,
+                            color = Color(0xFF5B6470),
+                        )
                     }
                 }
-                Button(onClick = { onClose() }, modifier = Modifier.testTag("viewer-close")) { Text("关闭") }
+                Button(
+                    onClick = {
+                        videoLayout?.let { VlcHolder.detach(it) }
+                        onClose()
+                    },
+                    modifier = Modifier.testTag("viewer-close"),
+                ) { Text("关闭") }
             }
         }
     }
 }
 
-/** 内置 emoji 面板：发出去的就是普通 Unicode 字符，跨设备一定能显示。 */
+/**
+ * 表情面板：整份表情表（三端共用，来自电脑端的 `/api/emoji`），分组、**可上下滑动**。
+ *
+ * 以前是写死在代码里的 48 个，用户说太少。现在拉电脑端那同一份表（服务端从
+ * `core/emoji.py` 生成，桌面端也用它），拉不到就退回内置的一小组，离线也不至于
+ * 没有表情可用。发出去的就是普通 Unicode 字符，跨设备显示一定一致。
+ */
 @Composable
-fun EmojiPad(onPick: (String) -> Unit) {
-    val emojis = listOf(
-        "😀", "😂", "🥹", "😊", "😍", "😘", "🤔", "😴",
-        "😎", "🤩", "😭", "😅", "🙃", "😇", "🥳", "🤝",
-        "👍", "👎", "👌", "🙏", "👏", "💪", "🤙", "✌️",
-        "❤️", "💔", "🔥", "✨", "🎉", "🎁", "⭐", "💡",
-        "✅", "❌", "⚠️", "❓", "❗", "📎", "📷", "🎬",
-        "🎵", "🎤", "💻", "📱", "📁", "📄", "🗑️", "🚀",
-    )
-    Column(Modifier.fillMaxWidth().padding(4.dp)) {
-        emojis.chunked(8).forEach { row ->
-            Row(Modifier.fillMaxWidth()) {
-                row.forEach { emoji ->
-                    Text(
-                        emoji,
-                        fontSize = 24.sp,
-                        modifier = Modifier
-                            .padding(4.dp)
-                            .clickable { onPick(emoji) }
-                            .testTag("emoji-$emoji"),
-                    )
+fun EmojiPad(client: ApiClient?, onPick: (String) -> Unit) {
+    var groups by remember { mutableStateOf<List<Pair<String, List<String>>>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(Unit) {
+        val loaded = withContext(Dispatchers.IO) {
+            try {
+                val active = client ?: return@withContext emptyList<Pair<String, List<String>>>()
+                val payload = active.getJson("/api/emoji")
+                val array = payload.optJSONArray("groups")
+                (0 until (array?.length() ?: 0)).mapNotNull { index ->
+                    val group = array?.optJSONObject(index) ?: return@mapNotNull null
+                    val title = group.optString("title")
+                    val emoji = group.optJSONArray("emoji") ?: return@mapNotNull null
+                    val list = (0 until emoji.length()).map { emoji.optString(it) }
+                    if (title.isBlank() || list.isEmpty()) null else title to list
+                }
+            } catch (ignored: Exception) {
+                emptyList()
+            }
+        }
+        groups = loaded.ifEmpty { BUILTIN_EMOJI }
+        loading = false
+    }
+
+    if (loading) {
+        Text("表情加载中…", fontSize = 12.sp, color = Color(0xFF5B6470))
+        return
+    }
+    // 整个面板自己滚：往下滑就是更多表情（用户要的"上下滑动加载更多"）。
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 260.dp)
+            .testTag("emoji-pad"),
+    ) {
+        groups.forEach { (title, emoji) ->
+            item(key = "title-$title") {
+                Text(
+                    "$title（${emoji.size}）",
+                    fontSize = 12.sp,
+                    color = Color(0xFF5B6470),
+                    modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+                )
+            }
+            items(emoji.chunked(8)) { row ->
+                Row(Modifier.fillMaxWidth()) {
+                    row.forEach { emoji ->
+                        Text(
+                            emoji,
+                            fontSize = 24.sp,
+                            modifier = Modifier
+                                .padding(4.dp)
+                                .clickable { onPick(emoji) }
+                                .testTag("emoji-$emoji"),
+                        )
+                    }
                 }
             }
         }
     }
 }
+
+/** 拉不到电脑端的表情表时用这一小组（保证离线也能发表情）。 */
+val BUILTIN_EMOJI: List<Pair<String, List<String>>> = listOf(
+    "常用" to listOf(
+        "😀", "😂", "🥹", "😊", "😍", "😘", "🤔", "😴",
+        "😎", "🤩", "😭", "😅", "🙃", "😇", "🥳", "🤝",
+        "👍", "👎", "👌", "🙏", "👏", "💪", "🤙", "✌️",
+        "❤️", "💔", "🔥", "✨", "🎉", "🎁", "⭐", "💡",
+        "✅", "❌", "⚠️", "❓", "❗", "📎", "📷", "🎬",
+        "🎵", "🎤", "💻", "📱", "🖥️", "📁", "📄", "🗑️",
+    ),
+)
 
 suspend fun uploadFile(
     client: ApiClient,
@@ -1202,7 +1420,8 @@ fun SendScreen(store: AppState) {
     val scope = rememberCoroutineScope()
     var devices by remember { mutableStateOf<List<DeviceRow>>(emptyList()) }
     var picked by remember { mutableStateOf<List<Uri>>(emptyList()) }
-    var target by remember { mutableStateOf<DeviceRow?>(null) }
+    // 多选：一次发给多台设备（用户要的"多选同时向多个设备发送"）。
+    var targets by remember { mutableStateOf<Set<String>>(emptySet()) }
     var progress by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("") }
@@ -1230,22 +1449,47 @@ fun SendScreen(store: AppState) {
     }
 
     Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text("选择接收设备", fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("选择接收设备", fontWeight = FontWeight.SemiBold, fontSize = 18.sp, modifier = Modifier.weight(1f))
+            Text(
+                if (targets.isEmpty()) "可多选" else "已选 ${targets.size} 台",
+                fontSize = 12.sp,
+                color = Color(0xFF5B6470),
+                modifier = Modifier.testTag("target-count"),
+            )
+        }
         if (devices.isEmpty()) Text("还没有发现设备。确认手机和电脑在同一 Wi-Fi。", fontSize = 13.sp)
         LazyColumn(Modifier.weight(1f)) {
             items(devices) { device ->
+                val selected = targets.contains(device.id)
                 Card(
                     Modifier
                         .fillMaxWidth()
                         .padding(vertical = 4.dp)
-                        .clickable { target = device }
+                        .clickable {
+                            targets = if (selected) targets - device.id else targets + device.id
+                        }
+                        .testTag("device-${device.name}"),
                 ) {
                     Column(Modifier.padding(12.dp)) {
-                        Text(
-                            device.name + if (device.id == target?.id) "  ✅" else "",
-                            fontWeight = FontWeight.SemiBold,
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                device.name,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f),
+                            )
+                            // 状态标记：已连接（绿）/ 未连接 + 最后在线（灰）
+                            Text(
+                                (if (selected) "☑ " else "☐ ") + statusText(device),
+                                fontSize = 12.sp,
+                                color = if (device.online) Color(0xFF1A7F37) else Color(0xFF8B949E),
+                                modifier = Modifier.testTag("status-${device.name}"),
+                            )
+                        }
                         Text("${device.kind} · ${device.address}", fontSize = 12.sp)
+                        if (device.facts.isNotBlank()) {
+                            Text(device.facts, fontSize = 11.sp, color = Color(0xFF8B949E))
+                        }
                     }
                 }
             }
@@ -1255,46 +1499,62 @@ fun SendScreen(store: AppState) {
                 Text(if (picked.isEmpty()) "选择文件" else "已选 ${picked.size} 个")
             }
             Button(
-                enabled = !busy && picked.isNotEmpty() && target != null,
+                enabled = !busy && picked.isNotEmpty() && targets.isNotEmpty(),
+                modifier = Modifier.testTag("btn-send-files"),
                 onClick = {
-                    val device = target ?: return@Button
                     busy = true
                     status = ""
+                    val chosen = devices.filter { targets.contains(it.id) }
                     scope.launch {
-                        withContext(Dispatchers.IO) {
-                            try {
-                                val base = "http://${normalizeHost(store.host)}/"
-                                val api = ApiClient(base, ApiClient.fetchToken(base))
-                                picked.forEach { uri ->
-                                    val info = queryFile(context, uri)
-                                    val query = "/api/upload?name=${encodeUrl(info.first)}" +
-                                        "&deviceId=${encodeUrl(device.id)}"
-                                    context.contentResolver.openInputStream(uri)?.use { stream ->
-                                        api.upload(query, stream, info.second, "application/octet-stream") {
-                                            progress = "已发送 $it 字节"
-                                        }
+                        var done = 0
+                        picked.forEach { uri ->
+                            val info = queryFile(context, uri)
+                            chosen.forEach { device ->
+                                try {
+                                    withContext(Dispatchers.IO) {
+                                        val base = "http://${normalizeHost(store.host)}/"
+                                        val api = ApiClient(base, ApiClient.fetchToken(base))
+                                        uploadToDevice(context, api, uri, info, device, store)
                                     }
+                                } catch (problem: Exception) {
+                                    status = "发给 ${device.name} 失败：${problem.message}"
                                 }
-                                status = "已交给电脑端，正在传输"
-                            } catch (problem: Exception) {
-                                status = "发送失败：${problem.message ?: problem.javaClass.simpleName}"
                             }
+                            done++
+                            progress = "已处理 $done/${picked.size} 个文件"
                         }
                         busy = false
-                        picked = emptyList()
+                        progress = ""
+                        status = "已发给 ${chosen.size} 台设备（${chosen.joinToString("、") { it.name }}）"
                     }
                 },
-                modifier = Modifier.testTag("btn-send-files"),
-            ) { Text(if (busy) "发送中…" else "发送") }
+            ) { Text(if (busy) progress.ifBlank { "发送中…" } else "发送") }
         }
-        if (progress.isNotBlank()) Text(progress, fontSize = 12.sp)
-        if (status.isNotBlank()) Text(status, fontSize = 13.sp)
+        if (status.isNotBlank()) Text(status, fontSize = 13.sp, modifier = Modifier.testTag("send-status"))
     }
 }
 
-// ------------------------------------------------------------------ 接收
+/** 把一个文件发给一台设备（多选时对每台各来一遍）。 */
+suspend fun uploadToDevice(
+    context: android.content.Context,
+    api: ApiClient,
+    uri: Uri,
+    info: Pair<String, Long>,
+    device: DeviceRow,
+    store: AppState,
+) {
+    val name = info.first
+    val size = info.second
+    // deviceId 就是"发给谁"：电脑会被电脑端转发过去；手机（web: 开头）会被
+    // 电脑端交给那台手机的页面去下载 —— 手机之间没法直连，这是 App 作为
+    // "电脑的客户端"唯一能走通的路。
+    val query = "/api/upload?name=${encodeUrl(name)}" +
+        "&deviceId=${encodeUrl(device.id)}"
+    context.contentResolver.openInputStream(uri)?.use { stream ->
+        api.upload(query, stream, size, "application/octet-stream")
+    }
+}
 
-/** 接收页：待确认的传输 + 电脑上的文件（可直接下载到手机）。 */
 @Composable
 fun ReceiveScreen(store: AppState) {
     val context = LocalContext.current
@@ -1481,39 +1741,107 @@ fun TransfersScreen(store: AppState) {
 }
 
 /** 设备行：电脑（协议对端）与手机（网页/App 客户端）都在这里。 */
-data class DeviceRow(val id: String, val name: String, val kind: String, val address: String)
+data class DeviceRow(
+    val id: String,
+    val name: String,
+    val kind: String,          // 电脑 / 安卓 App / 网页版
+    val address: String,
+    val online: Boolean = true,
+    val secondsAgo: Double = 0.0,
+    val facts: String = "",    // 系统 · 韧传 版本 · IP
+)
 
 fun loadDevices(api: ApiClient, store: AppState): List<DeviceRow> {
     val rows = mutableListOf<DeviceRow>()
     val state = api.getJson("/api/state")
+
+    fun platformName(platform: String): String = when (platform.lowercase()) {
+        "android" -> "安卓"
+        "browser" -> "网页版"
+        "windows" -> "Windows"
+        "linux" -> "Linux"
+        "darwin", "macos" -> "macOS"
+        else -> platform
+    }
+
     val devices = state.optJSONArray("devices")
     for (index in 0 until (devices?.length() ?: 0)) {
         val device = devices.optJSONObject(index) ?: continue
         if (device.optBoolean("isSelf")) continue
+        val facts = mutableListOf<String>()
+        if (device.optString("platform").isNotBlank()) facts.add(platformName(device.optString("platform")))
+        if (device.optString("version").isNotBlank()) facts.add("韧传 " + device.optString("version"))
+        if (device.optString("address").isNotBlank()) facts.add(device.optString("address"))
         rows.add(
             DeviceRow(
                 id = device.optString("id"),
                 name = device.optString("name"),
                 kind = "电脑",
                 address = "${device.optString("address")}:${device.optInt("port")}",
+                online = device.optBoolean("online", true),
+                secondsAgo = device.optDouble("secondsAgo", 0.0),
+                facts = facts.joinToString(" · "),
             )
         )
     }
+
     val clients = state.optJSONArray("knownClients")
     for (index in 0 until (clients?.length() ?: 0)) {
         val client = clients.optJSONObject(index) ?: continue
         val deviceId = client.optString("deviceId")
         if (deviceId == store.deviceId) continue          // 就是本机
+        val isApp = client.optString("clientKind") == "app"
+        val facts = mutableListOf<String>()
+        facts.add(if (isApp) "安卓 App" else "网页版")
+        if (client.optString("version").isNotBlank()) facts.add("韧传 " + client.optString("version"))
+        if (client.optString("address").isNotBlank()) facts.add(client.optString("address"))
         rows.add(
             DeviceRow(
                 id = "web:" + client.optString("key"),
-                name = client.optString("label", "手机"),
-                kind = "手机",
+                name = client.optString("label", if (isApp) "安卓 App" else "手机"),
+                kind = if (isApp) "安卓 App" else "网页版",
                 address = client.optString("address"),
+                online = client.optBoolean("online", false),
+                secondsAgo = client.optDouble("secondsAgo", 0.0),
+                facts = facts.joinToString(" · "),
             )
         )
     }
     return rows
+}
+
+/**
+ * 会话页副标题：成员用统一格式写清楚 —— 名字（系统 · 韧传 版本 · IP）。
+ *
+ * 用户要的"聊天应该规范显示名称"就是这一行：一眼看出这句话是谁发的、
+ * 对方是什么机器、什么版本、局域网地址是多少。
+ */
+fun chatMembersLabel(members: List<DeviceRow>, conversation: Conversation, store: AppState): String {
+    val parts = mutableListOf("我（${store.deviceName}）")
+    val ids = conversation.members
+    for (member in members) {
+        if (ids.isNotEmpty() && !ids.contains(member.id)) continue
+        val facts = member.facts.ifBlank { member.kind }
+        parts.add("${member.name}（$facts）")
+    }
+    val who = if (conversation.id.startsWith("g:")) "群成员：" else "与 "
+    return who + parts.joinToString("、") + if (conversation.id.startsWith("g:")) "" else " 的对话"
+}
+
+/** 群聊可选成员：电脑（协议对端）和已配对的手机（网页版 / 安卓 App）。 */
+fun loadMembers(api: ApiClient, store: AppState): List<DeviceRow> =
+    loadDevices(api, store).filter { it.id != store.deviceId }
+
+/** 「已连接 / 未连接 · 最后在线 X」——手机端也要一眼看出谁在线。 */
+fun statusText(device: DeviceRow): String {
+    if (device.online) return "已连接"
+    val ago = device.secondsAgo
+    val when_ = when {
+        ago < 60 -> "${ago.toInt()} 秒前"
+        ago < 3600 -> "${(ago / 60).toInt()} 分钟前"
+        else -> "${(ago / 3600).toInt()} 小时前"
+    }
+    return "未连接 · 最后在线 $when_"
 }
 
 /** 从 content URI 读文件名与大小。 */

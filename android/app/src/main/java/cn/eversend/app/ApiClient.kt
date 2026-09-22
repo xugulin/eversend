@@ -254,6 +254,7 @@ class ApiClient(val base: String, val token: String) {
             port: Int = DISCOVERY_PORT,
             webPort: Int = DEFAULT_WEB_PORT,
             context: android.content.Context? = null,
+            hint: String = "",
         ): List<Found> {
             // 路数一：安卓自带的 mDNS。电脑端收到查询会立刻回一条，最快也最省，
             // 而且不需要广播权限。找不到再往下走。
@@ -342,9 +343,24 @@ class ApiClient(val base: String, val token: String) {
                 // TCP 扫描给足时间：/24 网段 254 台，每台 400ms 超时，32 个并发
                 // 大约 3.5 秒扫完。以前固定 6 秒、并发 12，算下来只能扫到第 150
                 // 台左右 —— 用户的电脑在 .177，正好在扫不到的尾巴上。
+                // 端口不写死：默认端口扫不到，就把"上次连过的那个端口"也扫一遍
+                // （电脑端换了端口时，这是唯一还能自己找回来的路）。
+                val ports = LinkedHashSet<Int>()
+                ports.add(webPort)
+                hint.substringAfterLast(":").toIntOrNull()?.let { ports.add(it) }
+                val hintHosts = if (hint.isBlank()) emptyList() else listOf(hint)
                 for (attempt in 1..2) {
-                    for (candidate in discoverByTcp(webPort, timeoutMs = 8000, threads = 32)) {
-                        found[candidate.host + ":" + candidate.webPort] = candidate
+                    for (candidatePort in ports) {
+                        val foundHere = discoverByTcp(
+                            candidatePort,
+                            timeoutMs = 8000,
+                            threads = 32,
+                            hints = hintHosts,
+                        )
+                        for (candidate in foundHere) {
+                            found[candidate.host + ":" + candidate.webPort] = candidate
+                        }
+                        if (found.isNotEmpty()) break
                     }
                     if (found.isNotEmpty()) break
                     Log.d(TAG, "第 $attempt 次 TCP 扫描没有结果，再扫一遍")
@@ -368,19 +384,38 @@ class ApiClient(val base: String, val token: String) {
             hints: List<String> = emptyList(),
         ): List<Found> {
             val found = java.util.Collections.synchronizedMap(LinkedHashMap<String, Found>())
-            val candidates = subnets()
-                .filter { it.prefix >= 24 }
-                .flatMap { subnet ->
-                    val base = subnet.address.address
-                    (1..254).mapNotNull { last ->
-                        try {
-                            InetAddress.getByAddress(byteArrayOf(base[0], base[1], base[2], last.toByte()))
-                        } catch (ignored: Exception) {
-                            null
-                        }
+            // 大网段（/16 的办公室网、校园网）不能逐台扫 —— 几万个地址扫不完也
+            // 不礼貌。退一步扫"我们自己所在的 /24"，以及上次连过的电脑所在的
+            // /24（跨网段的情况靠 mDNS 与 UDP 公告，那两条路都带着端口）。
+            val chunks = mutableListOf<Pair<ByteArray, Int>>()
+            for (subnet in subnets()) {
+                val base = subnet.address.address
+                val prefix = if (subnet.prefix >= 24) subnet.prefix else 24
+                chunks.add(base to prefix)
+            }
+            for (hint in hints) {
+                val host = hint.substringBefore(":")
+                val parts = host.split(".")
+                if (parts.size == 4 && parts.all { it.toIntOrNull() != null }) {
+                    chunks.add(
+                        byteArrayOf(
+                            parts[0].toInt().toByte(),
+                            parts[1].toInt().toByte(),
+                            parts[2].toInt().toByte(),
+                            0,
+                        ) to 24,
+                    )
+                }
+            }
+            val candidates = chunks.flatMap { (base, _) ->
+                (1..254).mapNotNull { last ->
+                    try {
+                        InetAddress.getByAddress(byteArrayOf(base[0], base[1], base[2], last.toByte()))
+                    } catch (ignored: Exception) {
+                        null
                     }
                 }
-                .distinctBy { it.hostAddress }
+            }.distinctBy { it.hostAddress }
             if (candidates.isEmpty()) return emptyList()
 
             // 先按"最可能是电脑"的顺序串行试几个：上次连过的那台（hints）、

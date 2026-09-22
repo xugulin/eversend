@@ -7,6 +7,9 @@ name: 安卓 App
 # 这个工作流做的是"真机真实软件测试"，不是单元测试：
 #   1. 在真实的安卓模拟器上装**真的 APK**；
 #   2. 启动电脑端（Linux 上真跑 eversend），模拟器通过 10.0.2.2 连它；
+#  APK 按 ABI 分开打：手机要的是 arm64（~71 MB），模拟器要的是 x86_64（~79 MB），
+#  合成一个包要塞进两份 libvlc.so（内置解码器），120 MB 起步。
+#
 #   3. 用 instrumentation（AndroidJUnit4）在设备上跑真实网络与真实文件：
 #      连上、读状态、发带 emoji 的文字并回查电脑端、上传图片再按消息 id 取回比对、
 #      真的把探针发出去并认出回包、真的扫网段找到电脑（并确认扫完整个 /24）、
@@ -89,7 +92,7 @@ jobs:
           disable-animations: true
           script: |
             # 一行一条命令：这个 action 是按行执行的，行尾反斜杠会被当成参数。
-            adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+            adb install -r android/app/build/outputs/apk/debug/app-x86_64-debug.apk
             adb install -r android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
             adb shell pm grant cn.eversend.app android.permission.POST_NOTIFICATIONS || true
             adb shell pm grant cn.eversend.app android.permission.RECORD_AUDIO || true
@@ -118,7 +121,7 @@ jobs:
         with:
           name: eversend-android
           path: |
-            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/apk/debug/app-*-debug.apk
             android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
             ${{ runner.temp }}/android-app-chat*.png
             ${{ runner.temp }}/device-files/

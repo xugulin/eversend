@@ -444,4 +444,125 @@ class EverSendInstrumentedTest {
         val full = ApiClient.discover(timeoutMs = 4000, deviceId = "instrumented")
         println("discovery(完整流程): " + full.joinToString("、") { it.name + "@" + it.base })
     }
+
+    /**
+     * 群聊：手机端建一个群（电脑 + 本机），电脑端必须认这个群并记住成员。
+     *
+     * 这是"App 还没有群聊功能"那条的实现验证：群 id 用 `g:` 开头、成员用各自
+     * 在电脑端登记的身份，两边（电脑端 SQLite、网页版、桌面端）看到的是同一个群。
+     */
+    @Test
+    fun createsAGroupChatWithTheComputer() {
+        val api = client()
+        val state = api.getJson("/api/state")
+        val computerId = state.optJSONObject("device")?.optString("id").orEmpty()
+        assertTrue("电脑端要有设备号", computerId.isNotEmpty())
+
+        val groupId = "g:instrumented" + System.currentTimeMillis().toString().takeLast(6)
+        val title = "真机群聊测试"
+        val response = api.postJson(
+            "/api/chat/send",
+            JSONObject()
+                .put("conv", groupId)
+                .put("title", title)
+                .put("members", org.json.JSONArray().apply { put(computerId) })
+                .put("kind", "text")
+                .put("text", "群聊建好了 👋"),
+        )
+        assertTrue("建群的消息被接受", response.optBoolean("ok", false))
+        assertEquals("返回的会话 id 就是群 id", groupId, response.optString("conversationId"))
+
+        // 电脑端必须把它当成群聊，并且成员里有电脑和这台手机
+        val chat = api.getJson("/api/chat?conv=" + URLEncoder.encode(groupId, "UTF-8"))
+        val conversations = chat.optJSONArray("conversations") ?: throw AssertionError("没有会话列表")
+        var found = false
+        for (index in 0 until conversations.length()) {
+            val conversation = conversations.optJSONObject(index) ?: continue
+            if (conversation.optString("id") != groupId) continue
+            found = true
+            assertEquals("必须标成群聊", "group", conversation.optString("kind"))
+            assertEquals("群名要保留", title, conversation.optString("title"))
+            val members = conversation.optJSONArray("members") ?: org.json.JSONArray()
+            val names = (0 until members.length()).map { members.optString(it) }
+            assertTrue("成员里要有电脑：$names", names.contains(computerId))
+        }
+        assertTrue("电脑端记住了这个群", found)
+
+        val messages = chat.optJSONArray("messages") ?: org.json.JSONArray()
+        assertTrue("群里的第一条消息要在", messages.length() >= 1)
+    }
+
+    /**
+     * 设备列表要带状态标记：手机端也要看得出哪些连着、哪些断开了。
+     *
+     * 电脑端给 /api/state 的每条设备都带 online，手机 UI 才能打「已连接 /
+     * 未连接 · 最后在线」——以前只有名字和地址，用户分不清谁在线。
+     */
+    @Test
+    fun deviceListCarriesOnlineStatus() {
+        val state = client().getJson("/api/state")
+        val devices = state.optJSONArray("devices") ?: throw AssertionError("没有设备列表")
+        var checked = 0
+        for (index in 0 until devices.length()) {
+            val device = devices.optJSONObject(index) ?: continue
+            if (device.optBoolean("isSelf")) continue
+            assertTrue(
+                "每台设备都要有 online 字段：${device.optString("name")}",
+                device.has("online"),
+            )
+            checked++
+        }
+        assertTrue("至少要有一台设备可查（电脑端自己也算）", checked >= 1 || devices.length() >= 1)
+
+        val clients = state.optJSONArray("knownClients") ?: org.json.JSONArray()
+        for (index in 0 until clients.length()) {
+            val client = clients.optJSONObject(index) ?: continue
+            assertTrue("记住的手机要有 online", client.has("online"))
+            assertTrue("记住的手机要有 clientKind（区分 App / 网页版）", client.has("clientKind"))
+            assertTrue(
+                "clientKind 只能是 app 或 browser：${client.optString("clientKind")}",
+                client.optString("clientKind") in listOf("app", "browser"),
+            )
+        }
+    }
+
+    /**
+     * 内置播放内核真的能用：libVLC 在设备上初始化得起来，并且真的把一段
+     * 音频放完（不依赖系统解码器 —— 用户要的"内置 ffmpeg，别调系统"）。
+     *
+     * 这条在真机/模拟器上跑：如果 AAR 少了对应 ABI、或者 .so 没打进 APK，
+     * 初始化就会失败，断言立刻炸 —— 那正是"装到手机上才发现放不了"的场景。
+     */
+    @Test
+    fun bundledPlayerInitializesAndPlaysAudio() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val engine = cn.eversend.app.VlcHolder.engine(context)
+        assertTrue("libVLC 必须能初始化（AAR 里的 .so 要与设备 ABI 匹配）", engine != null)
+
+        // 造一段 1 秒的 WAV（44 字节头 + 静音采样），交给内置播放器放。
+        val sampleRate = 8000
+        val seconds = 1
+        val dataSize = sampleRate * seconds * 2
+        val wav = java.io.ByteArrayOutputStream()
+        fun le32(value: Int) = byteArrayOf(
+            (value and 0xFF).toByte(), ((value shr 8) and 0xFF).toByte(),
+            ((value shr 16) and 0xFF).toByte(), ((value shr 24) and 0xFF).toByte(),
+        )
+        fun le16(value: Int) = byteArrayOf((value and 0xFF).toByte(), ((value shr 8) and 0xFF).toByte())
+        wav.write("RIFF".toByteArray()); wav.write(le32(36 + dataSize)); wav.write("WAVE".toByteArray())
+        wav.write("fmt ".toByteArray()); wav.write(le32(16)); wav.write(le16(1)); wav.write(le16(1))
+        wav.write(le32(sampleRate)); wav.write(le32(sampleRate * 2)); wav.write(le16(2)); wav.write(le16(16))
+        wav.write("data".toByteArray()); wav.write(le32(dataSize)); wav.write(ByteArray(dataSize))
+        val file = File(context.cacheDir, "instrumented-语音.wav")
+        file.writeBytes(wav.toByteArray())
+
+        val finished = java.util.concurrent.CountDownLatch(1)
+        val error = java.util.concurrent.atomic.AtomicReference("")
+        val player = cn.eversend.app.VlcHolder.player(context) { problem -> error.set(problem) }
+        assertTrue("播放器要能创建：${error.get()}", player != null)
+        player!!.play(android.net.Uri.fromFile(file).toString()) { finished.countDown() }
+        assertTrue("内置播放器要真的把这段音频放完", finished.await(15, java.util.concurrent.TimeUnit.SECONDS))
+        player.stop()
+        file.delete()
+    }
 }
