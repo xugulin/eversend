@@ -1060,6 +1060,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     print(f"    run.sh (mode {oct(run_sh.stat().st_mode & 0o777)}), run.bat (CRLF), README.txt (UTF-8 BOM)")
 
+    # The Android app cannot be installed over the internet everywhere, and the
+    # phone is already talking to this computer, so the browser page offers the
+    # installer from here -- but only when it is really in the package.  Building
+    # it needs the Android SDK, which is not part of this toolchain, so the
+    # artifact is picked up when it happens to be next to the sources.
+    apk_sources = [
+        Path(os.environ.get("EVERSEND_APK", "")) if os.environ.get("EVERSEND_APK") else None,
+        Path(__file__).resolve().parent.parent / "dist" / "EverSend-android.apk",
+        Path(__file__).resolve().parent.parent / "android" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk",
+    ]
+    for candidate in apk_sources:
+        if candidate and candidate.is_file():
+            shutil.copy2(candidate, tree / "EverSend-android.apk")
+            print(f"    Android installer bundled: {candidate.name} ({human(candidate.stat().st_size)})")
+            steps.append(Step("bundle android apk", candidate.stat().st_size, candidate.stat().st_size))
+            break
+    else:
+        print("    no Android installer found (phone page will hide the download card)")
+
     # -- 3. no symlinks anywhere --------------------------------------------
     print("\n[3/7] materialising symlinks (FAT32/exFAT + zip safety)")
     links, dropped, extra = materialize_symlinks(tree)

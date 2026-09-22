@@ -818,6 +818,32 @@
       : '';
   }
 
+  /** Show the installer card only when this computer actually has the file.
+   *
+   *  It has its own change key rather than riding on renderSelf(): that one
+   *  bails out as soon as the device info is unchanged, so a card that appears
+   *  when the file is dropped into the folder would never show up.
+   */
+  function renderApk() {
+    var card = $('#app-card');
+    if (!card) return;
+    var apk = (store.app && store.app.apk) || {};
+    if (!changed('apk', JSON.stringify(apk))) return;
+    if (!apk.available) {
+      card.hidden = true;
+      return;
+    }
+    card.hidden = false;
+    var link = $('#apk-link');
+    if (link && apk.url) link.setAttribute('href', apk.url);
+    var label = $('#apk-size');
+    if (label) {
+      label.textContent = apk.name
+        ? (apk.name + ' · ' + fmtBytes(apk.size))
+        : fmtBytes(apk.size);
+    }
+  }
+
   function renderAll() {
     renderDevices();
     renderPicked();
@@ -827,6 +853,7 @@
     renderFiles();
     renderShares();
     renderSelf();
+    renderApk();
     updateSendButton();
   }
 

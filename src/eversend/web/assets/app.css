@@ -525,6 +525,15 @@ button { font: inherit; cursor: pointer; }
 .switch-row em { display: block; font-style: normal; margin-top: 4px; }
 .ghost.block { display: block; width: 100%; margin-top: 12px; }
 
+/* An <a> that has to look exactly like the buttons around it: the APK
+   download is a real link so the browser owns the download, not a fetch. */
+.button-link {
+  text-align: center;
+  text-decoration: none;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
 /* ------------------------------------------------------------- chat */
 
 .conv-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }

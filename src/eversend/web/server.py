@@ -175,6 +175,7 @@ _MIME_TYPES = {
     ".webmanifest": "application/manifest+json; charset=utf-8",
     ".txt": "text/plain; charset=utf-8",
     ".woff2": "font/woff2",
+    ".apk": "application/vnd.android.package-archive",
 }
 
 #: Routes that only accept POST, so a GET can be answered with 405.
@@ -252,6 +253,40 @@ def display_address(address: str) -> str:
             return text
         return candidate
     return text
+
+
+#: How an Android installer may be named to be picked up automatically.
+_APK_NAMES = ("eversend-android.apk", "eversend.apk")
+
+
+def _find_android_apk(directories: Iterable[str]) -> str | None:
+    """Look for an Android installer in the given directories.
+
+    Only names that are clearly ours are accepted.  A blanket ``*.apk`` would
+    pick up whatever unrelated installer happens to sit in the working
+    directory and offer it to a phone as "the app", which is worse than
+    offering nothing.
+    """
+    for directory in directories:
+        if not directory or not os.path.isdir(directory):
+            continue
+        try:
+            entries = sorted(os.listdir(directory))
+        except OSError:
+            continue
+        lowered = {name.lower(): name for name in entries}
+        for wanted in _APK_NAMES:
+            name = lowered.get(wanted)
+            if name:
+                return os.path.join(directory, name)
+        for name in entries:  # versioned names like EverSend-1.0.0.apk
+            low = name.lower()
+            if low.endswith(".apk") and "eversend" in low:
+                return os.path.join(directory, name)
+        for name in entries:  # …and the Chinese name, 韧传-1.0.0.apk
+            if name.lower().endswith(".apk") and "韧传" in name:
+                return os.path.join(directory, name)
+    return None
 
 
 def peer_dict(peer: Peer) -> dict[str, Any]:
@@ -489,6 +524,11 @@ class WebUI:
         #: until the phone says goodbye (「断开连接」) or the user removes it.
         self._known: dict[str, dict[str, Any]] = {}
         self._known_path = os.path.join(engine.config.data_dir, "web_clients.json")
+        #: Cached answer to "is there an Android installer to offer?" (see
+        #: :meth:`android_apk`); the page asks on every state poll.
+        self._apk_path: str | None = None
+        self._apk_checked = 0.0
+        self._apk_lock = threading.Lock()
         self._load_known()
         #: Files the desktop handed to the browser, by share id.  A browser has
         #: no receiving service, so "send to phone" cannot be a push: the
@@ -544,6 +584,21 @@ class WebUI:
         if directory:
             return str(directory)
         return str(getattr(getattr(self.engine, "config", None), "receive_dir", "") or "")
+
+    @property
+    def data_dirs(self) -> tuple[str, ...]:
+        """Where to look for an ``.apk`` to hand to a phone.
+
+        Order matters: the data directory first (it is where this program
+        already writes), then the folder the program lives in -- the green
+        package unpacks to one directory, so "drop the apk next to run.sh" is
+        the instruction that is easiest to follow -- then the working
+        directory, which is what a source checkout looks like.
+        """
+        data_dir = str(getattr(getattr(self.engine, "config", None), "data_dir", "") or "")
+        # .../app/eversend/web/server.py -> .../  (the unpacked package root)
+        package_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        return tuple(dict.fromkeys(d for d in (data_dir, package_root, os.getcwd()) if d))
 
     # -- connected browsers ------------------------------------------------
 
@@ -1037,7 +1092,16 @@ class WebUI:
             recent_uploads = list(self._uploads_done[-20:])
         return {
             "ok": True,
-            "app": {"name": APP_NAME, "nameCn": APP_NAME_CN, "version": APP_VERSION},
+            "app": {
+                "name": APP_NAME,
+                "nameCn": APP_NAME_CN,
+                "version": APP_VERSION,
+                # The browser page can only do so much: it is frozen when the
+                # phone screen goes off and it cannot ask for the microphone
+                # over plain HTTP.  The native app has neither limit, so the
+                # page offers it whenever the installer is on this machine.
+                "apk": self.apk_info(),
+            },
             "device": self._self_device(),
             "devices": self._devices(),
             "transfers": active,
@@ -1310,6 +1374,45 @@ class WebUI:
             return None
         return candidate
 
+    #: How long a "no installer here" answer is trusted, in seconds.
+    APK_CACHE_SECONDS = 5.0
+
+    def android_apk(self) -> str | None:
+        """The Android installer to hand to a phone, or ``None``.
+
+        The app is distributed through the release page, but a phone in China
+        often cannot reach GitHub, while it is already talking to this computer
+        over the hotspot.  Dropping the ``.apk`` next to the program (or into
+        the data directory) is therefore the delivery route that actually
+        works, and the page offers it only when the file is really there.
+
+        Checked with a short cache: the phone polls ``/api/state`` every few
+        seconds and neither the answer nor the directory changes often.
+        """
+        now = time.monotonic()
+        with self._apk_lock:
+            if self._apk_checked and now - self._apk_checked < self.APK_CACHE_SECONDS:
+                return self._apk_path
+            self._apk_checked = now
+            self._apk_path = _find_android_apk(self.data_dirs)
+            return self._apk_path
+
+    def apk_info(self) -> dict[str, Any]:
+        """What the page needs to offer the download (or hide the card)."""
+        path = self.android_apk()
+        if not path:
+            return {"available": False}
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return {"available": False}
+        return {
+            "available": True,
+            "name": os.path.basename(path),
+            "size": size,
+            "url": "/apk",
+        }
+
     def check_host(self, header: str) -> bool:
         """Reject ``Host`` headers that could be a DNS-rebinding attack.
 
@@ -1510,6 +1613,11 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path in ("/api/qr", "/api/qr.svg", "/api/qr.png"):
             self._send_qr(path, query)
+            return
+        if path == "/apk" or path == "/EverSend.apk":
+            # The installer itself, so a phone can get the app from the
+            # computer it is already talking to instead of from the internet.
+            self._send_apk()
             return
         if path == "/api/download":
             self._send_download(query)
@@ -1906,6 +2014,24 @@ class _Handler(BaseHTTPRequestHandler):
             self._fail(HTTPStatus.NOT_FOUND, "这个文件已经不在分享列表里了")
             return
         self._stream_file(path, on_complete=lambda: self.server_ui.mark_share_downloaded(share_id))
+
+    def _send_apk(self) -> None:
+        """``GET /apk``: hand the Android installer to a phone.
+
+        A plain link, not a fetch with the CSRF header: the browser has to own
+        the download (it shows progress, and on Android it hands the file to
+        the package installer).  Receiving files is already open to the LAN by
+        design, so serving this one file adds nothing to the trust model.
+        """
+        path = self.server_ui.android_apk()
+        if not path:
+            self._fail(
+                HTTPStatus.NOT_FOUND,
+                "本机没有安卓安装包。把 EverSend-android.apk 放到韧传目录（或 data 目录）里，"
+                "手机刷新本页就能下载安装。",
+            )
+            return
+        self._stream_file(path)
 
     def _send_download(self, query: dict[str, list[str]]) -> None:
         """Stream a received file, honouring a single-range ``Range`` header."""

@@ -1032,6 +1032,63 @@ def check_https_copy_keeps_http_port(engine: Engine, http_port: int) -> None:
         tls_ui.stop()
 
 
+def check_apk_download(base: str, ui, engine: Engine, root: Path) -> None:
+    """Handing the Android installer to a phone from this computer.
+
+    The release page is where the app normally comes from, but a phone on a
+    hotspot often cannot reach the internet, and it is already talking to this
+    machine.  The card must appear only when a real installer is present --
+    offering a download that 404s is worse than not offering it.
+    """
+    print("\n[APK] 手机从这台电脑直接下载安卓安装包")
+    status, _, body = http(base + "/api/state")
+    state = json.loads(body.decode("utf-8"))
+    check("没有安装包时状态里说不可用", not state["app"]["apk"].get("available"), str(state["app"]["apk"]))
+    check("没有安装包时 /apk 回 404", http(base + "/apk")[0] == 404)
+    check("页面里那一块默认是隐藏的", 'id="app-card" hidden' in _asset_text(ui, "index.html"))
+
+    data_dir = Path(engine.config.data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    installer = data_dir / "EverSend-android.apk"
+    payload = b"PK\x03\x04" + b"eversend-selftest-apk" * 512
+    installer.write_bytes(payload)
+    try:
+        # The lookup is cached for a few seconds so a phone polling /api/state
+        # every second does not hit the filesystem every time; expire it here
+        # rather than sleeping through it.
+        ui._apk_checked = 0.0  # noqa: SLF001 - the test owns this instance
+        status, _, body = http(base + "/api/state")
+        apk = json.loads(body.decode("utf-8"))["app"]["apk"]
+        check("放进安装包后状态里说可用", bool(apk.get("available")), str(apk))
+        check("状态里带上文件名和大小", apk.get("name") == installer.name and apk.get("size") == len(payload), str(apk))
+
+        status, headers, body = http(base + "/apk")
+        check("下载得到安装包本体", status == 200 and body == payload, f"status={status} bytes={len(body)}")
+        check(
+            "带的是安卓安装包的 MIME 类型",
+            headers.get("Content-Type", "").startswith("application/vnd.android.package-archive"),
+            headers.get("Content-Type", ""),
+        )
+        check(
+            "浏览器会把它当附件存下来",
+            "attachment" in headers.get("Content-Disposition", ""),
+            headers.get("Content-Disposition", ""),
+        )
+
+        # A phone that loses Wi-Fi mid-download retries with a Range request;
+        # _stream_file already supports it and this is the case that uses it.
+        status, headers, body = http(base + "/apk", headers={"Range": "bytes=4-19"})
+        check(
+            "断点续传取得到中间一段",
+            status == 206 and body == payload[4:20],
+            f"status={status} bytes={len(body)}",
+        )
+    finally:
+        installer.unlink(missing_ok=True)
+        ui._apk_checked = 0.0  # noqa: SLF001
+    check("删掉之后又变回不可用", not json.loads(http(base + "/api/state")[2].decode("utf-8"))["app"]["apk"].get("available"))
+
+
 def main() -> int:
     _use_utf8_console()
     print("EverSend web UI self-test")
@@ -1054,6 +1111,7 @@ def main() -> int:
         base = f"http://127.0.0.1:{port}"
 
         check_https_copy_keeps_http_port(engine_a, port)
+        check_apk_download(base, ui, engine_a, root)
 
         check_scan_reports_back(engine_a)
         check_http_surface(base, ui.token, ui)

@@ -154,6 +154,18 @@
 
     <!-- ---------------------------------------------------------- 设置 -->
     <section class="view" id="view-about" role="tabpanel" aria-label="设置" hidden>
+      <div class="card" id="app-card" hidden>
+        <div class="card-head"><h2>装安卓 App（推荐）</h2><span class="muted" id="apk-size"></span></div>
+        <p class="hint">
+          网页版受浏览器限制：手机熄屏后页面会被系统冻结，收文件要等你回到页面，
+          也不能发系统通知。装了这个 App 就能常驻后台、熄屏也收得到，还能记住配对。
+        </p>
+        <a class="ghost block button-link" id="apk-link" href="/apk" download>下载安装包（.apk）</a>
+        <p class="hint">
+          装完第一次打开如果系统提示，需要允许「安装未知应用」。安装包直接从这台电脑下载，
+          不经过互联网。
+        </p>
+      </div>
       <div class="card">
         <div class="card-head"><h2>手机扫码打开</h2></div>
         <div class="qr-wrap">
