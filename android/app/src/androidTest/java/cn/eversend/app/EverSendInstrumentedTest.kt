@@ -206,28 +206,55 @@ class EverSendInstrumentedTest {
             }
 
             // 3. 附件要能存进系统「下载」目录
-            val save = device.wait(
-                androidx.test.uiautomator.Until.findObject(androidx.test.uiautomator.By.text("保存")),
+            //
+            // 取**最后一个**「保存」：聊天列表自动滚到底，最后一条一定在屏幕上；
+            // 取第一个（最老的那条）时它可能已经滚出可视区，点下去等于点在别处
+            // ——CI 上就是这么失败的（本机屏幕更高所以碰巧能过）。
+            fun savedToDownloads(): Boolean {
+                context.contentResolver.query(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    arrayOf(android.provider.MediaStore.Downloads.DISPLAY_NAME),
+                    android.provider.MediaStore.Downloads.DISPLAY_NAME + " = ?",
+                    arrayOf("ui-图片.png"),
+                    null,
+                )?.use { cursor -> return cursor.count > 0 }
+                return false
+            }
+
+            val saveButtons = device.wait(
+                androidx.test.uiautomator.Until.findObjects(androidx.test.uiautomator.By.text("保存")),
                 8_000,
             )
-            assertTrue("附件气泡上要有「保存」入口", save != null)
+            val save = saveButtons.lastOrNull()
+            assertTrue("附件气泡上要有「保存」入口（找到 ${saveButtons.size} 个）", save != null)
+            var saved = false
             if (save != null) {
                 save.click()
-                // 同样查结果：系统「下载」目录里到底有没有这个文件，而不是看提示。
-                var saved = false
-                val deadline = System.currentTimeMillis() + 25_000
+                val deadline = System.currentTimeMillis() + 12_000
                 while (System.currentTimeMillis() < deadline && !saved) {
-                    context.contentResolver.query(
-                        android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-                        arrayOf(android.provider.MediaStore.Downloads.DISPLAY_NAME),
-                        android.provider.MediaStore.Downloads.DISPLAY_NAME + " = ?",
-                        arrayOf("ui-图片.png"),
-                        null,
-                    )?.use { cursor -> saved = cursor.count > 0 }
+                    saved = savedToDownloads()
                     if (!saved) Thread.sleep(500)
                 }
-                assertTrue("点「保存」要把附件真的写进系统「下载」目录", saved)
+                if (!saved) {
+                    // 点空了（元素在屏幕边缘）就滚一下再点一次；屏幕尺寸不写死，
+                    // CI 的模拟器分辨率与本机不同。
+                    device.swipe(
+                        device.displayWidth / 2, (device.displayHeight * 3) / 4,
+                        device.displayWidth / 2, device.displayHeight / 2, 20,
+                    )
+                    Thread.sleep(800)
+                    device.wait(
+                        androidx.test.uiautomator.Until.findObjects(androidx.test.uiautomator.By.text("保存")),
+                        5_000,
+                    ).lastOrNull()?.click()
+                    val retryDeadline = System.currentTimeMillis() + 15_000
+                    while (System.currentTimeMillis() < retryDeadline && !saved) {
+                        saved = savedToDownloads()
+                        if (!saved) Thread.sleep(500)
+                    }
+                }
             }
+            assertTrue("点「保存」要把附件真的写进系统「下载」目录", saved)
         }
     }
 
