@@ -38,6 +38,9 @@
     <button class="tab" data-view="receive" role="tab" aria-selected="false" aria-controls="view-receive">
       接收<span class="badge" id="offer-badge" hidden>0</span>
     </button>
+    <button class="tab" data-view="chat" role="tab" aria-selected="false" aria-controls="view-chat">
+      聊天<span class="badge" id="chat-badge" hidden>0</span>
+    </button>
     <button class="tab" data-view="about" role="tab" aria-selected="false" aria-controls="view-about">设置</button>
   </nav>
 
@@ -111,6 +114,41 @@
         </div>
         <p class="hint" id="receive-dir"></p>
         <ul class="file-list" id="received-files"></ul>
+      </div>
+    </section>
+
+    <!-- ---------------------------------------------------------- 聊天 -->
+    <section class="view" id="view-chat" role="tabpanel" aria-label="聊天" hidden>
+      <div class="card" id="chat-pick">
+        <div class="card-head">
+          <h2>会话</h2>
+          <button class="ghost" id="btn-new-chat" type="button">和电脑聊天</button>
+        </div>
+        <ul class="conv-list" id="conv-list"></ul>
+        <p class="hint">
+          手机和电脑之间的聊天记录存在电脑上：文字、表情、图片、视频、文件、语音都在这里收发。
+          语音需要 HTTPS 地址（见「设置」），因为浏览器只在安全上下文里给麦克风。
+        </p>
+      </div>
+      <div class="card" id="chat-thread" hidden>
+        <div class="card-head">
+          <button class="ghost" id="btn-chat-back" type="button">← 会话</button>
+          <h2 id="chat-title">会话</h2>
+          <span class="muted" id="chat-members"></span>
+        </div>
+        <ul class="msg-list" id="msg-list"></ul>
+        <div class="composer">
+          <button class="emoji" id="btn-emoji" type="button" aria-label="表情">😊</button>
+          <button class="emoji" id="btn-attach" type="button" aria-label="附件">📎</button>
+          <button class="emoji" id="btn-voice" type="button" aria-label="按住说话">🎤</button>
+          <input type="text" id="chat-input" placeholder="输入消息，回车发送" enterkeyhint="send"
+                 autocomplete="off">
+          <button class="primary" id="btn-chat-send" type="button">发送</button>
+        </div>
+        <div class="emoji-pad" id="emoji-pad" hidden></div>
+        <p class="hint" id="voice-hint" hidden></p>
+        <input type="file" id="chat-file" accept="image/*,video/*,*/*" hidden>
+        <input type="file" id="chat-camera" accept="image/*,video/*" capture="environment" hidden>
       </div>
     </section>
 

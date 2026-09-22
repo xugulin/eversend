@@ -146,6 +146,9 @@
     freeSpace: 0,
     selectedDeviceId: null,
   shares: [],
+  chat: { selfId: '', conversations: [], unread: 0 },
+  conversationId: '',
+  messages: [],
     picked: [],
     view: 'send'
   };
@@ -483,6 +486,270 @@
     toast('开始下载：' + share.name + '（保存在手机的「下载」目录里）');
   }
 
+  // ------------------------------------------------------------------ chat
+
+  var emojiOpen = false;
+  var recorder = { media: null, chunks: [], started: 0, timer: null };
+
+  function chatUnread() {
+    return (store.chat && store.chat.unread) || 0;
+  }
+
+  function openConversation(convId) {
+    store.conversationId = convId || '';
+    refreshChat();
+  }
+
+  function refreshChat() {
+    var query = '/api/chat' + (store.conversationId
+      ? '?conv=' + encodeURIComponent(store.conversationId) : '');
+    return api(query).then(function (data) {
+      store.chat = {
+        selfId: data.selfId || (store.chat && store.chat.selfId) || '',
+        conversations: data.conversations || [],
+        unread: (data.conversations || []).reduce(function (sum, c) { return sum + (c.unread || 0); }, 0)
+      };
+      if (data.conversationId) store.conversationId = data.conversationId;
+      store.messages = data.messages || [];
+      renderChat();
+    }).catch(function () { /* the connection badge already says it */ });
+  }
+
+  function renderChat() {
+    var badge = $('#chat-badge');
+    var unread = chatUnread();
+    badge.hidden = unread === 0;
+    badge.textContent = String(unread);
+
+    var list = $('#conv-list');
+    var conversations = (store.chat && store.chat.conversations) || [];
+    clear(list);
+    if (!conversations.length) {
+      list.appendChild(h('li', { class: 'conv-item muted', text: '还没有会话。点右上角「和电脑聊天」。' }));
+    }
+    conversations.forEach(function (conv) {
+      var active = conv.id === store.conversationId;
+      list.appendChild(h('li', {
+        class: 'conv-item' + (active ? ' is-active' : ''),
+        onclick: function () { openConversation(conv.id); }
+      },
+        h('span', { class: 'conv-title', text: conv.title || conv.id.slice(0, 12) }),
+        conv.unread ? h('span', { class: 'badge', text: String(conv.unread) }) : null,
+        h('span', { class: 'conv-last muted', text: (conv.kind === 'group' ? '群 · ' : '') + (conv.lastText || '') })
+      ));
+    });
+
+    var thread = $('#chat-thread');
+    thread.hidden = !store.conversationId;
+    if (!store.conversationId) return;
+    var current = conversations.find(function (c) { return c.id === store.conversationId; }) || {};
+    $('#chat-title').textContent = current.title || '会话';
+    var members = (current.members || []).map(function (m) {
+      if (m === (store.chat.selfId || '')) return '我';
+      if (m.indexOf('web:') === 0) return '手机';
+      return m.slice(0, 8);
+    });
+    $('#chat-members').textContent = members.join(' · ');
+
+    var box = $('#msg-list');
+    clear(box);
+    if (!store.messages.length) {
+      box.appendChild(h('li', { class: 'msg-system', text: '还没有消息。' }));
+    }
+    store.messages.forEach(function (message) {
+      box.appendChild(messageNode(message));
+    });
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function messageNode(message) {
+    var mine = message.direction === 'out';
+    var body = [];
+    if (message.kind === 'text' || message.kind === 'system') {
+      body.push(h('span', { class: 'msg-text', text: message.text || '' }));
+    } else {
+      body.push(attachmentNode(message));
+    }
+    return h('li', { class: 'msg' + (mine ? ' is-mine' : '') },
+      h('div', { class: 'bubble' },
+        h('span', { class: 'msg-meta muted',
+          text: (message.senderName || (mine ? '我' : '对方')) + ' · ' + fmtTime(message.ts) }),
+        append(h('div', {}), body),
+        message.state === 'failed' ? h('span', { class: 'state-err', text: '发送失败（对方不在线）' }) : null
+      )
+    );
+  }
+
+  function append(node, children) {
+    children.forEach(function (child) { if (child) node.appendChild(child); });
+    return node;
+  }
+
+  function attachmentNode(message) {
+    var url = '/api/chat/media/' + encodeURIComponent(message.id);
+    var name = message.mediaName || '附件';
+    if (message.kind === 'image') {
+      return h('a', { href: url, target: '_blank', rel: 'noopener' },
+        h('img', { class: 'msg-image', src: url, alt: name, loading: 'lazy' }));
+    }
+    if (message.kind === 'video') {
+      return h('video', { class: 'msg-video', src: url, controls: 'controls', preload: 'metadata' });
+    }
+    if (message.kind === 'voice') {
+      var seconds = message.durationMs ? Math.round(message.durationMs / 1000) : 0;
+      return h('div', { class: 'msg-voice' },
+        h('audio', { src: url, controls: 'controls', preload: 'metadata' }),
+        h('span', { class: 'muted', text: '语音' + (seconds ? ' · ' + seconds + ' 秒' : '') })
+      );
+    }
+    return h('a', { class: 'msg-file', href: url, download: name },
+      h('span', { text: '📄 ' + name }),
+      h('span', { class: 'muted', text: ' ' + fmtBytes(message.mediaSize || 0) })
+    );
+  }
+
+  function fmtTime(ts) {
+    if (!ts) return '';
+    var date = new Date(ts * 1000);
+    return ('0' + date.getHours()).slice(-2) + ':' + ('0' + date.getMinutes()).slice(-2);
+  }
+
+  function onChatFile(event) {
+    var file = event.target.files && event.target.files[0];
+    event.target.value = '';
+    if (!file) return;
+    var kind = guessKind(file);
+    toast('正在发送 ' + file.name + '…');
+    uploadAttachment(file, kind, 0).then(refreshChat).catch(function (error) {
+      toast('发送失败：' + error.message, 'error');
+    });
+  }
+
+  function sendText() {
+    var input = $('#chat-input');
+    var text = input.value.trim();
+    if (!text || !store.conversationId) return;
+    input.value = '';
+    postChat('/api/chat/send', { conv: store.conversationId, text: text })
+      .then(refreshChat)
+      .catch(function (error) { toast('发送失败：' + error.message, 'error'); });
+  }
+
+  function postChat(path, payload) {
+    return api(path, { method: 'POST', json: payload }).then(function (data) {
+      if (!data || !data.ok) throw new Error((data && data.error) || '服务器拒绝了');
+      return data;
+    });
+  }
+
+  function uploadAttachment(file, kind, durationMs) {
+    if (!store.conversationId) return;
+    var query = '/api/chat/upload?name=' + encodeURIComponent(file.name || ('voice-' + Date.now() + '.webm')) +
+      '&conv=' + encodeURIComponent(store.conversationId) +
+      '&kind=' + encodeURIComponent(kind || 'file') +
+      '&duration=' + encodeURIComponent(durationMs || 0);
+    return fetch(query, {
+      method: 'POST',
+      headers: { 'X-EverSend-Token': TOKEN, 'Content-Type': file.type || 'application/octet-stream' },
+      body: file,
+      credentials: 'same-origin'
+    }).then(function (response) {
+      return response.text().then(function (text) {
+        var data = null;
+        try { data = JSON.parse(text); } catch (err) { data = null; }
+        if (!response.ok || !data || !data.ok) {
+          throw new Error((data && data.error) || ('HTTP ' + response.status));
+        }
+        return data;
+      });
+    });
+  }
+
+  function guessKind(file) {
+    var type = (file.type || '').toLowerCase();
+    var name = (file.name || '').toLowerCase();
+    if (type.indexOf('image/') === 0 || /\.(png|jpe?g|gif|webp|heic|heif|bmp)$/.test(name)) return 'image';
+    if (type.indexOf('video/') === 0 || /\.(mp4|mov|mkv|webm|3gp|avi)$/.test(name)) return 'video';
+    if (type.indexOf('audio/') === 0 || /\.(m4a|aac|opus|ogg|mp3|wav|amr|weba)$/.test(name)) return 'voice';
+    return 'file';
+  }
+
+  function toggleEmoji() {
+    var pad = $('#emoji-pad');
+    emojiOpen = !emojiOpen;
+    pad.hidden = !emojiOpen;
+    if (!pad.childElementCount) {
+      ['😀','😂','🥹','😊','😍','😘','🤔','😴','😎','🤩','😭','😅','🙃','😇','🥳','🤝',
+       '👍','👎','👌','🙏','👏','💪','🤙','✌️','❤️','💔','🔥','✨','🎉','🎁','⭐','💡',
+       '✅','❌','⚠️','❓','❗','📎','📷','🎬','🎵','🎤','💻','📱','🖥️','📁','📄','🗑️'
+      ].forEach(function (emoji) {
+        pad.appendChild(h('button', {
+          type: 'button', text: emoji,
+          onclick: function () {
+            var input = $('#chat-input');
+            input.value += emoji;
+            input.focus();
+          }
+        }));
+      });
+    }
+  }
+
+  // --- 语音消息：浏览器只在安全上下文里给麦克风 --------------------------
+
+  function secureContext() {
+    return window.isSecureContext === true ||
+      location.protocol === 'https:' || location.hostname === 'localhost' ||
+      location.hostname === '127.0.0.1';
+  }
+
+  function canRecord() {
+    return secureContext() && !!navigator.mediaDevices && !!navigator.mediaDevices.getUserMedia &&
+      typeof MediaRecorder !== 'undefined' && !!store.conversationId;
+  }
+
+  function startRecording() {
+    if (!canRecord()) {
+      toast('这个地址不能录音：手机浏览器只在 HTTPS 页面里给麦克风。请用「设置」里那个 https:// 地址打开本页。', 'error');
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+      recorder.media = new MediaRecorder(stream);
+      recorder.chunks = [];
+      recorder.started = Date.now();
+      recorder.media.ondataavailable = function (event) {
+        if (event.data && event.data.size) recorder.chunks.push(event.data);
+      };
+      recorder.media.onstop = function () {
+        stream.getTracks().forEach(function (track) { track.stop(); });
+        var seconds = (Date.now() - recorder.started) / 1000;
+        if (seconds < 0.6 || !recorder.chunks.length) {
+          toast('太短了，没发出去');
+          return;
+        }
+        var blob = new Blob(recorder.chunks, { type: recorder.media.mimeType || 'audio/webm' });
+        var ext = (recorder.media.mimeType || '').indexOf('mp4') >= 0 ? 'm4a' : 'webm';
+        var file = new File([blob], 'voice-' + Date.now() + '.' + ext, { type: blob.type });
+        toast('正在发送语音…');
+        uploadAttachment(file, 'voice', Math.round(seconds * 1000)).then(refreshChat).catch(function (error) {
+          toast('语音发送失败：' + error.message, 'error');
+        });
+      };
+      recorder.media.start();
+      $('#voice-hint').hidden = false;
+      $('#voice-hint').textContent = '正在录音…再按一次 🎤 结束并发送';
+      $('#btn-voice').classList.add('is-recording');
+    }).catch(function (error) {
+      toast('拿不到麦克风：' + error.message, 'error');
+    });
+  }
+
+  function stopRecording() {
+    if (recorder.media && recorder.media.state !== 'inactive') recorder.media.stop();
+    $('#voice-hint').hidden = true;
+    $('#btn-voice').classList.remove('is-recording');
+  }
+
   function renderShares() {
     // Files the desktop handed over for this phone.  A browser cannot be
     // pushed to, so this list *is* the "receive" direction: the computer puts
@@ -596,6 +863,7 @@
     store.device = state.device || store.device;
     store.devices = state.devices || [];
     store.shares = state.shares || [];
+    store.chat = state.chat || store.chat;
     store.transfers = state.transfers || [];
     store.offers = state.offers || [];
     store.uploads = state.uploads || [];
@@ -732,7 +1000,8 @@
   var SSE_KINDS_REFRESH = {
     transfer_started: 1, transfer_finished: 1, transfer_cancelled: 1, transfer_accepted: 1,
     transfer_rejected: 1, file_done: 1, file_failed: 1, offer_received: 1,
-    device_found: 1, device_updated: 1, engine_started: 1, web_upload_failed: 1
+    device_found: 1, device_updated: 1, engine_started: 1, web_upload_failed: 1,
+    chat_message: 1, chat_sent: 1
   };
 
   var eventSource = null;
@@ -790,6 +1059,11 @@
       case 'web_upload_failed':
         toast('发送失败：' + (event.error || ''), 'error');
         break;
+      case 'chat_message':
+        var chat = event.message || {};
+        toast('💬 ' + (chat.senderName || '对方') + '：' +
+          (chat.text || { image: '[图片]', video: '[视频]', voice: '[语音]', file: '[文件]' }[chat.kind] || '新消息'));
+        break;
       case 'warning':
         toast(event.message || '警告', 'error');
         break;
@@ -798,6 +1072,7 @@
       samples.delete(event.transfer_id);
       scheduleRefresh(kind === 'send_progress' ? 1000 : 250);
     }
+    if (kind === 'chat_message' || kind === 'chat_sent') refreshChat();
   }
 
   // ---------------------------------------------------------------- upload
@@ -940,7 +1215,7 @@
 
   function switchView(view) {
     store.view = view;
-    ['send', 'receive', 'about'].forEach(function (name) {
+    ['send', 'receive', 'chat', 'about'].forEach(function (name) {
       var section = $('#view-' + name);
       if (section) section.hidden = name !== view;
       var tab = document.querySelector('.tab[data-view="' + name + '"]');
@@ -950,6 +1225,7 @@
       }
     });
     if (view === 'about') loadQr();
+    if (view === 'chat') refreshChat();
   }
 
   var qrLoadedFor = '';
@@ -1003,6 +1279,31 @@
         .catch(function (error) { toast(error.message, 'error'); });
     });
     $('#btn-refresh-files').addEventListener('click', function () { refreshFiles(); });
+
+    // ---- chat
+    $('#btn-chat-send').addEventListener('click', sendText);
+    $('#chat-input').addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') { event.preventDefault(); sendText(); }
+    });
+    $('#btn-emoji').addEventListener('click', toggleEmoji);
+    $('#btn-chat-back').addEventListener('click', function () {
+      store.conversationId = '';
+      refreshChat();
+    });
+    $('#btn-new-chat').addEventListener('click', function () {
+      // A phone's only protocol-free partner is the computer serving this page,
+      // so "new chat" is just the 1:1 with it.
+      api('/api/chat/send', { method: 'POST', json: { text: '你好' } })
+        .then(function () { store.conversationId = ''; refreshChat(); })
+        .catch(function (error) { toast('建立会话失败：' + error.message, 'error'); });
+    });
+    $('#btn-attach').addEventListener('click', function () { $('#chat-file').click(); });
+    $('#chat-camera') && $('#chat-camera').addEventListener('change', onChatFile);
+    $('#chat-file').addEventListener('change', onChatFile);
+    $('#btn-voice').addEventListener('click', function () {
+      if (recorder.media && recorder.media.state === 'recording') stopRecording();
+      else startRecording();
+    });
     $('#pin').addEventListener('keydown', function (event) {
       if (event.key === 'Enter') pump();
     });
@@ -1057,6 +1358,7 @@
     }, POLL_MS);
     setInterval(paint, TICK_MS);
     setInterval(refreshFiles, 15000);
+    setInterval(function () { if (!disconnected) refreshChat(); }, 5000);
   }
 
   if (document.readyState === 'loading') {

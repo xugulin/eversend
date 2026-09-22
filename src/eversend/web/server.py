@@ -47,6 +47,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, ClassVar, Iterable, Iterator
 
 from ..core.constants import APP_NAME, APP_NAME_CN, APP_VERSION, DEFAULT_WEB_PORT
+from ..core.chat import direct_conversation_id, media_relpath
 from ..core.engine import Engine, build_file_entries, free_space
 from ..core.model import DeviceInfo, Peer, new_transfer_id, sanitize_component, unique_path
 from . import qr
@@ -73,6 +74,9 @@ IO_CHUNK = 256 * 1024
 #: Default ceiling for one uploaded file: large enough for a 4K video,
 #: small enough that a hostile LAN client cannot fill the disk unnoticed.
 DEFAULT_MAX_UPLOAD = 32 * 1024 * 1024 * 1024
+
+#: Port for the HTTPS interface (voice messages need a secure context).
+DEFAULT_WEB_TLS_PORT = DEFAULT_WEB_PORT + 1
 
 #: Hidden working directory for in-flight uploads, inside the receive dir.
 _SPOOL_DIRNAME = ".eversend-uploads"
@@ -170,7 +174,7 @@ _MIME_TYPES = {
 
 #: Routes that only accept POST, so a GET can be answered with 405.
 _POST_ONLY_ROUTES = frozenset(
-    {"/api/announce", "/api/scan", "/api/upload", "/api/share", "/api/leave", "/api/offer/respond", "/api/cancel", "/api/trust", "/api/peer"}
+    {"/api/announce", "/api/scan", "/api/upload", "/api/share", "/api/leave", "/api/chat/send", "/api/chat/upload", "/api/offer/respond", "/api/cancel", "/api/trust", "/api/peer"}
 )
 
 _JSON_TYPE = "application/json; charset=utf-8"
@@ -435,8 +439,12 @@ class WebUI:
         extra_hosts: Iterable[str] = (),
         advertise: bool = True,
         log_requests: bool = False,
+        ssl_context: Any = None,
     ) -> None:
         self.engine = engine
+        #: When set, the interface is served over HTTPS.  Voice messages need it
+        #: (a browser only hands over the microphone in a secure context).
+        self.ssl_context = ssl_context
         self.host = host
         self.port = int(port)
         self.asset_dir = os.path.realpath(asset_dir or os.path.join(os.path.dirname(__file__), "assets"))
@@ -769,6 +777,11 @@ class WebUI:
         httpd = _ThreadingServer((self.host, wanted), Handler)
         httpd.daemon_threads = True
         httpd.request_queue_size = 128
+        if self.ssl_context is not None:
+            # Wrapping the *listening* socket is the documented way to put
+            # http.server behind TLS: every accepted connection is then already
+            # an SSLSocket, and the handler code stays exactly the same.
+            httpd.socket = self.ssl_context.wrap_socket(httpd.socket, server_side=True)
         self._httpd = httpd
         self._bound_port = int(httpd.server_address[1])
         self.port = self._bound_port
@@ -953,6 +966,13 @@ class WebUI:
             # Who has this page open.  The phone sees itself here, and the
             # desktop reads the same list to show "手机已连接".
             "webClients": self.clients(),
+            # Chat summary: the phone renders its conversation list from this,
+            # and needs to know which member id is *itself*.
+            "chat": {
+                "selfId": "",
+                "conversations": self.engine.chat.conversations(),
+                "unread": self.engine.chat.unread_total(),
+            },
             # The remembered ones too: the phone stays in the list while its
             # screen is off, so the desktop never has to be told "keep the
             # browser open" to stay paired.
@@ -1389,7 +1409,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_asset(path[len("/assets/") :])
             return
         if path == "/api/state":
-            self._send_json(HTTPStatus.OK, ui.state())
+            state = ui.state()
+            # ``state()`` is also used by the desktop, which has no HTTP client
+            # identity; only here do we know which phone is asking.
+            state["chat"]["selfId"] = self._self_client_id(ui)
+            self._send_json(HTTPStatus.OK, state)
             return
         if path == "/api/devices":
             self._send_json(HTTPStatus.OK, {"ok": True, "devices": ui._devices()})
@@ -1411,6 +1435,12 @@ class _Handler(BaseHTTPRequestHandler):
             # What the desktop handed over for this phone, by opaque id.
             self._send_share(path[len("/api/share/") :])
             return
+        if path == "/api/chat":
+            self._send_chat(query)
+            return
+        if path.startswith("/api/chat/media/"):
+            self._send_chat_media(path[len("/api/chat/media/") :])
+            return
         if path == "/api/events":
             # A stream has no end, so it can never be answered with HEAD, and
             # any other verb would leave a thread parked on an open response.
@@ -1430,6 +1460,12 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/share":
                 self._share_files()
+                return
+            if path == "/api/chat/send":
+                self._chat_send()
+                return
+            if path == "/api/chat/upload":
+                self._chat_upload(query)
                 return
             if path == "/api/leave":
                 # The page is going away on purpose.  Drop it now; the desktop
@@ -2011,6 +2047,199 @@ class _Handler(BaseHTTPRequestHandler):
                 "device": device_dict(peer.info),
             },
         )
+
+    # -- chat --------------------------------------------------------------
+
+    def _self_client_id(self, ui) -> str:
+        """A stable id for *this* phone inside conversations.
+
+        The browser registry already keys a phone by address + User-Agent, and
+        that key survives a screen-off freeze, so a conversation with a phone
+        keeps pointing at the same member.
+        """
+        address = self.client_address[0] if self.client_address else ""
+        key = ui.client_key(address, self.headers.get("User-Agent", ""))
+        return "web:" + key
+
+    def _send_chat(self, query: dict[str, list[str]]) -> None:
+        """``GET /api/chat``: conversations plus one conversation's messages."""
+        ui = self.server_ui
+        store = ui.engine.chat
+        conv_id = (query.get("conv") or [""])[0]
+        try:
+            limit = int((query.get("limit") or ["120"])[0] or 120)
+        except ValueError:
+            limit = 120
+        before_raw = (query.get("before") or [""])[0]
+        before = float(before_raw) if before_raw else None
+
+        conversations = store.conversations()
+        if not conv_id and conversations:
+            conv_id = conversations[0]["id"]
+        messages = store.messages(conv_id, limit=limit, before=before) if conv_id else []
+        if conv_id:
+            store.mark_read(conv_id)
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "ok": True,
+                "selfId": self._self_client_id(ui),
+                "selfName": describe_agent(self.headers.get("User-Agent", "")),
+                "conversations": conversations,
+                "conversationId": conv_id,
+                "messages": messages,
+            },
+        )
+
+    def _chat_message_payload(self, ui) -> tuple[str, str]:
+        """``(conversation id, who is sending)`` for a chat POST."""
+        body = self._json_body()
+        conv_id = str(body.get("conv") or body.get("conversationId") or "").strip()
+        return conv_id, self._self_client_id(ui)
+
+    def _chat_send(self) -> None:
+        """``POST /api/chat/send``: a message typed on the phone."""
+        ui = self.server_ui
+        engine = ui.engine
+        body = self._json_body()
+        conv_id = str(body.get("conv") or body.get("conversationId") or "").strip()
+        to = str(body.get("to") or "").strip()
+        text = str(body.get("text") or "")
+        kind = str(body.get("kind") or "text")
+        if kind not in ("text", "system"):
+            raise _BadRequest("发附件请用 /api/chat/upload")
+        if not text.strip():
+            raise _BadRequest("消息是空的")
+        if not conv_id:
+            # A phone starting a 1:1 with this computer: the id both sides
+            # compute is the sorted pair of member ids.
+            conv_id = direct_conversation_id(
+                engine.info.device_id, self._self_client_id(ui)
+            )
+        conv = engine.chat.conversation(conv_id) or {}
+        members = list(body.get("members") or conv.get("members") or [])
+        if not members:
+            members = [engine.info.device_id, self._self_client_id(ui)]
+        if to and to not in members:
+            members.append(to)
+        sender = self._self_client_id(ui)
+        if sender not in members:
+            members.append(sender)
+        # ``accept_chat`` rather than ``send_chat``: from this computer's point
+        # of view a message typed on the phone is *incoming* (it must show up as
+        # received, and bump the unread badge), and it still has to reach every
+        # other computer in the room -- hence the relay.
+        result = engine.accept_chat(
+            {
+                "conv": {
+                    "id": conv_id,
+                    "kind": "group" if conv_id.startswith("g:") else "direct",
+                    "title": str(body.get("title") or conv.get("title") or ""),
+                    "members": members,
+                },
+                "msg": {
+                    "sender": sender,
+                    "senderName": describe_agent(self.headers.get("User-Agent", "")) or "手机",
+                    "kind": kind,
+                    "text": text,
+                },
+            },
+            source="phone",
+        )
+        result["delivered"] = engine.relay_chat(conv_id, result)
+        self._send_json(HTTPStatus.OK, {"ok": True, **result})
+
+    def _chat_upload(self, query: dict[str, list[str]]) -> None:
+        """``POST /api/chat/upload``: an attachment (or a voice note) from the phone."""
+        ui = self.server_ui
+        engine = ui.engine
+        name = sanitize_component((query.get("name") or [""])[0])
+        if not name:
+            raise _BadRequest("缺少合法的文件名 (name)")
+        conv_id = (query.get("conv") or [""])[0].strip()
+        if not conv_id:
+            conv_id = direct_conversation_id(engine.info.device_id, self._self_client_id(ui))
+        kind = (query.get("kind") or ["file"])[0]
+        if kind not in ("image", "video", "voice", "file"):
+            kind = "file"
+        try:
+            duration_ms = int((query.get("duration") or ["0"])[0] or 0)
+        except ValueError:
+            duration_ms = 0
+
+        rel = media_relpath(conv_id, name)
+        target = os.path.join(ui.receive_dir, rel)
+        declared = self._body_length()
+        if declared is not None:
+            available = free_space(ui.receive_dir)
+            if available and declared > available:
+                self._fail(
+                    HTTPStatus.INSUFFICIENT_STORAGE,
+                    f"接收目录剩余空间不足（需要 {declared} 字节，可用 {available} 字节）",
+                )
+                return
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        written = 0
+        try:
+            with open(target, "wb", buffering=0) as handle:
+                for chunk in self._iter_body(ui.max_upload_bytes):
+                    handle.write(chunk)
+                    written += len(chunk)
+        except BaseException:
+            try:
+                os.unlink(target)
+            except OSError:
+                pass
+            raise
+
+        # The message goes through the engine so it lands in exactly the same
+        # store (and reaches the same peers) as one typed on the desktop.
+        sender = self._self_client_id(ui)
+        sender_name = describe_agent(self.headers.get("User-Agent", "")) or "手机"
+        conv = engine.chat.conversation(conv_id) or {}
+        members = list(conv.get("members") or [engine.info.device_id, sender])
+        if sender not in members:
+            members.append(sender)
+        result = engine.accept_chat(
+            {
+                "conv": {
+                    "id": conv_id,
+                    "kind": "group" if conv_id.startswith("g:") else "direct",
+                    "title": str(conv.get("title") or ""),
+                    "members": members,
+                },
+                "msg": {
+                    "sender": sender,
+                    "senderName": sender_name,
+                    "kind": kind,
+                    "mediaName": os.path.basename(rel),
+                    "mediaRel": rel,
+                    "mediaSize": written,
+                    "mediaMime": str(self.headers.get("Content-Type") or ""),
+                    "durationMs": duration_ms,
+                },
+            },
+            source="phone",
+        )
+        # …and then relayed to every *computer* in the room, which is what makes
+        # a group with a phone and two laptops work.
+        engine.relay_chat(conv_id, result)
+        self._send_json(HTTPStatus.ACCEPTED, {"ok": True, **result})
+
+    def _send_chat_media(self, message_id: str) -> None:
+        """Serve an attachment by message id (Range-capable)."""
+        ui = self.server_ui
+        message = ui.engine.chat.message(urllib.parse.unquote(message_id))
+        if message is None or not message.get("mediaRel"):
+            self._fail(HTTPStatus.NOT_FOUND, "没有这条附件")
+            return
+        path = os.path.join(ui.receive_dir, message["mediaRel"])
+        real = os.path.realpath(path)
+        root = os.path.realpath(ui.receive_dir)
+        if not (real == root or real.startswith(root + os.sep)) or not os.path.isfile(real):
+            self._fail(HTTPStatus.NOT_FOUND, "附件不在接收目录里")
+            return
+        self._stream_file(real)
 
     def _is_loopback_client(self) -> bool:
         """True when this request came from this very machine."""

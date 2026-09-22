@@ -32,11 +32,14 @@ from .constants import (
     DEFAULT_WEB_PORT,
     MSG_ATTACH,
     MSG_CANCEL,
+    MSG_CHAT,
+    MSG_CHAT_ACK,
     MSG_ERROR,
     MSG_OFFER,
     MSG_OFFER_ACK,
     MSG_OFFER_REJECT,
 )
+from .chat import ChatStore, direct_conversation_id, media_relpath
 from .discovery import DiscoveryService
 from .framing import ConnectionClosed, ProtocolError
 from .hashing import DigestCache
@@ -176,6 +179,9 @@ class Engine:
         # Remembers (path, size, mtime) -> digest so re-sending a file that has
         # not changed skips the hashing pass entirely.
         self.digest_cache = DigestCache(os.path.join(config.data_dir, "digests.json"))
+        #: Conversations and messages.  See core/chat.py for why this is a
+        #: database rather than a file, and how attachments are referenced.
+        self.chat = ChatStore(config.data_dir)
 
         self.info = DeviceInfo(
             device_id=self.identity.device_id,
@@ -195,6 +201,7 @@ class Engine:
             device_info=lambda: self.info,
             on_offer=self._on_offer,
             on_attach=self._on_attach,
+            on_chat=self._on_chat,
             events=self.events,
             encrypt=config.encrypt,
         )
@@ -327,6 +334,228 @@ class Engine:
         return out
 
     # ------------------------------------------------------------------
+    # chat
+    # ------------------------------------------------------------------
+
+    def _on_chat(self, conn: Connection, payload: dict[str, Any]) -> None:
+        """One chat message arrived from a peer (server thread)."""
+        try:
+            event = self.accept_chat(payload, source="peer")
+        except Exception as exc:
+            self.events.emit("chat_rejected", reason=str(exc))
+            try:
+                conn.send_json(MSG_ERROR, {"message": f"chat rejected: {exc}"})
+            except Exception:
+                pass
+            return
+        try:
+            conn.send_json(MSG_CHAT_ACK, {"id": event["message"]["id"]})
+        except Exception:
+            pass
+        self.events.emit("chat_message", **event)
+
+    def relay_chat(self, conv_id: str, event: dict[str, Any]) -> int:
+        """Forward a message we accepted to every *computer* in the room.
+
+        A phone can only talk to the computer serving its page, so that computer
+        is the hub: without this, a group with one phone and two laptops would
+        deliver each phone message to exactly one of them.
+        """
+        conversation = event.get("conversation") or {}
+        message = event.get("message") or {}
+        payload = self.chat_payload(conversation, message)
+        delivered = 0
+        for member in conversation.get("members") or []:
+            if member == self.info.device_id or str(member).startswith("web:"):
+                continue
+            if self.deliver_chat(str(member), payload):
+                delivered += 1
+        return delivered
+
+    def accept_chat(self, payload: dict[str, Any], *, source: str = "peer") -> dict[str, Any]:
+        """Store an incoming chat message (from a peer *or* from a phone).
+
+        Shared by both transports on purpose: a message from another computer
+        arrives as a MSG_CHAT frame, one from a phone arrives as an HTTP POST,
+        and both have to end up in exactly the same conversation.
+        """
+        conv = dict(payload.get("conv") or {})
+        msg = dict(payload.get("msg") or {})
+        conv_id = str(conv.get("id") or "").strip()
+        if not conv_id or not msg:
+            raise ValueError("chat payload needs conv.id and msg")
+        # Never let a peer invent members we did not agree to: merge, don't replace.
+        self.chat.upsert_conversation(
+            conv_id,
+            kind=str(conv.get("kind") or "direct"),
+            title=str(conv.get("title") or ""),
+            members=list(conv.get("members") or []),
+        )
+        sender = str(msg.get("sender") or "") or (
+            "web:phone" if source == "phone" else ""
+        )
+        if sender and sender != self.info.device_id:
+            self.chat.add_member(conv_id, sender)
+        message = self.chat.add_message(
+            conv_id,
+            message_id=str(msg.get("id") or ""),
+            sender=sender,
+            sender_name=str(msg.get("senderName") or ""),
+            kind=str(msg.get("kind") or "text"),
+            text=str(msg.get("text") or ""),
+            media_name=str(msg.get("mediaName") or ""),
+            media_rel=str(msg.get("mediaRel") or ""),
+            media_size=int(msg.get("mediaSize") or 0),
+            media_mime=str(msg.get("mediaMime") or ""),
+            duration_ms=int(msg.get("durationMs") or 0),
+            direction="in",
+            state="received",
+            ts=float(msg["ts"]) if msg.get("ts") else None,
+        )
+        return {
+            "conversation": self.chat.conversation(conv_id) or {},
+            "message": message,
+            "source": source,
+        }
+
+    def chat_payload(
+        self,
+        conversation: dict[str, Any],
+        message: dict[str, Any],
+    ) -> dict[str, Any]:
+        """The wire form of one message: conversation + message, one frame."""
+        return {
+            "v": 1,
+            "conv": {
+                "id": conversation.get("id", ""),
+                "kind": conversation.get("kind", "direct"),
+                "title": conversation.get("title", ""),
+                "members": list(conversation.get("members") or []),
+            },
+            "msg": {
+                "id": message.get("id", ""),
+                "sender": message.get("sender") or self.info.device_id,
+                "senderName": message.get("senderName") or self.info.name,
+                "kind": message.get("kind", "text"),
+                "text": message.get("text", ""),
+                "mediaName": message.get("mediaName", ""),
+                "mediaRel": message.get("mediaRel", ""),
+                "mediaSize": message.get("mediaSize", 0),
+                "mediaMime": message.get("mediaMime", ""),
+                "durationMs": message.get("durationMs", 0),
+                "ts": message.get("ts", time.time()),
+            },
+        }
+
+    def deliver_chat(self, device_id: str, payload: dict[str, Any], *, timeout: float = 8.0) -> bool:
+        """Hand one chat payload to a peer, over its own short-lived connection."""
+        peer = next((p for p in self.devices() if p.info.device_id == device_id), None)
+        if peer is None:
+            return False
+        conn: Connection | None = None
+        try:
+            sock = connect_to(peer.address, peer.port, timeout=timeout)
+            conn = Connection(sock, self.identity, stream_id=0, encrypt=self.config.encrypt)
+            conn.handshake_initiator(self.info)
+            conn.send_json(MSG_CHAT, payload)
+            conn.sock.settimeout(timeout)
+            frame = conn.recv()
+            return frame.type == MSG_CHAT_ACK
+        except (OSError, HandshakeError, ConnectionClosed, ProtocolError) as exc:
+            self.events.emit("chat_failed", peer=device_id, error=str(exc))
+            return False
+        finally:
+            if conn is not None:
+                conn.abort()
+
+    def send_chat(
+        self,
+        conv_id: str,
+        *,
+        kind: str = "text",
+        text: str = "",
+        media_path: str = "",
+        media_name: str = "",
+        media_mime: str = "",
+        duration_ms: int = 0,
+        title: str = "",
+        members: Iterable[str] | None = None,
+        to: str = "",
+        sender_override: str = "",
+        sender_name: str = "",
+    ) -> dict[str, Any]:
+        """Store a message and try to hand it to every computer in the room.
+
+        Phones are members too, but they are browser clients: nothing is pushed
+        to them -- the page reads the message from the store.  So a member that
+        is reachable over the protocol gets a frame, and everybody else just
+        finds it waiting.
+        """
+        member_list = list(members if members is not None else self.chat.members(conv_id))
+        if to and to not in member_list:
+            # A brand-new 1:1 chat has no stored members yet; the caller knows
+            # who it is talking to, and that is the only place it can come from.
+            member_list.append(to)
+        if self.info.device_id and self.info.device_id not in member_list:
+            member_list.append(self.info.device_id)
+        conv = self.chat.upsert_conversation(
+            conv_id,
+            kind="group" if conv_id.startswith("g:") else "direct",
+            title=title,
+            members=member_list,
+        )
+
+        rel = ""
+        if media_path:
+            name = media_name or os.path.basename(media_path)
+            rel = media_relpath(conv_id, name)
+            media_name = os.path.basename(rel)
+
+        message = self.chat.add_message(
+            conv_id,
+            sender=sender_override or self.info.device_id,
+            sender_name=sender_name or self.info.name,
+            kind=kind,
+            text=text,
+            media_name=media_name,
+            media_rel=rel,
+            media_size=os.path.getsize(media_path) if media_path and os.path.exists(media_path) else 0,
+            media_mime=media_mime,
+            duration_ms=duration_ms,
+            direction="out",
+            state="sending",
+        )
+        payload = self.chat_payload(conv, message)
+
+        delivered = 0
+        reachable = 0
+        for member in member_list:
+            if member == self.info.device_id or member.startswith("web:"):
+                continue  # ourselves, or a browser client (it reads the store)
+            reachable += 1
+            if media_path:
+                # Move the file first, into the folder both sides compute from
+                # the conversation id; then the message can reference it.
+                peer = next((p for p in self.devices() if p.info.device_id == member), None)
+                if peer is None:
+                    continue
+                if not self.send(peer, [media_path], rel_dir=os.path.dirname(rel)):
+                    continue
+            if self.deliver_chat(member, payload):
+                delivered += 1
+
+        state = "sent" if (delivered or not reachable) else "failed"
+        self.chat.set_state(message["id"], state)
+        event = {
+            "conversation": self.chat.conversation(conv_id) or {},
+            "message": dict(message, state=state, mediaRel=rel, mediaName=media_name),
+            "delivered": delivered,
+            "reachable": reachable,
+        }
+        self.events.emit("chat_sent", **event)
+        return event
+
+    # ------------------------------------------------------------------
     # devices
     # ------------------------------------------------------------------
 
@@ -442,13 +671,23 @@ class Engine:
         pin: str = "",
         streams: int | None = None,
         cancel_event: threading.Event | None = None,
+        rel_dir: str = "",
     ) -> bool:
         """Offer and send ``paths`` to ``peer``.
 
         Blocks until the transfer finishes.  Runs the control connection on the
         calling thread and one thread per data stream.
+
+        ``rel_dir`` puts the file in a sub-folder of the receiver's receive
+        directory.  Chat uses it to drop attachments into
+        ``韧传聊天/<conversation>/``, a path both ends compute from the
+        conversation id -- so no extra protocol field is needed for "where
+        should this land".
         """
         entries, sources = build_file_entries(paths)
+        if rel_dir:
+            for entry in entries:
+                entry.rel_dir = rel_dir
         if not entries:
             raise TransferFailed("nothing to send")
 

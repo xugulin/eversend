@@ -34,6 +34,7 @@ from ..core.model import DeviceInfo, Peer, human_bytes
 from ..core.sockutil import list_interfaces
 from . import theme
 from .bridge import EngineBridge, SendWorker
+from .chat_view import ChatView
 from .widgets import (
     DeviceTable,
     DropZone,
@@ -94,6 +95,8 @@ class MainWindow(QMainWindow):
         #: Set by :meth:`on_web_ui_started`; ``None`` until (and unless) the
         #: browser interface is up.
         self._web_ui = None
+        #: HTTPS port, when the secure copy of the page started (0 = none).
+        self._web_tls_port = 0
         #: Devices seen since the current scan started, and the backstop timer.
         self._scan_hits = 0
         self._scan_watchdog: QTimer | None = None
@@ -140,6 +143,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_send_tab(), "发送")
         self.tabs.addTab(self._build_receive_tab(), "接收")
         self.tabs.addTab(self._build_transfers_tab(), "传输")
+        self.chat_view = ChatView(self.engine)
+        self.chat_view.send_finished.connect(self._on_chat_sent)
+        self.tabs.addTab(self.chat_view, "聊天")
         self.tabs.addTab(self._build_settings_tab(), "设置")
         root.addWidget(self.tabs, 1)
 
@@ -467,6 +473,7 @@ class MainWindow(QMainWindow):
         self.bridge.device_updated.connect(self._on_device)
         self.bridge.scan_hit.connect(self._on_scan_hit)
         self.bridge.scan_finished.connect(self._on_scan_finished)
+        self.bridge.chat_changed.connect(self._on_chat_changed)
         self.bridge.offer_received.connect(self._on_offer)
         self.bridge.transfer_finished.connect(self._on_transfer_finished)
         self.bridge.warning.connect(self._on_warning)
@@ -588,6 +595,31 @@ class MainWindow(QMainWindow):
                 break
         self.web_url_label.setText(url or "（未找到可用的局域网地址）")
         self.receive_dir_label.setText(self.engine.config.receive_dir)
+
+    def _on_chat_changed(self, event: dict) -> None:
+        """A chat message arrived or was sent: refresh the chat tab."""
+        view = getattr(self, "chat_view", None)
+        if view is None:
+            return
+        view.reload()
+        if event.get("kind") == "chat_message":
+            message = event.get("message") or {}
+            who = message.get("senderName") or "对方"
+            preview = message.get("text") or {
+                "image": "[图片]",
+                "video": "[视频]",
+                "voice": "[语音]",
+                "file": "[文件]",
+            }.get(str(message.get("kind")), "新消息")
+            self.status_left.setText(f"💬 {who}：{preview[:60]}")
+
+    def _on_chat_sent(self, ok: bool, error: str) -> None:
+        view = getattr(self, "chat_view", None)
+        if view is not None:
+            view.send_button.setEnabled(True)
+            view.reload()
+        if not ok and error:
+            self.status_left.setText(f"聊天发送失败：{error}")
 
     def _remove_device(self, peer: Peer) -> None:
         """Forget a phone (it comes back the next time its page opens)."""
@@ -963,7 +995,14 @@ class MainWindow(QMainWindow):
         self.engine.config.web_port = port
         self.engine.info.web_port = port
         self._web_ui = ui
+        if getattr(self, "chat_view", None) is not None:
+            self.chat_view._clients_provider = ui.known_clients  # noqa: SLF001
         self._update_header()
+        self._refresh_web_clients()
+
+    def on_web_tls_started(self, port: int) -> None:
+        """Remember the HTTPS port: voice messages need that address."""
+        self._web_tls_port = int(port)
         self._refresh_web_clients()
 
     def on_web_ui_failed(self, reason: str) -> None:

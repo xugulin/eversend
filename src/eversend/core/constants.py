@@ -179,6 +179,13 @@ MSG_PING = 0x50
 MSG_PONG = 0x51
 MSG_BYE = 0x60
 
+# Chat.  One message per short-lived connection: the sender connects, hands the
+# message over, waits for the ack and hangs up.  A chat line is a few hundred
+# bytes, so a connection per message costs one round trip on the LAN and saves
+# every peer from keeping a session (and its failure modes) alive forever.
+MSG_CHAT = 0x70
+MSG_CHAT_ACK = 0x71
+
 #: Message types whose payload is JSON text.
 CONTROL_TYPES = frozenset(
     {
@@ -198,6 +205,8 @@ CONTROL_TYPES = frozenset(
         MSG_FILE_DONE,
         MSG_FILE_READY,
         MSG_FILE_VERIFIED,
+        MSG_CHAT,
+        MSG_CHAT_ACK,
         MSG_TRANSFER_DONE,
         MSG_PROGRESS,
         MSG_CANCEL,
@@ -233,6 +242,8 @@ MSG_NAMES = {
     MSG_PING: "PING",
     MSG_PONG: "PONG",
     MSG_BYE: "BYE",
+    MSG_CHAT: "CHAT",
+    MSG_CHAT_ACK: "CHAT_ACK",
 }
 
 # Frame flags

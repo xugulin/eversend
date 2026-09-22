@@ -141,13 +141,19 @@ def run_gui(argv: Sequence[str] | None = None) -> int:
     # the mobile experience is a web page served from this process.  It is
     # optional -- a failure here must not stop the desktop app from running.
     web_ui = start_web_ui(engine, config, window)
+    # …and a second, HTTPS copy of the same page.  A browser only allows the
+    # microphone in a secure context, so voice messages need it; the HTTP port
+    # stays the quick "scan and go" one.  Failure here is not fatal either.
+    tls_ui = start_web_ui(engine, config, window, secure=True)
 
     window.show()
 
     def shutdown() -> None:
-        if web_ui is not None:
+        for ui in (web_ui, tls_ui):
+            if ui is None:
+                continue
             try:
-                web_ui.stop()
+                ui.stop()
             except Exception:
                 pass
         try:
@@ -162,7 +168,7 @@ def run_gui(argv: Sequence[str] | None = None) -> int:
     return code
 
 
-def start_web_ui(engine: Engine, config: EngineConfig, window=None):
+def start_web_ui(engine: Engine, config: EngineConfig, window=None, *, secure: bool = False):
     """Start the browser interface if it is enabled.
 
     Returns the :class:`~eversend.web.server.WebUI`, or ``None`` when it is
@@ -173,13 +179,25 @@ def start_web_ui(engine: Engine, config: EngineConfig, window=None):
     try:
         from ..web import create_web_ui
 
-        ui = create_web_ui(engine, port=config.web_port)
-        bound = ui.start(config.web_port)
-        engine.info.web_port = bound
+        port = config.web_port + 1 if secure else config.web_port
+        ssl_context = None
+        if secure:
+            from ..core import tls
+
+            ssl_context = tls.ssl_context(config.data_dir)
+            if ssl_context is None:
+                return None
+        ui = create_web_ui(engine, port=port, ssl_context=ssl_context)
+        bound = ui.start(port)
+        if not secure:
+            engine.info.web_port = bound
         if window is not None:
-            # The window keeps the object, not just the port: it needs to be
-            # able to ask who is connected (see MainWindow._refresh_web_clients).
-            window.on_web_ui_started(bound, ui)
+            if secure:
+                window.on_web_tls_started(bound)
+            else:
+                # The window keeps the object, not just the port: it needs to be
+                # able to ask who is connected (MainWindow._refresh_web_clients).
+                window.on_web_ui_started(bound, ui)
         return ui
     except Exception as exc:
         # Port already in use almost always means a second instance of this app

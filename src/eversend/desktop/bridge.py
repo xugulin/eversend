@@ -32,6 +32,7 @@ class EngineBridge(QObject):
     device_updated = Signal(object)        # Peer
     scan_hit = Signal(str, int)            # address, port
     scan_finished = Signal(int, str)       # found, error
+    chat_changed = Signal(dict)            # chat_message / chat_sent payload
 
     offer_received = Signal(dict)          # event payload
     transfer_started = Signal(str, int)    # transfer_id, streams
@@ -64,6 +65,8 @@ class EngineBridge(QObject):
                 self.scan_hit.emit(str(event.get("address", "")), int(event.get("port", 0)))
             elif kind == "scan_finished":
                 self.scan_finished.emit(int(event.get("found", 0)), str(event.get("error", "")))
+            elif kind in ("chat_message", "chat_sent", "chat_failed", "chat_rejected"):
+                self.chat_changed.emit(event)
             elif kind == "offer_received":
                 self.offer_received.emit(event)
             elif kind == "transfer_started":

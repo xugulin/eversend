@@ -27,6 +27,7 @@ from .constants import (
     LISTEN_BACKLOG,
     MAX_PENDING_HANDSHAKES,
     MSG_ATTACH,
+    MSG_CHAT,
     MSG_OFFER,
     MSG_PING,
 )
@@ -48,11 +49,14 @@ class TransferServer:
         events: Any,
         encrypt: bool = True,
         bind_host: str = "0.0.0.0",
+        on_chat: Callable[[Connection, dict[str, Any]], None] | None = None,
     ) -> None:
         self.identity = identity
         self.device_info = device_info
         self.on_offer = on_offer
         self.on_attach = on_attach
+        #: Optional: older callers (tests) may not care about chat.
+        self.on_chat = on_chat or (lambda conn, payload: None)
         self.events = events
         self.encrypt = encrypt
         self.bind_host = bind_host
@@ -162,6 +166,20 @@ class TransferServer:
                     conn.send_json(0x41, {"message": "unknown transfer"})
                 except Exception:
                     pass
+                return
+
+            if frame.type == MSG_CHAT:
+                payload = json.loads(frame.payload.decode("utf-8"))
+                self.events.emit(
+                    "peer_connected",
+                    peer=peer.info,
+                    address=addr[0],
+                    purpose="chat",
+                    authenticated=peer.authenticated,
+                )
+                # The handler answers with an ack (or an error) and the
+                # connection is closed either way: a chat line is one shot.
+                self.on_chat(conn, payload)
                 return
 
             if frame.type == MSG_PING:

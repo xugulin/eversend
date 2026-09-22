@@ -597,6 +597,51 @@ def main() -> int:
             check("上传逐字节一致", hashlib.sha256(landed.read_bytes()).hexdigest() == expected,
                   str(landed))
 
+    # -- 3b. 聊天：手机上打字，电脑端收到 -------------------------------------
+    print("\n[3b] 聊天：手机上发病消息，电脑端收到")
+    if cdp_ok:
+        devtools.evaluate(
+            "(function(){var t=[...document.querySelectorAll('.tab')]"
+            ".find(x=>/聊天/.test(x.textContent));if(t)t.click();return !!t;})()"
+        )
+        time.sleep(1)
+        chat_text = "来自安卓手机的问候 " + time.strftime("%H:%M:%S")
+        typed = devtools.evaluate(
+            "(function(){var b=document.querySelector('#btn-new-chat');if(b)b.click();return !!b;})()"
+        )
+        check("手机页面有聊天入口", typed is True)
+        time.sleep(2)
+        sent = devtools.evaluate(
+            "(function(){var i=document.querySelector('#chat-input');"
+            "var s=document.querySelector('#btn-chat-send');if(!i||!s)return false;"
+            "i.value=" + json.dumps(chat_text) + ";s.click();return true;})()"
+        )
+        check("手机上能输入并发送消息", sent is True)
+        time.sleep(3)
+        shot_chat = adb("exec-out", "screencap", "-p", binary=True, timeout=120)
+        (shots / "03b-android-chat.png").write_bytes(shot_chat)
+
+        # 电脑端的聊天库里必须出现这句话
+        deadline = time.monotonic() + 30
+        seen = ""
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(args.host_url + "api/chat", timeout=10) as resp:
+                    data = json.load(resp)
+                texts = [str(m.get("text") or "") for m in data.get("messages", [])]
+                if chat_text in texts:
+                    seen = chat_text
+                    break
+            except Exception:
+                pass
+            time.sleep(2)
+        check("电脑端收到了手机发的消息", bool(seen), chat_text)
+        devtools.evaluate(
+            "(function(){var t=[...document.querySelectorAll('.tab')]"
+            ".find(x=>/发送|Send/.test(x.textContent));if(t)t.click();return !!t;})()"
+        )
+        time.sleep(1)
+
     # -- 4. 电脑 → 手机（浏览器只能"拉"，所以是交接） -------------------------
     print("\n[4] 电脑 → 手机：把文件交给手机页面，再从手机里取回来")
     if cdp_ok:

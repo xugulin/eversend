@@ -114,6 +114,12 @@ jobs:
           EVERSEND_TEST_TMP: ${{ runner.temp }}/scratch
         run: python tests/test_resilience.py
 
+      - name: 聊天（存储 / 一对一 / 群聊扇出 / 附件落位）
+        shell: bash
+        env:
+          EVERSEND_TEST_TMP: ${{ runner.temp }}/scratch
+        run: python tests/test_chat.py
+
       - name: 并发正确性（AEAD nonce 不能复用）
         shell: bash
         env:

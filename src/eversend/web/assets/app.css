@@ -524,3 +524,54 @@ button { font: inherit; cursor: pointer; }
 .switch-row input { margin-top: 3px; width: 18px; height: 18px; flex: none; }
 .switch-row em { display: block; font-style: normal; margin-top: 4px; }
 .ghost.block { display: block; width: 100%; margin-top: 12px; }
+
+/* ------------------------------------------------------------- chat */
+
+.conv-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.conv-item {
+  display: grid; grid-template-columns: 1fr auto; gap: 2px 8px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface-2); cursor: pointer;
+}
+.conv-item.is-active { border-color: var(--accent); }
+.conv-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-last { grid-column: 1 / -1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.msg-list {
+  list-style: none; margin: 0; padding: 6px 2px; display: flex; flex-direction: column;
+  gap: 10px; max-height: 52vh; overflow-y: auto;
+}
+.msg { display: flex; }
+.msg.is-mine { justify-content: flex-end; }
+.bubble {
+  max-width: 78%; display: flex; flex-direction: column; gap: 4px;
+  padding: 8px 10px; border-radius: 12px; background: var(--surface-2);
+  border: 1px solid var(--border); word-break: break-word;
+}
+.msg.is-mine .bubble { background: color-mix(in srgb, var(--accent) 16%, var(--surface-2)); }
+.msg-meta { font-size: 11px; }
+.msg-text { white-space: pre-wrap; }
+.msg-system { text-align: center; color: var(--muted); font-size: 13px; }
+.msg-image { max-width: 100%; border-radius: 10px; display: block; }
+.msg-video { max-width: 100%; border-radius: 10px; }
+.msg-voice { display: flex; flex-direction: column; gap: 4px; }
+.msg-file { display: flex; gap: 8px; align-items: baseline; }
+.state-err { color: var(--danger); font-size: 12px; }
+
+.composer { display: flex; gap: 6px; align-items: center; margin-top: 10px; }
+.composer input[type="text"] {
+  flex: 1; min-width: 0; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+}
+.composer .emoji {
+  width: 42px; height: 42px; flex: none; font-size: 18px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--surface-2);
+}
+.composer .emoji.is-recording { border-color: var(--danger); color: var(--danger); }
+.emoji-pad {
+  display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; margin-top: 8px;
+}
+.emoji-pad button {
+  font-size: 20px; padding: 4px 0; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface-2);
+}

@@ -661,6 +661,66 @@ def check_scan_reports_back(engine: Engine) -> None:
         check("the event carries no error", not seen.get("error"), str(seen.get("error")))
 
 
+def check_chat(ui, base: str, token: str, root: Path) -> None:
+    """The phone side of chat: send text, upload an attachment, read it back."""
+    print("\n[3c] Chat from the browser")
+    headers = {TOKEN_HEADER: token, "Content-Type": "application/json"}
+
+    status, _headers, body = http(
+        base + "/api/chat/send",
+        method="POST",
+        data=json.dumps({"text": "你好 👋 表情也能发"}).encode("utf-8"),
+        headers=headers,
+    )
+    sent = json.loads(body.decode("utf-8")) if body else {}
+    check("a phone can send a chat line", status == 200 and sent.get("message"), f"{status} {body[:80]!r}")
+    check("the line is stored as incoming on this computer",
+          (sent.get("message") or {}).get("direction") == "in", str(sent.get("message"))[:100])
+    check("the emoji survived the round trip",
+          "👋" in str((sent.get("message") or {}).get("text", "")),
+          str((sent.get("message") or {}).get("text")))
+
+    voice = b"\x1a\x45\xdf\xa3" + bytes(range(256)) * 8
+    status, _headers, body = http(
+        base + "/api/chat/upload?name=voice.webm&kind=voice&duration=2400",
+        method="POST",
+        data=voice,
+        headers={TOKEN_HEADER: token, "Content-Type": "audio/webm"},
+    )
+    uploaded = json.loads(body.decode("utf-8")) if body else {}
+    message = uploaded.get("message") or {}
+    check("a phone can upload a voice note", status == 202 and message, f"{status} {body[:80]!r}")
+    check("the voice note knows how long it is", message.get("durationMs") == 2400, str(message)[:120])
+    check("the attachment lands inside the receive directory",
+          os.path.isfile(os.path.join(receive_dir(ui.engine), str(message.get("mediaRel") or ""))),
+          str(message.get("mediaRel")))
+
+    status, _headers, body = http(base + "/api/chat/media/" + str(message.get("id") or ""))
+    check("the attachment can be fetched back byte for byte", status == 200 and body == voice,
+          f"{status} {len(body)} 字节")
+
+    status, _headers, body = http(base + "/api/chat")
+    chat = json.loads(body.decode("utf-8")) if body else {}
+    kinds = [m["kind"] for m in chat.get("messages", [])]
+    check("the conversation lists both messages", "text" in kinds and "voice" in kinds, str(kinds))
+    check("the browser is told which member id is itself",
+          str(chat.get("selfId", "")).startswith("web:"), str(chat.get("selfId")))
+
+    status, _headers, body = http(base + "/api/state")
+    summary = (json.loads(body.decode("utf-8")) or {}).get("chat") or {}
+    check("state carries the chat summary", bool(summary.get("conversations")), str(summary)[:100])
+
+    # A message with an unknown conversation id is created on the fly, and one
+    # addressed to nobody in particular must not crash the server.
+    status, _headers, _body = http(
+        base + "/api/chat/send",
+        method="POST",
+        data=json.dumps({"conv": "d:nobody|nobody2", "text": "hi"}).encode("utf-8"),
+        headers=headers,
+    )
+    check("a chat with an unknown peer is still stored", status == 200, str(status))
+
+
 def check_sse(base: str) -> None:
     print("\n[4] Server-Sent Events")
     request = urllib.request.Request(base + "/api/events", headers={"Accept": "text/event-stream"})
@@ -943,6 +1003,7 @@ def main() -> int:
         check_download_range(base, engine_a)
         check_sse(base)
         check_share_handoff(ui, base, root)
+        check_chat(ui, base, ui.token, root)
         check_upload(engine_a, engine_b, base, ui.token, root)
         check_offer_roundtrip(engine_a, engine_b, base, ui.token, ui)
     finally:

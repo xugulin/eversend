@@ -41,7 +41,7 @@
 
 | 平台 | 状态 | 怎么验证的 |
 |---|---|---|
-| **Linux** | ✅ 完整支持 | 作者实机 + GitHub Actions `ubuntu-latest` 原生 runner：33 项内核测试、17 项恶劣网络测试、7 项并发测试、132 项浏览器界面自检、真 Qt 离屏渲染 |
+| **Linux** | ✅ 完整支持 | 作者实机 + GitHub Actions `ubuntu-latest` 原生 runner：33 项内核测试、17 项恶劣网络测试、7 项并发测试、143 项浏览器界面自检、真 Qt 离屏渲染 |
 | **Windows** | ✅ 完整支持 | GitHub Actions `windows-latest` 原生 runner 跑同一整套；另有 `interop.yml` 由 **Wine 承载真 Windows CPython + win_amd64 轮子**与 Linux 双向互传 24 MiB，逐字节比对；`ci.yml` 再把**绿色包解压到「我的 U 盘」这样的中文带空格路径**，用包里自带的解释器跑传输与界面 |
 | **安卓** | ✅ 浏览器界面（零安装） | GitHub Actions 真机模拟器（API 34）+ 真 Chrome：CDP 把文件塞进页面的文件选择框再点发送，上传下载都逐字节比对 |
 | **macOS** | ⚠️ 内核已验证，**界面未验证** | GitHub Actions `macos-latest` 跑完整内核测试（含 512 MiB 传输与内存上界），但作者没有 Mac，桌面窗口从未在真机上看过 |
@@ -126,6 +126,31 @@ python -m eversend --cli send 文件 --to 192.168.1.42
 python -m eversend --cli selftest              # 自检
 ```
 
+### 聊天
+
+局域网里的聊天，**电脑 ↔ 电脑走协议直连，手机走网页**，消息都存在电脑上
+（`data_dir/chat.db`，SQLite）：
+
+| 能力 | 状态 |
+|---|---|
+| 一对一聊天 | ✅ 会话 id 由双方设备 id 算出来（`d:<a>|<b>`），不需要协商 |
+| 群聊 | ✅ 建群时选成员；每条消息携带群信息，所以当时不在线的成员下次收到消息就认识这个群了 |
+| 文字 / 表情 | ✅ 完整 Unicode，页面和桌面端都有表情面板 |
+| 图片 | ✅ 直接发原图（走文件传输通道，可续传、逐字节校验）；对方直接在气泡里看到缩略图 |
+| 视频 | ✅ 发送后在气泡里内嵌播放（手机页）/ 点开播放（桌面端） |
+| 文件 | ✅ 任意类型，带大小；点「打开」用本机默认程序 |
+| 语音消息 | ✅ 手机按住 🎤 录音（需要 HTTPS 地址，见下），电脑端显示成语音条；<br>⚠️ 桌面端**窗口内不能播放**：绿色包用的是 PySide6-Essentials，没有 QtMultimedia，点「打开」交给系统播放器 |
+| 视频/语音通话 | ⛔ 未实现。方案见 [`docs/CALLS_DESIGN.md`](docs/CALLS_DESIGN.md)：必须走 WebRTC，服务端只做信令，媒体点对点 |
+
+**手机录音要 HTTPS。** 浏览器只在安全上下文里把麦克风交出去，而
+`http://192.168.x.x` 不是。所以程序启动时会**自己生成一张自签证书**
+（`data_dir/tls/`，用包里已有的 cryptography，SAN 覆盖本机所有局域网 IP），
+在 52119 之外再开一个 **52120 的 HTTPS** 端口：
+
+* 平时扫码用 `http://…:52119/`，扫码即用，什么都不用点。
+* 要发语音就用 `https://…:52120/`。手机第一次打开会提示"不安全/继续访问"，
+  点一次继续即可（自签证书必然如此，页面上也写明了）。私钥只留在本机。
+
 ### 手机怎么用
 
 PySide6 官方不支持 Android，所以手机端走浏览器：电脑上点「📱 手机连接」，用相机扫码，
@@ -175,13 +200,15 @@ curl -X POST -H "X-EverSend-Token: $TOKEN" -H 'Content-Type: application/json' \
 | Linux → Windows（Wine 承载） | 24 MiB，双向逐字节一致 |
 | Windows 绿色包（包里自带的解释器） | 24 MiB 真传 + 内置 Qt 建窗口 + `run.bat --selftest`，CI 在真 Windows runner 上跑 |
 | 电脑 → 手机（真浏览器） | CI 里把文件交给手机页面，真 Chrome 点「下载」取走，逐字节一致，桌面端确认已被取走 |
+| 手机 → 电脑（聊天） | CI 里真 Chrome 打开聊天页、输入并发送，电脑端的聊天库里必须出现那句话 |
 
 ### 测试
 
 ```bash
 python tests/test_loopback.py            # 33 项：基本传输/目录/续传/坏块修复/取消/吞吐/手动接受
 python tests/test_resilience.py          # 17 项：RST 杀连接/限速/512MiB/内存上界/对端不回话就挂断
-python src/eversend/web/selftest.py      # 132 项：QR/CSRF/路径穿越/Range/完整收发链路/交给手机
+python tests/test_chat.py                # 33 项：会话存储/一对一/群聊扇出/附件落位
+python src/eversend/web/selftest.py      # 143 项：QR/CSRF/路径穿越/Range/完整收发链路/交给手机
 python tests/test_interop_wine.py --stage tools/.cache/stage-windows   # Linux ↔ Windows 双向
 python tools/ci_android_http.py          # 手机页面的 HTTP 表面（上传/Range/SSE/安全边界）
 ```
@@ -198,9 +225,16 @@ python tools/ci_android_http.py          # 手机页面的 HTTP 表面（上传/
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 模块架构、线程模型、五条不变式、性能取舍 |
 | [`docs/REMOTE_DESIGN.md`](docs/REMOTE_DESIGN.md) | 远程（互联网）传输设计：会合 + TCP 打洞 + 中继 |
 | [`docs/PACKAGING.md`](docs/PACKAGING.md) | 绿色包打包说明 |
+| [`docs/CALLS_DESIGN.md`](docs/CALLS_DESIGN.md) | 音视频通话方案（WebRTC + 自建信令），暂未实现 |
 
 ### 已知限制
 
+- **音视频通话没有实现**：方案写在 [`docs/CALLS_DESIGN.md`](docs/CALLS_DESIGN.md)。
+  浏览器里通话必须走 WebRTC，而桌面端是 Python —— 要在原生窗口里参与通话，就得自己
+  实现 ICE/DTLS-SRTP，或者改用带 QtWebEngine 的 PySide6-Addons（绿色包 +100 MB 左右）。
+  这一步按你的需要再决定。
+- **桌面端不能在窗口里播放语音**：绿色包用的是 PySide6-Essentials，不含 QtMultimedia，
+  收到的语音点「打开」交给系统播放器。
 - **远程（互联网）传输只有设计，没有实现。** 方案写在 [`docs/REMOTE_DESIGN.md`](docs/REMOTE_DESIGN.md)，
   接口留在 `src/eversend/remote/`。局域网部分已完整交付并实测。
 - **macOS 界面从未实机验证过。** CI 会跑完整内核测试（含 512 MiB 与内存上界），作者没有 Mac，
