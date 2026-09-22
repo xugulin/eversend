@@ -646,6 +646,10 @@ class WebUI:
                 remember = True
             elif entry is not None:
                 entry["lastSeen"] = now
+                # It made a real HTTP request: it is not a mere broadcast any more.
+                if entry.pop("provisional", None) is not None:
+                    entry["talked"] = True
+                    remember = True
                 if label != entry.get("label"):
                     # describe_agent() learns new clients over time (the app
                     # used to be filed as "浏览器"), and a remembered device
@@ -792,9 +796,21 @@ class WebUI:
         us *right now*.
         """
         now = time.time()
+        dropped = False
         with self._state_lock:
+            for key in [
+                key
+                for key, client in self._known.items()
+                if client.get("provisional")
+                and now - float(client.get("lastSeen", 0)) > self.PROVISIONAL_TTL
+            ]:
+                self._known.pop(key, None)
+                self._clients.pop(key, None)
+                dropped = True
             found = [dict(c) for c in self._known.values()]
             live = {k: c["lastSeen"] for k, c in self._clients.items()}
+        if dropped:
+            self._save_known()
         for client in found:
             client["isLocal"] = client["address"] in ("127.0.0.1", "::1")
             client["secondsAgo"] = round(max(0.0, now - client["lastSeen"]), 1)
@@ -840,6 +856,8 @@ class WebUI:
                     "lastSeen": now,
                 }
             )
+            entry.pop("provisional", None)
+            entry["talked"] = True
             self._known[key] = entry
             # An earlier build of the app did not introduce itself at all, so it
             # entered the registry under the browser key (address + User-Agent)
@@ -868,19 +886,31 @@ class WebUI:
         return dict(entry)
 
     def register_from_discovery(self, event: dict[str, Any]) -> None:
-        """A phone announced itself over UDP (before opening any page)."""
+        """A device announced itself over UDP (before opening any page).
+
+        Marked provisional: anything that broadcasts on our discovery port gets
+        remembered, including one-off probes (the self-test sends them, and so
+        does every phone that merely looks for the computer once).  A real app
+        keeps talking -- its ``/api/hello`` and its polls clear the flag -- so a
+        device that only ever broadcast disappears again by itself instead of
+        sitting in the user's paired list forever.
+        """
         device_id = str(event.get("device_id") or "")
         if not device_id:
             return
         try:
-            self.register_app(
+            entry = self.register_app(
                 device_id,
                 name=str(event.get("name") or "") or "手机",
                 version=str(event.get("version") or ""),
                 address=str(event.get("address") or ""),
             )
         except ValueError:
-            pass
+            return
+        with self._state_lock:
+            stored = self._known.get(str(entry.get("key", "")))
+            if stored is not None and not stored.get("talked"):
+                stored["provisional"] = True
 
     def forget_client(self, address: str, agent: str = "") -> bool:
         """Forget one browser entirely — the phone's 「断开连接」 button.
@@ -1440,6 +1470,12 @@ class WebUI:
 
     #: How long a "no installer here" answer is trusted, in seconds.
     APK_CACHE_SECONDS = 5.0
+
+    #: How long a device that was only *overheard* (a UDP announcement, nothing
+    #: else) is remembered.  Long enough that a phone which announced and then
+    #: opened its page stays listed; short enough that a stray probe does not
+    #: sit in the paired list for the rest of the day.
+    PROVISIONAL_TTL = 90.0
 
     def android_apk(self) -> str | None:
         """The Android installer to hand to a phone, or ``None``.

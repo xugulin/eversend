@@ -1318,6 +1318,22 @@ def check_app_registration(ui) -> None:
     stale = [c for c in ui.known_clients() if c["address"] == "10.9.9.10"]
     check("老版本 App 会以浏览器身份被记住", len(stale) == 1, str(stale)[:120])
 
+    # 只"听见"过（UDP 公告）的设备是临时的：真 App 会继续说话、标记被清掉；
+    # 一次性的探针（自检、别人手机搜一下）不能永远占着用户的配对列表。
+    ui.register_from_discovery(
+        {"device_id": "heard-once", "name": "只广播过一次", "address": "10.9.9.12", "version": "1.0.0"}
+    )
+    heard = [c for c in ui.known_clients() if c.get("key") == "android:heard-once"]
+    check("只广播过的设备先记下来（也许马上就会说话）", len(heard) == 1, str(heard)[:80])
+    ui.register_app("heard-once", name="只广播过一次", address="10.9.9.12", agent=agent)
+    with ui._state_lock:
+        # 把时间推回到两分钟前：它一直没再出现
+        ui._known["android:heard-once"]["lastSeen"] = time.time() - 120
+        ui._known["android:heard-once"]["provisional"] = True
+    left = [c for c in ui.known_clients() if c.get("key") == "android:heard-once"]
+    check("一直没再出现的临时记录会被忘掉", not left, str(left)[:80])
+    ui.remove_client("android:heard-once")
+
     entry = ui.register_app("device-42", name="我的手机", version="1.0.0", address="10.9.9.10", agent=agent)
     check("App 用自己的设备号登记", entry.get("key") == "android:device-42", str(entry)[:120])
     check("登记后标签就是设备名", entry.get("label") == "我的手机", str(entry.get("label")))
