@@ -41,7 +41,7 @@
 
 | 平台 | 状态 | 怎么验证的 |
 |---|---|---|
-| **Linux** | ✅ 完整支持 | 作者实机 + GitHub Actions `ubuntu-latest` 原生 runner：40 项内核测试、17 项恶劣网络测试、7 项并发测试、181 项浏览器界面自检、19 项真点界面的交互测试、真 Qt 离屏渲染 |
+| **Linux** | ✅ 完整支持 | 作者实机 + GitHub Actions `ubuntu-latest` 原生 runner：40 项内核测试、17 项恶劣网络测试、7 项并发测试、183 项浏览器界面自检、19 项真点界面的交互测试、真 Qt 离屏渲染 |
 | **Windows** | ✅ 完整支持 | GitHub Actions `windows-latest` 原生 runner 跑同一整套；另有 `interop.yml` 由 **Wine 承载真 Windows CPython + win_amd64 轮子**与 Linux 双向互传 24 MiB，逐字节比对；`ci.yml` 再把**绿色包解压到「我的 U 盘」这样的中文带空格路径**，用包里自带的解释器跑传输与界面 |
 | **安卓 App** | ✅ 原生 App（推荐） | GitHub Actions 真机模拟器（API 34）**装真 APK 跑真机测试（9 项）**：真的连电脑、真的发带 emoji 的中文并回查电脑端收到、真的上传图片再按消息 id 取回逐字节比对、**真的把探针发出去并认出回包**、**真的扫网段找到正在运行的电脑（并断言覆盖整个 /24）**、**真的把附件写进系统「下载」**；界面级那条会点开会话、点开图片看全屏大图、点「复制」查剪贴板、点「保存」查 MediaStore，并把截图与界面树一起归档 |
 | **安卓（网页版）** | ✅ 浏览器界面（零安装，保留） | 同一个模拟器 + 真 Chrome：CDP 把文件塞进页面的文件选择框再点发送，上传下载都逐字节比对 |
@@ -208,6 +208,10 @@ App 有 5 个页签：**聊天 / 发送 / 接收 / 传输 / 设置**，不是只
 电脑反过来看手机：App 一连上就 `POST /api/hello` 报上自己的设备号（显示为
 「我的手机（安卓 App）」），并每 5 秒广播一次自己的公告。
 
+只"听见"过（发现端口上广播过一次）的设备算**临时记录**：真发过 HTTP 请求就转正，
+90 秒内再没动静就自动忘掉 —— 否则每台点过一次「搜索电脑」的手机、每次自检发的
+探针，都会在用户的配对列表里留一条。
+
 **App 里那个地址栏填什么**：电脑窗口顶上第二行就是「手机访问（App 里填这个）：
 `http://192.168.x.x:52119/`」。填成传输端口（52117）也不会白填：App 会先按你填的
 端口试，不通就自动改试 52119/52120，并告诉你用了哪个。
@@ -265,7 +269,7 @@ python tests/test_loopback.py            # 40 项：基本传输/目录/续传/�
 python tests/test_resilience.py          # 17 项：RST 杀连接/限速/512MiB/内存上界/对端不回话就挂断
 cd android && gradle assembleDebug       # 安卓 App（Kotlin + Compose，无第三方依赖）
 python tests/test_chat.py                # 33 项：会话存储/一对一/群聊扇出/附件落位
-python src/eversend/web/selftest.py      # 181 项：QR/CSRF/路径穿越/Range/完整收发链路/交给手机/APK 下载/App 登记/发现回包/mDNS 回答/本机路径不外泄
+python src/eversend/web/selftest.py      # 183 项：QR/CSRF/路径穿越/Range/完整收发链路/交给手机/APK 下载/App 登记/发现回包/mDNS 回答/本机路径不外泄
 xvfb-run -a python tests/test_gui_actions.py   # 19 项：真的点界面（取消发送/发送到底/聊天图片预览）
 python tests/test_interop_wine.py --stage tools/.cache/stage-windows   # Linux ↔ Windows 双向
 python tools/ci_android_http.py          # 手机页面的 HTTP 表面（上传/Range/SSE/安全边界）
