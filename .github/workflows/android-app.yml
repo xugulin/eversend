@@ -1,0 +1,122 @@
+name: 安卓 App
+
+# 为什么要单独一套：网页版受浏览器限制（熄屏冻结、后台挂起、麦克风要 HTTPS），
+# 这些是浏览器的硬限制，改不了。原生 App 用前台服务持有长连接，熄屏、锁屏、
+# 切后台都能继续收消息 —— 这是做它的唯一理由。
+#
+# 这个工作流做的是"真机真实软件测试"，不是单元测试：
+#   1. 在真实的安卓模拟器上装**真的 APK**；
+#   2. 启动电脑端（Linux 上真跑 eversend），模拟器通过 10.0.2.2 连它；
+#   3. 用 instrumentation（AndroidJUnit4）在设备上跑真实网络与真实文件：
+#      连上、读状态、发带 emoji 的文字并回查电脑端、上传图片再按消息 id 取回比对；
+#   4. 真的启动 App 界面并截图，连同日志一起归档。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: android-app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-app:
+    name: 安卓 App（真模拟器装机测试）
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: 起一个电脑端（模拟器要连它）
+        run: |
+          python -m pip install --upgrade pip
+          # 传输协议要 cryptography；桌面界面这里用不到（--cli 不碰 Qt）。
+          python -m pip install cryptography
+          mkdir -p "$RUNNER_TEMP/recv"
+          export PYTHONPATH=src
+          nohup python -m eversend --cli serve --auto-accept --name CI-Desktop \
+            --port 52117 --receive "$RUNNER_TEMP/recv" \
+            --web --web-port 52119 --no-broadcast --no-mdns \
+            > "$RUNNER_TEMP/desktop.log" 2>&1 &
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:52119/api/state > /dev/null; then
+              echo "电脑端就绪"; break
+            fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:52119/api/state | head -c 300; echo
+
+      - name: 构建 APK 与测试 APK
+        working-directory: android
+        run: gradle --no-daemon assembleDebug assembleDebugAndroidTest
+
+      - name: 启用 KVM（模拟器要它才跑得动）
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: 装到模拟器上跑真机测试
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          disable-animations: true
+          script: |
+            # 一行一条命令：这个 action 是按行执行的，行尾反斜杠会被当成参数。
+            adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+            adb install -r android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            adb shell pm grant cn.eversend.app android.permission.POST_NOTIFICATIONS || true
+            adb shell pm grant cn.eversend.app android.permission.RECORD_AUDIO || true
+            adb logcat -c || true
+            adb shell am instrument -w -e host 10.0.2.2:52119 cn.eversend.app.test/androidx.test.runner.AndroidJUnitRunner | tee "$RUNNER_TEMP/instrumented.txt"
+            grep -q "OK (" "$RUNNER_TEMP/instrumented.txt"
+            adb shell am start -n cn.eversend.app/.MainActivity -e host 10.0.2.2:52119
+            sleep 6
+            adb exec-out screencap -p > "$RUNNER_TEMP/android-app-chat.png"
+            adb shell input tap 540 1600 || true
+            sleep 3
+            adb exec-out screencap -p > "$RUNNER_TEMP/android-app-chat2.png"
+            adb logcat -d -s EverSend:* > "$RUNNER_TEMP/logcat.txt" || true
+
+      - name: 电脑端日志
+        if: always()
+        run: |
+          cat "$RUNNER_TEMP/desktop.log" || true
+          echo "--- 电脑端此刻的会话与消息 ---"
+          curl -s http://127.0.0.1:52119/api/chat | head -c 800 || true
+          echo
+
+      - name: 归档 APK、截图与日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eversend-android
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            ${{ runner.temp }}/android-app-chat*.png
+            ${{ runner.temp }}/instrumented.txt
+            ${{ runner.temp }}/logcat.txt
+            ${{ runner.temp }}/desktop.log
+          if-no-files-found: warn
+          retention-days: 14

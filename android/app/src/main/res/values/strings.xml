@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">韧传</string>
+    <string name="channel_name">韧传连接</string>
+    <string name="channel_desc">保持与电脑的连接，熄屏也能收消息</string>
+    <string name="notif_title">韧传正在保持连接</string>
+</resources>
