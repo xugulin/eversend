@@ -643,8 +643,16 @@ class DiscoveryService:
         targets: list[str] = []
         for iface in self._interfaces:
             net = iface.network
-            if net is None or net.num_addresses > 1024:
+            if net is None:
                 continue
+            if net.num_addresses > 1024:
+                # 大网段（办公室的 /16、校园网）逐台扫是几万个 SYN，既慢又像
+                # 端口扫描。退一步扫"我们自己所在的那个 /24" —— 同一个网段里
+                # 的设备几乎总在这一段里，跨 /24 的靠 mDNS 和 UDP 公告来找。
+                try:
+                    net = ipaddress.ip_network(f"{iface.address}/24", strict=False)
+                except ValueError:
+                    continue
             for host in net.hosts():
                 address = str(host)
                 if host == ipaddress.ip_address(iface.address):
