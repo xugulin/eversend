@@ -9,7 +9,8 @@ name: 安卓 App
 #   2. 启动电脑端（Linux 上真跑 eversend），模拟器通过 10.0.2.2 连它；
 #   3. 用 instrumentation（AndroidJUnit4）在设备上跑真实网络与真实文件：
 #      连上、读状态、发带 emoji 的文字并回查电脑端、上传图片再按消息 id 取回比对、
-#      真的把探针发出去并认出回包、真的扫网段找到电脑、真的把附件写进系统「下载」；
+#      真的把探针发出去并认出回包、真的扫网段找到电脑（并确认扫完整个 /24）、
+#      真的把附件写进系统「下载」；
 #   4. 真的启动 App 界面，点开会话、点开图片看大图、点「复制」查剪贴板、
 #      点「保存」查 MediaStore，并截图归档（断言失败时能直接看图）。
 
@@ -51,9 +52,12 @@ jobs:
           python -m pip install cryptography
           mkdir -p "$RUNNER_TEMP/recv"
           export PYTHONPATH=src
+          # mDNS 开着：App 的第一条发现路径就是它（安卓自带 NsdManager），
+          # 电脑端收到查询会立刻回一条 PTR/SRV/TXT/A。广播关掉是因为模拟器在
+          # NAT 后面，广播本来也出不去。
           nohup python -m eversend --cli serve --auto-accept --name CI-Desktop \
             --port 52117 --receive "$RUNNER_TEMP/recv" \
-            --web --web-port 52119 --no-broadcast --no-mdns \
+            --web --web-port 52119 --no-broadcast \
             > "$RUNNER_TEMP/desktop.log" 2>&1 &
           for i in $(seq 1 40); do
             if curl -sf http://127.0.0.1:52119/api/state > /dev/null; then

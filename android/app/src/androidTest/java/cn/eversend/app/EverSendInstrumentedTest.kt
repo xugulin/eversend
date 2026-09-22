@@ -317,6 +317,26 @@ class EverSendInstrumentedTest {
         assertTrue("要能拼出可用的地址", stub.base.startsWith("http://"))
     }
 
+    /**
+     * 扫网段必须**扫完**。
+     *
+     * 用户报"搜不到电脑"时，他的电脑在 172.20.90.177 —— 而当时那次扫描
+     * 固定 6 秒预算、12 个并发，算下来只扫到第 150 台左右就收了工：电脑明明
+     * 开着，却正好在扫不到的尾巴上。这条断言把"覆盖整个 /24"钉住。
+     */
+    @Test
+    fun tcpScanCoversTheWholeSubnet() {
+        // 故意扫一个没人监听的端口：只有这样才会走完整的 254 台扫描
+        // （扫真端口时，电脑排在优先名单里，第 2 台就命中并提前返回 —— 那是
+        // 想要的行为，但量不到覆盖面）。
+        ApiClient.discoverByTcp(webPort = 59999, timeoutMs = 12_000, threads = 32)
+        val probed = ApiClient.lastTcpScanProbed
+        assertTrue(
+            "一次扫描要覆盖整个 /24（至少 250 台），实际只探了 $probed 台",
+            probed >= 250,
+        )
+    }
+
     /** 探针目标里必须有本网段的定向广播地址，而不是只有 255.255.255.255。 */
     @Test
     fun probeTargetsCoverTheLocalSubnet() {

@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import socket
+import struct
 import sys
 import tempfile
 import time
@@ -1142,6 +1143,103 @@ def check_discovery_reply(engine: Engine) -> None:
         probe.close()
 
 
+def check_mdns_answer(engine: Engine) -> None:
+    """The third discovery channel: mDNS, and it must answer *queries*.
+
+    ``mdns.build_announcement`` existed from the first release, but nothing ever
+    called it -- so Android's own ``NsdManager`` (which the app uses) could not
+    see this program at all, and the desktop only ever appeared on the network
+    through its 30-second UDP broadcast.  This check sends a real PTR query to
+    the mDNS group and inspects the answer: PTR + SRV + TXT + A, all four, with
+    the web port in TXT -- that is exactly what NsdManager resolves.
+    """
+    print("\n[mDNS] 电脑要能回答查询（安卓 NsdManager 靠它找电脑）")
+
+    # 专门起一个开了 mDNS 的引擎：自检里那两个引擎为了让测试快而关掉了发现。
+    import tempfile as _tempfile
+
+    root = Path(_tempfile.mkdtemp(prefix="eversend-mdns-"))
+    engine = Engine(
+        EngineConfig(
+            data_dir=str(root / "state"),
+            receive_dir=str(root / "recv"),
+            name="mDNS-Desktop",
+            tcp_port=0,
+            discovery_port=free_port(),
+            enable_broadcast=False,
+            enable_mdns=True,
+            enable_web=False,
+            auto_accept_all=True,
+        )
+    )
+    engine.start()
+    try:
+        check_mdns_answer_against(engine)
+    finally:
+        engine.stop()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def check_mdns_answer_against(engine: Engine) -> None:
+    from eversend.core import mdns
+    from eversend.core.constants import MDNS_GROUP_V4, MDNS_PORT, MDNS_SERVICE_TYPE
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if hasattr(socket, "SO_REUSEPORT"):
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except OSError:
+            pass
+    try:
+        sock.bind(("", MDNS_PORT))
+    except OSError as exc:
+        check("能监听 mDNS 端口", False, str(exc))
+        sock.close()
+        return
+    joined = False
+    for iface in ("0.0.0.0",):
+        try:
+            sock.setsockopt(
+                socket.IPPROTO_IP,
+                socket.IP_ADD_MEMBERSHIP,
+                struct.pack("4s4s", socket.inet_aton(MDNS_GROUP_V4), socket.inet_aton(iface)),
+            )
+            joined = True
+        except OSError:
+            pass
+    check("能加入 mDNS 组播组", joined)
+    sock.settimeout(0.5)
+    try:
+        sock.sendto(mdns.build_query(MDNS_SERVICE_TYPE), (MDNS_GROUP_V4, MDNS_PORT))
+        deadline = time.monotonic() + 4
+        records = []
+        while time.monotonic() < deadline and not records:
+            try:
+                data, _address = sock.recvfrom(9000)
+            except socket.timeout:
+                continue
+            if MDNS_SERVICE_TYPE.split(".")[0].encode("utf-8") not in data:
+                continue
+            records = mdns.parse_records(data)
+        kinds = {record.rtype for record in records}
+        check("查询得到回答", bool(records), "4 秒内没有回答")
+        check(
+            "回答里有 PTR/SRV/TXT/A 四段",
+            {mdns.TYPE_PTR, mdns.TYPE_SRV, mdns.TYPE_TXT, mdns.TYPE_A} <= kinds,
+            str(sorted(kinds)),
+        )
+        txt = next((r for r in records if r.rtype == mdns.TYPE_TXT), None)
+        fields = mdns.parse_txt(txt.rdata) if txt is not None else {}
+        check(
+            "TXT 里带着设备号与网页端口（手机要用来拼地址）",
+            fields.get("id") == engine.info.device_id and int(fields.get("web", 0) or 0) > 0,
+            str(fields),
+        )
+    finally:
+        sock.close()
+
+
 def check_apk_download(base: str, ui, engine: Engine, root: Path) -> None:
     """Handing the Android installer to a phone from this computer.
 
@@ -1280,6 +1378,7 @@ def main() -> int:
         check_https_copy_keeps_http_port(engine_a, port)
         check_apk_download(base, ui, engine_a, root)
         check_discovery_reply(engine_a)
+        check_mdns_answer(engine_a)
         check_media_source_stays_local(ui, base, engine_a, root)
 
         check_scan_reports_back(engine_a)

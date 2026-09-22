@@ -109,6 +109,17 @@ class AppState(context: android.content.Context) {
         set(value) {
             prefs.edit().putBoolean("keepalive", value).apply()
         }
+
+    /**
+     * 最近一次连上的客户端（进程内共享）。
+     *
+     * 设置页点「连接」之后，聊天页应当直接用它，而不是自己再猜一遍地址 ——
+     * 以前两边各连各的，就会出现"设置页说已连接、聊天页说连不上"。
+     */
+    var client: ApiClient? = null
+
+    /** 广播循环只起一个（见 [announcePresence]）。 */
+    var announcing: Boolean = false
 }
 
 @Composable
@@ -204,23 +215,18 @@ fun SettingsScreen(store: AppState) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 onClick = {
-                    val cleaned = normalizeHost(host)
-                    host = cleaned
-                    store.host = cleaned
-                    status = "正在连接 $cleaned …"
+                    status = "正在连接…"
                     scope.launch {
-                        status = withContext(Dispatchers.IO) {
-                            try {
-                                val token = ApiClient.fetchToken("http://$cleaned/")
-                                if (token.isBlank()) "连不上：地址对，但拿不到令牌"
-                                else {
-                                    val state = ApiClient("http://$cleaned/", token).getJson("/api/state")
-                                    "已连接：${state.optJSONObject("device")?.optString("name") ?: cleaned}"
-                                }
-                            } catch (error: Exception) {
-                                "连不上：${error.message}"
-                            }
+                        val (api, cleaned, message) = withContext(Dispatchers.IO) {
+                            connectToDesktop(host)
                         }
+                        if (cleaned.isNotEmpty()) {
+                            host = cleaned
+                            store.host = cleaned
+                        }
+                        store.client = api
+                        if (api != null) announcePresence(store, api)
+                        status = message
                     }
                 },
                 modifier = Modifier.testTag("btn-connect"),
@@ -268,7 +274,9 @@ fun SettingsScreen(store: AppState) {
                             status = "上次那台「${quick[0].name}」还在，已经填好，点「连接」即可"
                             return@launch
                         }
-                        discovered = withContext(Dispatchers.IO) { ApiClient.discover() }
+                        discovered = withContext(Dispatchers.IO) {
+                            ApiClient.discover(context = context)
+                        }
                         scanning = false
                         if (discovered.isEmpty()) {
                             status = "没搜到电脑。逐条查：① 手机和电脑在同一个 Wi-Fi 或热点里；" +
@@ -341,10 +349,95 @@ fun SettingsScreen(store: AppState) {
     }
 }
 
+/**
+ * 把用户填的东西变成 `host:port`。
+ *
+ * 空输入返回**空串**：以前会拼成 `:52119`，于是界面显示
+ * "连不上：Invalid host: http://:52119/" —— 用户看不出是自己没填地址。
+ */
 fun normalizeHost(raw: String): String {
-    var text = raw.trim().removePrefix("http://").removePrefix("https://").trimEnd('/')
-    if (!text.contains(":")) text = "$text:52119"
+    var text = raw.trim().removePrefix("http://").removePrefix("https://").trimEnd('/').trim()
+    if (text.isEmpty() || text == ":") return ""
+    if (!text.contains(":")) text = "$text:${ApiClient.DEFAULT_WEB_PORT}"
     return text
+}
+
+/**
+ * 试着连一台电脑：先按用户填的端口，不行再试网页端口。
+ *
+ * 电脑端窗口顶上显示的是**传输端口**（52117），而手机要连的是**网页端口**
+ * （52119）—— 用户照着顶上那个地址填进来，昨天就是这么失败的（
+ * "unexpected end of stream"，因为 HTTP 打到了二进制传输端口上）。
+ * 所以这里替他把两种都试一遍，并说清楚用的是哪个。
+ */
+/**
+ * 连上之后要做的两件事：报上自己的身份（电脑端就会显示成「我的手机（安卓 App）」），
+ * 以及每 5 秒广播一次自己的存在（电脑端不必等我们先访问它就能看到这台手机）。
+ *
+ * 用 [AppState.announcing] 挡住重复启动：设置页连一次、聊天页再连一次时，
+ * 以前会起两个广播循环。
+ */
+fun announcePresence(store: AppState, api: ApiClient) {
+    if (store.announcing) return
+    store.announcing = true
+    CoroutineScope(Dispatchers.IO).launch {
+        try {
+            api.postJson(
+                "/api/hello",
+                JSONObject()
+                    .put("deviceId", store.deviceId)
+                    .put("name", store.deviceName)
+                    .put("kind", "android")
+                    .put("version", "1.0.0"),
+            )
+        } catch (ignored: Exception) {
+        }
+        while (true) {
+            try {
+                ApiClient.announce(store.deviceId, store.deviceName)
+            } catch (ignored: Exception) {
+            }
+            delay(5000)
+        }
+    }
+}
+
+suspend fun connectToDesktop(
+    typed: String,
+): Triple<ApiClient?, String, String> {
+    val host = normalizeHost(typed)
+    if (host.isEmpty()) {
+        return Triple(null, "", "先填电脑地址（电脑窗口上「手机访问」那一行），或者点「搜索电脑」")
+    }
+    val address = host.substringBeforeLast(":")
+    val port = host.substringAfterLast(":").toIntOrNull() ?: ApiClient.DEFAULT_WEB_PORT
+    val candidates = LinkedHashSet<Int>()
+    candidates.add(port)
+    candidates.add(ApiClient.DEFAULT_WEB_PORT)
+    candidates.add(ApiClient.DEFAULT_TLS_PORT)
+    var lastError = ""
+    for (candidate in candidates) {
+        val base = "http://$address:$candidate/"
+        try {
+            val token = ApiClient.fetchToken(base)
+            if (token.isBlank()) {
+                lastError = "$address:$candidate 上没有韧传的网页界面"
+                continue
+            }
+            val api = ApiClient(base, token)
+            val state = api.getJson("/api/state")
+            val name = state.optJSONObject("device")?.optString("name").orEmpty()
+            val note = if (candidate != port) {
+                "（$port 不是网页端口，已自动改用 $candidate）"
+            } else {
+                ""
+            }
+            return Triple(api, "$address:$candidate", "已连接：${name.ifBlank { "$address:$candidate" }}$note")
+        } catch (problem: Exception) {
+            lastError = "${problem.javaClass.simpleName}: ${problem.message}"
+        }
+    }
+    return Triple(null, host, "连不上 $address：$lastError")
 }
 
 // ------------------------------------------------------------------ 聊天
@@ -389,49 +482,23 @@ fun ChatScreen(store: AppState) {
     // 结果安卓抛 NetworkOnMainThreadException（message 是 null，界面上只显示
     // "连不上电脑：null"）—— 是 CI 里那张真机截图把它暴露出来的。
     fun connect(): ApiClient? {
-        val host = normalizeHost(store.host)
-        if (host.isBlank()) {
-            error = "先在「设置」里填电脑地址"
-            return null
-        }
+        // 设置页刚连上的话直接用那个客户端：两边各自猜地址、各自连接，就会出现
+        // "设置页显示已连接、聊天页说连不上"这种自相矛盾的界面。
+        store.client?.let { return it }
         return try {
-            val base = "http://$host/"
-            val token = ApiClient.fetchToken(base)
-            if (token.isBlank()) {
-                error = "连不上电脑（$host）：拿不到令牌"
+            val (api, cleaned, message) = kotlinx.coroutines.runBlocking { connectToDesktop(store.host) }
+            if (api == null) {
+                error = message
                 return null
             }
-            ApiClient(base, token).also { api ->
-                // 自报身份：带上稳定的设备 id 与名字，电脑端就会把它显示成
-                // 「我的手机（安卓 App）」，而不是一串地址+浏览器的合成名。
-                try {
-                    api.postJson(
-                        "/api/hello",
-                        JSONObject()
-                            .put("deviceId", store.deviceId)
-                            .put("name", store.deviceName)
-                            .put("kind", "android")
-                            .put("version", "1.0.0"),
-                    )
-                } catch (ignored: Exception) {
-                }
-                // 并广播自己的存在，让电脑端在设备列表里主动看到这台手机
-                // （不必等我们先访问它）。
-                CoroutineScope(Dispatchers.IO).launch {
-                    while (true) {
-                        try {
-                            ApiClient.announce(store.deviceId, store.deviceName)
-                        } catch (ignored: Exception) {
-                        }
-                        delay(5000)
-                    }
-                }
-                client = api
-                error = ""
-            }
+            store.host = cleaned
+            store.client = api
+            announcePresence(store, api)
+            error = ""
+            client = api
+            api
         } catch (problem: Exception) {
-            error = "连不上电脑（$host）：" +
-                (problem.message ?: problem.javaClass.simpleName)
+            error = "连不上电脑：" + (problem.message ?: problem.javaClass.simpleName)
             null
         }
     }

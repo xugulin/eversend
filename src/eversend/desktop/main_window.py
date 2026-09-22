@@ -173,8 +173,15 @@ class MainWindow(QMainWindow):
         self.device_address_label = QLabel("")
         self.device_address_label.setObjectName("Subtitle")
         self.device_address_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        # 手机要填的是**网页端口**，而上面那行是传输端口。用户照着传输地址往
+        # App 里填，得到的只会是 "unexpected end of stream"（HTTP 打到二进制
+        # 传输端口上）—— 所以把手机该填的那一行也放在这里，一眼能看到。
+        self.phone_url_label = QLabel("")
+        self.phone_url_label.setObjectName("Subtitle")
+        self.phone_url_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         left.addWidget(self.device_name_label)
         left.addWidget(self.device_address_label)
+        left.addWidget(self.phone_url_label)
         layout.addLayout(left, 1)
 
         self.encryption_label = QLabel("")
@@ -596,6 +603,9 @@ class MainWindow(QMainWindow):
                 url = f"http://{iface.address}:{web_port}/"
                 break
         self.web_url_label.setText(url or "（未找到可用的局域网地址）")
+        self.phone_url_label.setText(
+            f"手机访问（App 里填这个）：{url}" if url else "手机访问地址：正在检测网络…"
+        )
         self.receive_dir_label.setText(self.engine.config.receive_dir)
 
     def _on_chat_changed(self, event: dict) -> None:

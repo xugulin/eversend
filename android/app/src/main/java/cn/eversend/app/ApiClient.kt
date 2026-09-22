@@ -212,6 +212,23 @@ class ApiClient(val base: String, val token: String) {
         const val DEFAULT_WEB_PORT = 52119
 
         /**
+         * 上一次 TCP 扫描实际探了多少台主机。
+         *
+         * 这个数字是给测试看的，也是给"搜索不到电脑"这类问题定位用的：
+         * 一个 /24 网段有 254 台，扫到一半就被时间预算截断的话，电脑正好在
+         * 尾巴上（比如 .177）就永远搜不到 —— 用户的机器就是这么漏掉的。
+         */
+        @Volatile
+        var lastTcpScanProbed: Int = 0
+            private set
+
+        /** HTTPS 那份页面的默认端口（手机录音要用安全上下文）。 */
+        const val DEFAULT_TLS_PORT = 52120
+
+        /** mDNS 服务类型，和电脑端 constants.py 里的 MDNS_SERVICE_TYPE 一致。 */
+        const val MDNS_SERVICE_TYPE = "_eversend._tcp"
+
+        /**
          * 在局域网里找电脑：**先把整个子网戳一遍，同时听回包**。
          *
          * 第一版只往 255.255.255.255 发一条探针，在真手机上找不到电脑。原因
@@ -236,7 +253,17 @@ class ApiClient(val base: String, val token: String) {
             deviceId: String = "probe",
             port: Int = DISCOVERY_PORT,
             webPort: Int = DEFAULT_WEB_PORT,
+            context: android.content.Context? = null,
         ): List<Found> {
+            // 路数一：安卓自带的 mDNS。电脑端收到查询会立刻回一条，最快也最省，
+            // 而且不需要广播权限。找不到再往下走。
+            if (context != null) {
+                val byMdns = discoverByNsd(context, timeoutMs = 3500)
+                if (byMdns.isNotEmpty()) {
+                    Log.d(TAG, "搜索结束（mDNS）：" + byMdns.joinToString { it.name + "@" + it.base })
+                    return byMdns
+                }
+            }
             val found = LinkedHashMap<String, Found>()
             // 绑端口失败必须换一个**新的** socket 再绑：Java 的
             // DatagramSocket.bind() 一旦抛异常，这个 socket 就已经被关掉了，
@@ -312,8 +339,11 @@ class ApiClient(val base: String, val token: String) {
                 // 不少 ROM（vivo/小米的省电策略）会悄悄丢掉 UDP 广播，
                 // 而"能打开网页"是用户心里"通了"的标准，TCP 走得通就一定能连。
                 Log.d(TAG, "UDP 没找到电脑，改用 TCP 扫网页端口 $webPort")
+                // TCP 扫描给足时间：/24 网段 254 台，每台 400ms 超时，32 个并发
+                // 大约 3.5 秒扫完。以前固定 6 秒、并发 12，算下来只能扫到第 150
+                // 台左右 —— 用户的电脑在 .177，正好在扫不到的尾巴上。
                 for (attempt in 1..2) {
-                    for (candidate in discoverByTcp(webPort, timeoutMs = 6000)) {
+                    for (candidate in discoverByTcp(webPort, timeoutMs = 8000, threads = 32)) {
                         found[candidate.host + ":" + candidate.webPort] = candidate
                     }
                     if (found.isNotEmpty()) break
@@ -358,19 +388,28 @@ class ApiClient(val base: String, val token: String) {
             // 连接既快又不会引起丢包 —— 一次铺开几百条连接，普通路由器（和
             // 模拟器的 NAT）会开始丢，反而连活着的那台都连不上。
             val preferred = LinkedHashSet<String>()
-            preferred.addAll(hints.filter { it.isNotBlank() })
+            preferred.addAll(hints.filter { it.isNotBlank() }.map { it.substringBefore(":") })
             val prefixes = candidates.mapNotNull { it.hostAddress?.substringBeforeLast(".") }.distinct()
             prefixes.forEach { prefix ->
+                // 网关、常见的静态地址、DHCP 池的尾巴都排在前面。
                 preferred.add("$prefix.1")
                 preferred.add("$prefix.2")
                 preferred.add("$prefix.254")
+                for (last in 150..253) preferred.add("$prefix.$last")
+                for (last in 100..149) preferred.add("$prefix.$last")
             }
-            for (host in preferred) {
-                if (host !in candidates.map { it.hostAddress }) continue
+            val addresses = candidates.mapNotNull { it.hostAddress }.toSet()
+            val probed = java.util.concurrent.atomic.AtomicInteger(0)
+            for (host in preferred.take(12)) {
+                if (host !in addresses) continue
+                probed.incrementAndGet()
                 val match = probeWeb(host, webPort, connectTimeoutMs = 500)
                 if (match != null) {
                     found["$host:$webPort"] = match
-                    Log.d(TAG, "TCP 优先探测命中：$host:$webPort")
+                    // 早退也要记账：测试用这个数字确认"整个网段都扫过了"，
+                    // 漏记就会得出"探了 0 台"这种自相矛盾的结论。
+                    lastTcpScanProbed = probed.get()
+                    Log.d(TAG, "TCP 优先探测命中：$host:$webPort（已探 ${probed.get()} 台）")
                     return found.values.toList()
                 }
             }
@@ -386,6 +425,7 @@ class ApiClient(val base: String, val token: String) {
                     pool.execute {
                         if (found.size >= 4) return@execute
                         val host = address.hostAddress ?: return@execute
+                        probed.incrementAndGet()
                         val match = probeWeb(host, webPort)
                         if (match != null) found["$host:$webPort"] = match
                     }
@@ -396,7 +436,8 @@ class ApiClient(val base: String, val token: String) {
             } finally {
                 pool.shutdownNow()
             }
-            Log.d(TAG, "TCP 扫描结束：找到 ${found.size} 台（端口 $webPort）")
+            lastTcpScanProbed = probed.get()
+            Log.d(TAG, "TCP 扫描结束：探了 ${probed.get()}/${candidates.size} 台，找到 ${found.size} 台（端口 $webPort）")
             return found.values.toList()
         }
 
@@ -453,6 +494,95 @@ class ApiClient(val base: String, val token: String) {
                 } catch (ignored: Exception) {
                 }
             }
+        }
+
+        /**
+         * 用安卓自带的 mDNS（NsdManager）找电脑。
+         *
+         * 这是最"正规"的一条路：电脑端注册了 `_eversend._tcp`，收到查询会
+         * **立刻**回一条（PTR/SRV/TXT/A 四段齐全），NsdManager 解析出来就是
+         * 主机地址和网页端口。不需要广播、不需要扫网段，几百毫秒就出结果 ——
+         * 前提是网络没有禁掉 5353/UDP 组播（不少公司网会禁，所以它只是三条
+         * 路里的一条，不是唯一）。
+         */
+        fun discoverByNsd(context: android.content.Context, timeoutMs: Int = 4000): List<Found> {
+            val found = java.util.Collections.synchronizedList(mutableListOf<Found>())
+            val manager = context.getSystemService(android.net.nsd.NsdManager::class.java)
+                ?: return emptyList()
+            val done = java.util.concurrent.CountDownLatch(1)
+            val listener = object : android.net.nsd.NsdManager.DiscoveryListener {
+                override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) {
+                    Log.d(TAG, "mDNS 启动失败：$errorCode")
+                    done.countDown()
+                }
+
+                override fun onStopDiscoveryFailed(serviceType: String?, errorCode: Int) {
+                    done.countDown()
+                }
+
+                override fun onDiscoveryStarted(serviceType: String?) {}
+
+                override fun onDiscoveryStopped(serviceType: String?) {
+                    done.countDown()
+                }
+
+                override fun onServiceLost(service: android.net.nsd.NsdServiceInfo?) {}
+
+                override fun onServiceFound(service: android.net.nsd.NsdServiceInfo) {
+                    try {
+                        manager.resolveService(
+                            service,
+                            object : android.net.nsd.NsdManager.ResolveListener {
+                                override fun onResolveFailed(
+                                    info: android.net.nsd.NsdServiceInfo?,
+                                    errorCode: Int,
+                                ) {
+                                    Log.d(TAG, "mDNS 解析失败：$errorCode")
+                                }
+
+                                override fun onServiceResolved(info: android.net.nsd.NsdServiceInfo) {
+                                    // 主机地址要 API 34（安卓 14）才有；更早的系统
+                                    // 上取不到就交给别的发现方式，不在这里硬撑。
+                                    val host = if (Build.VERSION.SDK_INT >= 34) {
+                                        info.host?.hostAddress
+                                    } else {
+                                        null
+                                    } ?: return
+                                    val attributes = info.attributes ?: emptyMap()
+                                    val web = attributes["web"]
+                                        ?.toString(Charsets.UTF_8)?.toIntOrNull()
+                                        ?: DEFAULT_WEB_PORT
+                                    val name = attributes["n"]?.toString(Charsets.UTF_8)
+                                        ?.takeIf { it.isNotBlank() }
+                                        ?: info.serviceName
+                                    val platform = attributes["p"]?.toString(Charsets.UTF_8).orEmpty()
+                                    found.add(Found(name = name, host = host, webPort = web, platform = platform))
+                                    Log.d(TAG, "mDNS 找到电脑：$name@http://$host:$web/")
+                                }
+                            },
+                        )
+                    } catch (ignored: Exception) {
+                    }
+                }
+            }
+            try {
+                manager.discoverServices(
+                    MDNS_SERVICE_TYPE,
+                    android.net.nsd.NsdManager.PROTOCOL_DNS_SD,
+                    listener,
+                )
+                done.await(timeoutMs.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
+            } catch (problem: Exception) {
+                Log.d(TAG, "mDNS 发现不可用：${problem.message}")
+            } finally {
+                try {
+                    manager.stopServiceDiscovery(listener)
+                } catch (ignored: Exception) {
+                }
+            }
+            // resolveService 是异步回调，停掉发现之后再给它一点时间落地。
+            Thread.sleep(400)
+            return found.toList()
         }
 
         /** 一个网卡的 IPv4 信息。 */

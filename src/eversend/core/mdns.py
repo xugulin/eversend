@@ -105,6 +105,33 @@ def _read_name(data: bytes, offset: int, depth: int = 0) -> tuple[str, int]:
     return name, (next_offset if next_offset >= 0 else position)
 
 
+def parse_questions(data: bytes) -> list[tuple[str, int]]:
+    """The question section: ``(name, qtype)`` pairs, lower-cased names.
+
+    Needed to *answer* queries.  The desktop already knew how to build an
+    announcement (``build_announcement``) but nothing ever called it, so other
+    mDNS implementations -- including Android's own ``NsdManager`` -- could
+    only find this program by waiting for its 30-second broadcast.  A phone
+    that just tapped 「搜索电脑」 will not wait that long.
+    """
+    if len(data) < 12:
+        return []
+    _ident, _flags, qdcount, _an, _ns, _ar = struct.unpack_from("!HHHHHH", data, 0)
+    offset = 12
+    questions: list[tuple[str, int]] = []
+    for _ in range(qdcount):
+        try:
+            name, offset = _read_name(data, offset)
+        except ValueError:
+            return questions
+        if offset + 4 > len(data):
+            return questions
+        qtype, _qclass = struct.unpack_from("!HH", data, offset)
+        offset += 4
+        questions.append((name.lower(), qtype))
+    return questions
+
+
 def parse_records(data: bytes) -> list[DnsRecord]:
     """Parse the answer/authority/additional sections of a DNS message."""
     if len(data) < 12:
@@ -252,6 +279,7 @@ def build_query(service_type: str) -> bytes:
 
 
 __all__ = [
+    "parse_questions",
     "CLASS_IN",
     "DnsRecord",
     "TYPE_A",

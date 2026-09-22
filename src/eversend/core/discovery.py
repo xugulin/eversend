@@ -345,6 +345,14 @@ class DiscoveryService:
             self._send_announcement()
 
     def _send_announcement(self) -> None:
+        # mDNS is a *second* channel for the same information.  The method to
+        # build the announcement existed from the start but was never called,
+        # so mDNS-aware clients (Android's NsdManager among them) could never
+        # see this program at all.
+        try:
+            self.advertise_mdns()
+        except Exception:
+            pass
         payload = Announcement.from_device(self.device_info()).to_bytes()
         if len(payload) > MAX_DATAGRAM:  # pragma: no cover - defensive
             return
@@ -533,6 +541,21 @@ class DiscoveryService:
                 continue
             except OSError:
                 return
+            # A query for our service type gets an answer straight away, the
+            # same way a UDP probe does.  Without this, a phone that just
+            # tapped "search for the computer" waits for the next 30-second
+            # broadcast -- and Android's NsdManager, which is what the app
+            # uses, gives up long before that.
+            try:
+                questions = mdns.parse_questions(data)
+            except Exception:
+                questions = []
+            if any(
+                qtype in (mdns.TYPE_PTR, mdns.TYPE_ANY) and MDNS_SERVICE_TYPE.split(".")[0] in name
+                for name, qtype in questions
+            ):
+                self._answer_mdns(addr[0])
+
             try:
                 records = mdns.parse_records(data)
             except Exception:
@@ -560,28 +583,46 @@ class DiscoveryService:
                 peer, is_new = self.peers.upsert(announcement, addr[0], "mdns")
                 self.events.emit("device_found" if is_new else "device_updated", peer=peer, is_new=is_new)
 
+    #: How often one address may make us answer an mDNS query, in seconds.
+    MDNS_REPLY_COOLDOWN = 1.0
+
+    def _answer_mdns(self, address: str) -> None:
+        """Answer one querier, rate-limited (see :meth:`_maybe_reply`)."""
+        now = time.monotonic()
+        with self._reply_lock:
+            last = self._replies.get(f"mdns:{address}", 0.0)
+            if now - last < self.MDNS_REPLY_COOLDOWN:
+                return
+            self._replies[f"mdns:{address}"] = now
+        self.advertise_mdns()
+
     def advertise_mdns(self) -> None:
         """Answer mDNS queries so other implementations can find us."""
         from . import mdns
 
         info = self.device_info()
-        packet = mdns.build_announcement(
-            instance=f"{info.name}-{info.device_id[:6]}",
-            service_type=MDNS_SERVICE_TYPE,
-            host=f"{info.name}.local",
-            port=info.tcp_port,
-            txt={
-                "id": info.device_id,
-                "n": info.name[:64],
-                "k": info.kind,
-                "p": info.platform,
-                "v": info.version,
-                "web": str(info.web_port),
-            },
-        )
+        txt = {
+            "id": info.device_id,
+            "n": info.name[:64],
+            "k": info.kind,
+            "p": info.platform,
+            "v": info.version,
+            "web": str(info.web_port),
+        }
         for iface in self._interfaces:
             if iface.is_ipv6:
                 continue
+            # One packet per interface, each carrying that interface's own A
+            # record.  Android's NsdManager resolves the host from it; without
+            # an A record it has nothing to dial.
+            packet = mdns.build_announcement(
+                instance=f"{info.name}-{info.device_id[:6]}",
+                service_type=MDNS_SERVICE_TYPE,
+                host=f"{info.name}.local",
+                port=info.tcp_port,
+                txt=txt,
+                address=iface.address,
+            )
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
