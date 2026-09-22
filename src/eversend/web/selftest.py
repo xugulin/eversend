@@ -610,6 +610,8 @@ def check_share_handoff(ui, base: str, root: Path) -> None:
         check("and it is really gone", not any(
             c.get("key") == entry["key"] for c in ui.known_clients()))
 
+    check_app_registration(ui)
+
     # The phone's 「断开连接」 button: the desktop must stop showing it at once.
     # Only *this* client may disappear -- the raw-socket probes above have no
     # User-Agent and are therefore a different entry.
@@ -1088,6 +1090,41 @@ def check_apk_download(base: str, ui, engine: Engine, root: Path) -> None:
         ui._apk_checked = 0.0  # noqa: SLF001
     check("删掉之后又变回不可用", not json.loads(http(base + "/api/state")[2].decode("utf-8"))["app"]["apk"].get("available"))
 
+
+def check_app_registration(ui) -> None:
+    """The native app registers under its own id, and does not appear twice.
+
+    An earlier build of the app never said who it was, so the desktop only saw
+    its HTTP requests and filed it under the browser key (address + UA).  When
+    the app does introduce itself, that older entry is the same handset: the
+    user asked for one device, not one app plus one browser.
+    """
+    print("\n[手机 App 登记] 用设备号登记，并且不会和「浏览器」那条重复")
+    agent = "EverSend-Android/1.0 (Android 16)"
+    ui.touch_client("10.9.9.10", agent)  # 老版本 App：只留下"浏览器"式的记录
+    stale = [c for c in ui.known_clients() if c["address"] == "10.9.9.10"]
+    check("老版本 App 会以浏览器身份被记住", len(stale) == 1, str(stale)[:120])
+
+    entry = ui.register_app("device-42", name="我的手机", version="1.0.0", address="10.9.9.10", agent=agent)
+    check("App 用自己的设备号登记", entry.get("key") == "android:device-42", str(entry)[:120])
+    check("登记后标签就是设备名", entry.get("label") == "我的手机", str(entry.get("label")))
+    check("类型标成 App（不是浏览器）", entry.get("kind") == "app")
+
+    mine = [c for c in ui.known_clients() if c["address"] == "10.9.9.10"]
+    check("同一个手机上不再有重复记录", len(mine) == 1, str([c["key"] for c in mine]))
+    check("留下的那条就是 App", mine and mine[0]["key"] == "android:device-42")
+
+    # 地址变了（手机换网）也要认得出是同一台，而不是多出一台新设备。
+    ui.register_app("device-42", name="我的手机", address="10.9.9.99", agent=agent)
+    keys = [c["key"] for c in ui.known_clients() if c.get("deviceId") == "device-42"]
+    check("换网后仍然只有一台", keys == ["android:device-42"], str(keys))
+    ui.remove_client("android:device-42")
+
+    try:
+        ui.register_app("", address="10.9.9.10")
+        check("没有设备号就拒绝登记", False, "register_app('') 没有报错")
+    except ValueError:
+        check("没有设备号就拒绝登记", True)
 
 def main() -> int:
     _use_utf8_console()

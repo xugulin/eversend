@@ -96,6 +96,16 @@ MAX_SHARES = 50
 CLIENT_TTL = 15.0
 
 
+def is_app_agent(agent: str) -> bool:
+    """Is this User-Agent our own Android app?
+
+    Both the current build (``EverSend-Android/1.0``) and any future one are
+    recognised, because the point is to tell "the app" apart from "a browser on
+    the phone" when the two entries describe the same handset.
+    """
+    return "eversend-android" in (agent or "").lower()
+
+
 def describe_agent(agent: str) -> str:
     """A short human label for a browser's ``User-Agent``.
 
@@ -109,7 +119,7 @@ def describe_agent(agent: str) -> str:
     # so keeps the desktop's list from showing a mystery client.
     if any(token in text for token in ("urllib", "curl/", "wget", "http-client", "python-requests", "okhttp", "axios")):
         return "命令行/脚本"
-    if "eversend-android" in text:
+    if is_app_agent(text):
         # The Android app identifies itself; saying "安卓 App" instead of
         # "浏览器" matters because the desktop lists it as a paired device and
         # the user has to recognise it there.
@@ -791,6 +801,20 @@ class WebUI:
                 }
             )
             self._known[key] = entry
+            # An earlier build of the app did not introduce itself at all, so it
+            # entered the registry under the browser key (address + User-Agent)
+            # and now shows up as a second, duplicate device next to the real
+            # one.  Same address and clearly the same app: drop the old entry.
+            if address:
+                for stale in [
+                    other
+                    for other, client in self._known.items()
+                    if other != key
+                    and client.get("address") == address
+                    and is_app_agent(str(client.get("agent", "")))
+                ]:
+                    self._known.pop(stale, None)
+                    self._clients.pop(stale, None)
             # Serve it as a live client too, so everything that reads
             # ``clients()`` (the device list, the QR dialog) sees it right away.
             self._clients[key] = {

@@ -41,7 +41,7 @@
 
 | 平台 | 状态 | 怎么验证的 |
 |---|---|---|
-| **Linux** | ✅ 完整支持 | 作者实机 + GitHub Actions `ubuntu-latest` 原生 runner：40 项内核测试、17 项恶劣网络测试、7 项并发测试、158 项浏览器界面自检、真 Qt 离屏渲染 |
+| **Linux** | ✅ 完整支持 | 作者实机 + GitHub Actions `ubuntu-latest` 原生 runner：40 项内核测试、17 项恶劣网络测试、7 项并发测试、166 项浏览器界面自检、真 Qt 离屏渲染 |
 | **Windows** | ✅ 完整支持 | GitHub Actions `windows-latest` 原生 runner 跑同一整套；另有 `interop.yml` 由 **Wine 承载真 Windows CPython + win_amd64 轮子**与 Linux 双向互传 24 MiB，逐字节比对；`ci.yml` 再把**绿色包解压到「我的 U 盘」这样的中文带空格路径**，用包里自带的解释器跑传输与界面 |
 | **安卓 App** | ✅ 原生 App（推荐） | GitHub Actions 真机模拟器（API 34）**装真 APK 跑真机测试**：instrumentation 在设备上真的连电脑、真的发带 emoji 的中文并回查电脑端收到（且方向标为"收到"）、真的上传图片再按消息 id 取回逐字节比对，还有一条界面级测试断言会话页渲染出来 |
 | **安卓（网页版）** | ✅ 浏览器界面（零安装，保留） | 同一个模拟器 + 真 Chrome：CDP 把文件塞进页面的文件选择框再点发送，上传下载都逐字节比对 |
@@ -250,7 +250,7 @@ python tests/test_loopback.py            # 40 项：基本传输/目录/续传/�
 python tests/test_resilience.py          # 17 项：RST 杀连接/限速/512MiB/内存上界/对端不回话就挂断
 cd android && gradle assembleDebug       # 安卓 App（Kotlin + Compose，无第三方依赖）
 python tests/test_chat.py                # 33 项：会话存储/一对一/群聊扇出/附件落位
-python src/eversend/web/selftest.py      # 158 项：QR/CSRF/路径穿越/Range/完整收发链路/交给手机/APK 下载
+python src/eversend/web/selftest.py      # 166 项：QR/CSRF/路径穿越/Range/完整收发链路/交给手机/APK 下载/App 登记
 python tests/test_interop_wine.py --stage tools/.cache/stage-windows   # Linux ↔ Windows 双向
 python tools/ci_android_http.py          # 手机页面的 HTTP 表面（上传/Range/SSE/安全边界）
 ```
