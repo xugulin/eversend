@@ -972,12 +972,13 @@ class MainWindow(QMainWindow):
         self.web_clients_label.setText("浏览器界面没有启动，手机连不上。")
 
     def _refresh_web_clients(self) -> None:
-        """Say who is connected, so 「手机连接」 is not a silent act.
+        """Say which phones are paired, and whether they are online.
 
         A phone talks to this app through a web page, not through the peer
-        protocol, so it will never appear in the device list however long you
-        wait; without this line the honest reading of the UI was "it found
-        nothing".
+        protocol, so it would never appear in the device list on its own -- and
+        since its page is frozen whenever the screen is off, "connected" has to
+        mean *paired*, not "polling us this second".  Otherwise the only way to
+        stay connected would be to keep the phone awake and in the browser.
         """
         ui = getattr(self, "_web_ui", None)
         if ui is None:
@@ -986,33 +987,33 @@ class MainWindow(QMainWindow):
             self.web_clients_label.setText("浏览器界面未启动，手机连不上（见下方提示）。")
             return
         try:
-            clients = ui.clients()
+            from ..web.server import is_mobile_client
+
+            phones = [c for c in ui.known_clients() if is_mobile_client(c)]
         except Exception:
             return
-        from ..web.server import is_mobile_client
-
-        phones = [c for c in clients if is_mobile_client(c)]
-        others = [c for c in clients if not is_mobile_client(c)]
-        if not clients:
-            self.web_clients_label.setText(
-                "还没有连上。手机扫码打开页面后，这里会显示出来（手机不会出现在左侧设备列表里）。"
-            )
-            return
         if not phones:
-            # Something is polling us (a health check, a script) but no phone
-            # has opened the page yet.  Saying "已连接" here would be a lie.
             self.web_clients_label.setText(
-                "还没有手机连上。手机扫码打开页面后，这里会显示出来"
-                "（手机不会出现在左侧设备列表里）。"
+                "还没有手机连过。手机扫码打开页面后这里会显示出来；"
+                "之后即使熄屏或离开页面，它也会一直记着，直到你在手机上点「断开连接」。"
             )
             return
-        parts = [
-            f"{c.get('address', '?')}（{c.get('label', '浏览器')}）" for c in phones[:3]
-        ]
-        more = "" if len(phones) <= 3 else f" 等 {len(phones)} 台"
-        text = "✅ 已连接：" + "、".join(parts) + more
-        if others:
-            text += f"（另有 {len(others)} 个本机/脚本连接）"
+
+        def describe(client: dict) -> str:
+            return f"{client.get('address', '?')}（{client.get('label', '浏览器')}）"
+
+        online = [c for c in phones if c.get("online")]
+        offline = [c for c in phones if not c.get("online")]
+        if online:
+            text = "✅ 已连接：" + "、".join(describe(c) for c in online[:3])
+            if offline:
+                text += f"；另有 {len(offline)} 台已配对但不在线（发给它的文件会留着）"
+        else:
+            text = (
+                "已配对但不在线："
+                + "、".join(describe(c) for c in offline[:3])
+                + "——熄屏或离开页面不影响配对，发给它的文件会留着等它回来。"
+            )
         self.web_clients_label.setText(text)
 
     def _show_qr(self) -> None:

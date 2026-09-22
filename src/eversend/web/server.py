@@ -550,9 +550,11 @@ class WebUI:
         digest = hashlib.sha1((agent or "").encode("utf-8", "replace")).hexdigest()[:8]
         key = f"{address}|{digest}"
         remember = False
+        label = describe_agent(agent)
+        meaningful = label not in ("命令行/脚本", "未知客户端")
         with self._state_lock:
             entry = self._known.get(key)
-            if entry is None:
+            if entry is None and meaningful:
                 self._known[key] = {
                     "key": key,
                     "address": address,
@@ -562,7 +564,7 @@ class WebUI:
                     "lastSeen": now,
                 }
                 remember = True
-            else:
+            elif entry is not None:
                 entry["lastSeen"] = now
             known = self._clients.get(key)
             if known is None:
@@ -712,8 +714,13 @@ class WebUI:
         except (OSError, ValueError):
             return
         for entry in data.get("clients", []):
-            if isinstance(entry, dict) and entry.get("key"):
-                self._known[str(entry["key"])] = entry
+            if not isinstance(entry, dict) or not entry.get("key"):
+                continue
+            # Health checks and scripts are not devices; a file written by an
+            # older build may still contain them.
+            if str(entry.get("label")) in ("命令行/脚本", "未知客户端"):
+                continue
+            self._known[str(entry["key"])] = entry
 
     def _save_known(self) -> None:
         import json as _json
