@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import socket
 import sys
@@ -299,6 +300,14 @@ def check_http_surface(base: str, token: str, ui=None) -> None:
           "keepalive" in html and "熄屏" in html)
     check("the page explains who owns the computer's file list",
           "这些文件在电脑上" in _asset_text(ui, "app.js"), "app.js")
+    # Two functions with the same name in one scope: the last one silently wins,
+    # and the first one's callers start throwing.  That is exactly how a chat
+    # helper named ``append`` broke the send tab's rendering -- and no Python
+    # test could see it.  A duplicate definition is always a mistake here.
+    script = _asset_text(ui, "app.js")
+    defined = re.findall(r"^\s*function\s+([A-Za-z_$][\w$]*)\s*\(", script, re.M)
+    duplicates = sorted({name for name in defined if defined.count(name) > 1})
+    check("the page script has no duplicate function definitions", not duplicates, str(duplicates))
     check("the phone page shows what the computer sent it", "电脑发来的文件" in html)
     check("the phone page calls the computer's folder the computer's", "电脑上的文件" in html)
     check("the CSRF token is embedded in the page", token in html)

@@ -573,14 +573,18 @@
     return h('li', { class: 'msg' + (mine ? ' is-mine' : '') },
       h('div', { class: 'bubble' },
         h('span', { class: 'msg-meta muted',
-          text: (message.senderName || (mine ? '我' : '对方')) + ' · ' + fmtTime(message.ts) }),
-        append(h('div', {}), body),
+          text: (message.senderName || (mine ? '我' : '对方')) + ' · ' + formatClock(message.ts) }),
+        appendNodes(h('div', {}), body),
         message.state === 'failed' ? h('span', { class: 'state-err', text: '发送失败（对方不在线）' }) : null
       )
     );
   }
 
-  function append(node, children) {
+  // Not named ``append``: the page already has one, and in JavaScript the last
+  // declaration in a scope wins -- shadowing it broke renderSelf(), which broke
+  // the whole render loop (the send tab's upload card silently stopped updating,
+  // and the Android CI job caught it).
+  function appendNodes(node, children) {
     children.forEach(function (child) { if (child) node.appendChild(child); });
     return node;
   }
@@ -608,7 +612,8 @@
     );
   }
 
-  function fmtTime(ts) {
+  // Likewise: the page already formats times; keep a distinct name.
+  function formatClock(ts) {
     if (!ts) return '';
     var date = new Date(ts * 1000);
     return ('0' + date.getHours()).slice(-2) + ':' + ('0' + date.getMinutes()).slice(-2);
