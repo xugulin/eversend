@@ -47,6 +47,7 @@ import os
 import platform
 import secrets
 import struct
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -213,22 +214,68 @@ def derive_device_id(ed25519_public: bytes) -> str:
     return hashlib.blake2b(ed25519_public, digest_size=16).hexdigest()
 
 
+def identity_matches(identity: Identity) -> bool:
+    """Do the stored public keys really belong to the stored private keys?
+
+    Without ``cryptography`` there is no way to derive a real public key, so
+    :meth:`Identity.generate` stores stand-ins built from the private bytes.
+    That is fine while the library stays missing -- everything runs
+    unencrypted -- but the day it appears every handshake fails with an AEAD
+    tag error that says nothing about the cause, because we keep advertising a
+    "public" key nobody can agree with.  Checking the pair here lets the loader
+    heal such an identity instead of leaving a poisoned file behind forever.
+    """
+    if not CRYPTO_AVAILABLE:
+        # Nothing to compare against; the degraded format is all we can have.
+        return True
+    try:
+        x_priv = x25519.X25519PrivateKey.from_private_bytes(identity.x25519_private)
+        ed_priv = ed25519.Ed25519PrivateKey.from_private_bytes(identity.ed25519_private)
+        x_pub = x_priv.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        ed_pub = ed_priv.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    except Exception:  # pragma: no cover - malformed key material
+        return False
+    return bytes(x_pub) == identity.x25519_public and bytes(ed_pub) == identity.ed25519_public
+
+
 def load_or_create_identity(path: str, name: str = "") -> Identity:
     """Read the identity from ``path``, creating (and persisting) it if absent.
 
     The file is written with ``0600`` and via a temporary file + rename so a
     crash during creation cannot leave a half-written identity behind.
+
+    A file whose public keys do not belong to its private keys is replaced.
+    That combination means the file was written by a degraded install (one
+    without ``cryptography``), and keeping it would make every later encrypted
+    transfer fail; the device id changes with the keys, so it is reported
+    loudly rather than silently.
     """
+    identity: Identity | None = None
+    reason = ""
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
         identity = Identity.from_dict(data)
+        if not identity_matches(identity):
+            reason = "公钥与私钥不匹配（这份身份是在缺少加密库时生成的）"
+            identity = None
+    except FileNotFoundError:
+        identity = None
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        reason = f"内容无法解析（{exc}）"
+        identity = None
+
+    if identity is not None:
         if name and identity.name != name:
             identity.name = name
         return identity
-    except (OSError, ValueError, KeyError):
-        pass
 
+    if reason:
+        print(
+            f"警告：{path} {reason}，已重新生成身份。\n"
+            f"      本机设备号会变化，其他设备需要重新配对一次。",
+            file=sys.stderr,
+        )
     identity = Identity.generate(name)
     save_identity(identity, path)
     return identity
@@ -505,6 +552,7 @@ __all__ = [
     "derive_session_key",
     "establish_session",
     "handshake_transcript",
+    "identity_matches",
     "load_or_create_identity",
     "new_nonce",
     "save_identity",

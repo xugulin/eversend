@@ -266,6 +266,13 @@ def _cmd_selftest(args: argparse.Namespace) -> int:
     print(f"   data dir     : {config.data_dir}")
     print(f"   receive dir  : {config.receive_dir}")
 
+    # A bogus key pair is invisible until a transfer fails with a tag error, so
+    # check it here: it is one line and it is exactly the failure that costs an
+    # afternoon to find.
+    identity_ok = crypto.identity_matches(engine.identity)
+    print(f"   identity keys: {'ok' if identity_ok else 'BROKEN (public key does not match private key)'}")
+    ok = ok and identity_ok
+
     # Loopback transfer: proves the whole pipeline in this very process.
     import hashlib
     import socket

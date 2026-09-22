@@ -466,6 +466,55 @@ def test_manual_accept() -> None:
             rig.close()
 
 
+def test_identity_selfheal() -> None:
+    """An identity written without ``cryptography`` must not poison every transfer.
+
+    Found the hard way: a machine ran the self-test once with a Python that had
+    no ``cryptography`` wheel.  Degraded mode cannot derive a real public key,
+    so it stores a hash of the private bytes and keeps working unencrypted.  The
+    file stayed behind.  From then on every encrypted handshake died inside the
+    first AEAD frame ("frame authentication failed") on the receiving side and
+    "peer closed connection" on the sending side -- a message that points at the
+    network rather than at a stale key file, which is why it is worth a test.
+    """
+    print("\n[8] Identity file: a degraded key pair is detected and replaced")
+    from eversend.core import crypto
+
+    if not crypto.CRYPTO_AVAILABLE:
+        print("  (skipped: cryptography is not installed, so every identity is degraded)")
+        return
+
+    with scratch() as root:
+        path = root / "identity.json"
+        fake = crypto.Identity.generate("degraded")
+        # How the no-crypto branch builds a pair: the "public" key is a hash of
+        # the private one, which is exactly the state that has to be caught.
+        fake.x25519_public = hashlib.blake2b(fake.x25519_private, digest_size=32).digest()
+        fake.ed25519_public = hashlib.blake2b(fake.ed25519_private, digest_size=32).digest()
+        crypto.save_identity(fake, str(path))
+        check("the damaged identity does not look valid", not crypto.identity_matches(fake))
+
+        healed = crypto.load_or_create_identity(str(path), "healed")
+        check("loading replaces it with a usable identity", crypto.identity_matches(healed))
+        check("the device name is kept", healed.name == "healed", healed.name)
+        check("the replacement is persisted", crypto.identity_matches(
+            crypto.load_or_create_identity(str(path), "healed")
+        ))
+        check("a good identity is left alone", crypto.load_or_create_identity(str(path)) == healed)
+
+        # And the point of all of it: two engines really can talk encrypted.
+        rig = Rig(root)
+        try:
+            source = root / "A" / "identity-check.bin"
+            expected = make_random_file(source, 512 * 1024)
+            peer = rig.peer_for(rig.engine_b, rig.engine_a)
+            check("an encrypted transfer succeeds", rig.engine_b.send(peer, [str(source)]))
+            received = root / "A" / "recv" / "identity-check.bin"
+            check("the bytes arrive intact", received.exists() and sha256_file(received) == expected)
+        finally:
+            rig.close()
+
+
 def main() -> int:
     use_utf8_console()
     print("EverSend core loopback tests")
@@ -478,6 +527,7 @@ def main() -> int:
         test_cancel,
         test_speed,
         test_manual_accept,
+        test_identity_selfheal,
     ]
     for test in tests:
         try:
