@@ -625,6 +625,8 @@ class WebUI:
         if not address:
             return
         now = time.time()
+        if is_app_agent(agent) and self._touch_known_app(address, agent, now):
+            return
         digest = hashlib.sha1((agent or "").encode("utf-8", "replace")).hexdigest()[:8]
         key = f"{address}|{digest}"
         remember = False
@@ -665,6 +667,36 @@ class WebUI:
                 known["label"] = describe_agent(agent)
         if remember:
             self._save_known()
+
+    def _touch_known_app(self, address: str, agent: str, now: float) -> bool:
+        """Keep an app that already introduced itself on its own entry.
+
+        The app is remembered by device id (``android:<id>``), but it also polls
+        every few seconds, and every poll used to *re-create* the browser entry
+        (address + User-Agent) that its ``/api/hello`` had just removed.  The
+        result was exactly the duplicate the user complained about: one phone,
+        two rows, one of them called "浏览器".  Returns whether a known app
+        matched -- if not (an older build that never says hello), the normal
+        browser path still applies, so nothing becomes invisible.
+        """
+        with self._state_lock:
+            for key, client in self._known.items():
+                if not key.startswith("android:") or client.get("address") != address:
+                    continue
+                client["lastSeen"] = now
+                live = self._clients.get(key)
+                if live is None:
+                    self._clients[key] = {
+                        "address": address,
+                        "agent": agent[:200],
+                        "label": client.get("label") or describe_agent(agent),
+                        "since": client.get("firstSeen", now),
+                        "lastSeen": now,
+                    }
+                else:
+                    live["lastSeen"] = now
+                return True
+        return False
 
     def share_files(self, paths: Iterable[str]) -> list[dict[str, Any]]:
         """Publish local files for the connected browser to download.

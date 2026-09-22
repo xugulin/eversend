@@ -1126,6 +1126,17 @@ def check_app_registration(ui) -> None:
     except ValueError:
         check("没有设备号就拒绝登记", True)
 
+    # App 每隔几秒就要问一次状态；这些普通请求不能再造出第二条记录，否则
+    # /api/hello 刚删掉的那条"浏览器"记录下一轮又回来了。
+    ui.touch_client("10.9.9.10", "EverSend-Android/1.0 (Android 16)")
+    ui.register_app("device-9", name="我的手机", address="10.9.9.10", agent="EverSend-Android/1.0 (Android 16)")
+    for _ in range(3):
+        ui.touch_client("10.9.9.10", "EverSend-Android/1.0 (Android 16)")
+    rows = [c for c in ui.known_clients() if c["address"] == "10.9.9.10"]
+    check("App 反复轮询也只留一条记录", len(rows) == 1, str([c["key"] for c in rows]))
+    check("而且它还显示为在线", bool(rows) and rows[0].get("online") is True, str(rows)[:120])
+    ui.remove_client("android:device-9")
+
     # 记住的设备会一直留着，所以它的说明文字必须跟着 describe_agent() 一起更新，
     # 否则用户看到的永远是上周那套说法（App 一开始被当成"浏览器"）。
     ui.touch_client("10.9.9.11", "EverSend-Android/1.0 (Android 16)")
