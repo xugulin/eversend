@@ -41,9 +41,9 @@
 
 | 平台 | 状态 | 怎么验证的 |
 |---|---|---|
-| **Linux** | ✅ 完整支持 | 作者实机 + GitHub Actions `ubuntu-latest` 原生 runner：40 项内核测试、17 项恶劣网络测试、7 项并发测试、183 项浏览器界面自检、19 项真点界面的交互测试、真 Qt 离屏渲染 |
+| **Linux** | ✅ 完整支持 | 作者实机 + GitHub Actions `ubuntu-latest` 原生 runner：40 项内核测试、17 项恶劣网络测试、7 项并发测试、187 项浏览器界面自检、25 项真点界面的交互测试、真 Qt 离屏渲染 |
 | **Windows** | ✅ 完整支持 | GitHub Actions `windows-latest` 原生 runner 跑同一整套；另有 `interop.yml` 由 **Wine 承载真 Windows CPython + win_amd64 轮子**与 Linux 双向互传 24 MiB，逐字节比对；`ci.yml` 再把**绿色包解压到「我的 U 盘」这样的中文带空格路径**，用包里自带的解释器跑传输与界面 |
-| **安卓 App** | ✅ 原生 App（推荐） | GitHub Actions 真机模拟器（API 34）**装真 APK 跑真机测试（9 项）**：真的连电脑、真的发带 emoji 的中文并回查电脑端收到、真的上传图片再按消息 id 取回逐字节比对、**真的把探针发出去并认出回包**、**真的扫网段找到正在运行的电脑（并断言覆盖整个 /24）**、**真的把附件写进系统「下载」**；界面级那条会点开会话、点开图片看全屏大图、点「复制」查剪贴板、点「保存」查 MediaStore，并把截图与界面树一起归档 |
+| **安卓 App** | ✅ 原生 App（推荐） | GitHub Actions 真机模拟器（API 34）**装真 APK 跑真机测试（12 项）**：真的连电脑、真的发带 emoji 的中文并回查电脑端收到、真的上传图片再按消息 id 取回逐字节比对、**真的把探针发出去并认出回包**、**真的扫网段找到正在运行的电脑（并断言覆盖整个 /24）**、**真的把附件写进系统「下载」**、**真的初始化内置播放器把一段音频放完**、**真的建一个群聊并核对成员**；界面级那条会点开会话、点开图片看全屏大图、点「复制」查剪贴板、点「保存」查 MediaStore，并把截图与界面树一起归档 |
 | **安卓（网页版）** | ✅ 浏览器界面（零安装，保留） | 同一个模拟器 + 真 Chrome：CDP 把文件塞进页面的文件选择框再点发送，上传下载都逐字节比对 |
 | **macOS** | ⚠️ 内核已验证，**界面未验证** | GitHub Actions `macos-latest` 跑完整内核测试（含 512 MiB 传输与内存上界），但作者没有 Mac，桌面窗口从未在真机上看过 |
 
@@ -142,6 +142,8 @@ python -m eversend --cli selftest              # 自检
 | 文件 | ✅ 任意类型，带大小；安卓 App 有「保存」直接写进系统「下载」目录，桌面端点「打开」用本机默认程序 |
 | 语音消息 | ✅ 手机按住 🎤 录音（需要 HTTPS 地址，见下），电脑端显示成语音条；<br>⚠️ 桌面端**窗口内不能播放**：绿色包用的是 PySide6-Essentials，没有 QtMultimedia，点「打开」交给系统播放器 |
 | 视频/语音通话 | ⛔ 未实现。方案见 [`docs/CALLS_DESIGN.md`](docs/CALLS_DESIGN.md)：必须走 WebRTC，服务端只做信令，媒体点对点 |
+| 群聊 | ✅ 三端都能建群、选成员、群发；手机端「建群聊」在会话页底部 |
+| 多设备同时发送 | ✅ 桌面端点选多台（Ctrl/Shift）一次发出；安卓 App 勾选多台，每台各自汇报结果 |
 
 **手机录音要 HTTPS。** 浏览器只在安全上下文里把麦克风交出去，而
 `http://192.168.x.x` 不是。所以程序启动时会**自己生成一张自签证书**
@@ -187,11 +189,24 @@ App 有 5 个页签：**聊天 / 发送 / 接收 / 传输 / 设置**，不是只
 
 | 页签 | 能做什么 |
 |---|---|
-| 聊天 | 一对一/群聊，文字、Emoji、图片、视频、文件、语音；**图片直接显示缩略图，点开全屏看大图**；**视频点开在应用内播放**；**语音点一下就能听**；每条都有「复制」（真的进系统剪贴板）和「保存」（真的写进系统「下载」目录） |
-| 发送 | 选文件/选图后传到电脑，进度就在本页 |
+| 聊天 | 一对一/**群聊**（可自建群、选成员），文字、Emoji、图片、视频、文件、语音；**图片直接显示缩略图，点开全屏看大图**；**视频点开在应用内播放**；**语音点一下就能听**；每条都有「复制」（真的进系统剪贴板）和「保存」（真的写进系统「下载」目录） |
+| 发送 | 选文件/选图后传到电脑，**可勾选多台设备一次发给它们**；每台设备都标着「已连接 / 未连接 · 最后在线 X」 |
 | 接收 | 电脑发来的文件在这里，点「保存到手机」写进「下载」目录 |
 | 传输 | 当前传输与历史，成功/失败/已保存一目了然 |
 | 设置 | 电脑地址、连接状态、设备名、断开连接 |
+
+**内置播放内核。** 语音和视频在 App 里用 **libVLC**（LGPL，自带 FFmpeg）播放，
+安卓系统解不了的 MKV/HEVC、网页录的 webm/opus、App 录的 m4a 都能放 —— 用户明确
+要求"不要调用系统的，以防系统没有这个能力报错"。代价是 APK 变大：按 ABI 分包后
+手机那份 **71 MB**（arm64），CI 的模拟器那份 79 MB（x86_64）。版本上有个坑：
+libvlc-all 的 Maven `<release>` 是 4.0.0-eap，要求 minCompileSdk=36，本项目是
+compileSdk 34，**3.7.2 是仍然兼容的最后一版**。
+
+桌面端不背这个体积：PySide6-Essentials 既没有音频输出也没有视频控件（要真在窗口
+内播放得换 Qt Addons，+160 MB）。所以 `core/media.py` 是**有 FFmpeg 就用**：
+出视频封面帧（聊天里就是真缩略图）、报时长、用 ffplay 窗口内播放语音与视频；
+没有就退回卡片 + 系统播放器。想要内置，跑 `tools/fetch_ffmpeg.py` 再
+`build_green.py --ffmpeg`（LGPL 构建，代价是包大 100-260 MB，默认不开）。
 
 **发现是双向的，手机找电脑有整整三条路，任何一条通就行**：
 
@@ -207,6 +222,11 @@ App 有 5 个页签：**聊天 / 发送 / 接收 / 传输 / 设置**，不是只
 
 电脑反过来看手机：App 一连上就 `POST /api/hello` 报上自己的设备号（显示为
 「我的手机（安卓 App）」），并每 5 秒广播一次自己的公告。
+
+换网、换设备、换端口都不用管：端口从来是发现结果里带回来的（mDNS 的 TXT、UDP 公告
+都写着网页端口），TCP 兜底除了默认端口还会试"上次连过的那个端口"。**几千几万个
+设备的大网段**（办公室 /16、校园网）不会逐台扫 —— 那既不现实也不礼貌：桌面端与
+手机端都退一步扫"自己所在的那个 /24"（手机再加上上次那台电脑所在的 /24）。
 
 只"听见"过（发现端口上广播过一次）的设备算**临时记录**：真发过 HTTP 请求就转正，
 90 秒内再没动静就自动忘掉 —— 否则每台点过一次「搜索电脑」的手机、每次自检发的
@@ -269,8 +289,8 @@ python tests/test_loopback.py            # 40 项：基本传输/目录/续传/�
 python tests/test_resilience.py          # 17 项：RST 杀连接/限速/512MiB/内存上界/对端不回话就挂断
 cd android && gradle assembleDebug       # 安卓 App（Kotlin + Compose，无第三方依赖）
 python tests/test_chat.py                # 33 项：会话存储/一对一/群聊扇出/附件落位
-python src/eversend/web/selftest.py      # 183 项：QR/CSRF/路径穿越/Range/完整收发链路/交给手机/APK 下载/App 登记/发现回包/mDNS 回答/本机路径不外泄
-xvfb-run -a python tests/test_gui_actions.py   # 19 项：真的点界面（取消发送/发送到底/聊天图片预览）
+python src/eversend/web/selftest.py      # 187 项：QR/CSRF/路径穿越/Range/完整收发链路/交给手机/APK 下载/App 登记/发现回包/mDNS 回答/本机路径不外泄
+xvfb-run -a python tests/test_gui_actions.py   # 25 项：真的点界面（取消/发送到底/聊天图片预览/多选发给两台）
 python tests/test_interop_wine.py --stage tools/.cache/stage-windows   # Linux ↔ Windows 双向
 python tools/ci_android_http.py          # 手机页面的 HTTP 表面（上传/Range/SSE/安全边界）
 ```
@@ -311,9 +331,12 @@ python tools/ci_android_http.py          # 手机页面的 HTTP 表面（上传/
   好处是功能迭代不用动协议，代价是电脑必须开着。**APK 是 debug 签名**，自用和测试没问题，
   正式分发请用自己的密钥重新签名。
 - **同名文件会续传/覆盖，不会自动改名。** 这是续传语义的必然结果；需要保留两份请手动改名。
-- **桌面端窗口内不播放视频/语音**：PySide6-Essentials 不含 QtMultimedia，绿色包也没带系统解码器
-  依赖。图片是原生的（QLabel + QPixmap），视频/语音点「打开」交给系统播放器。手机网页与
-  安卓 App 都是应用内播放。
+- **桌面端窗口内播放要自带 FFmpeg**：PySide6-Essentials 既没有音频输出也没有视频控件。
+  有 FFmpeg 时视频出封面帧、语音/视频用 ffplay 窗口内播放（`tools/fetch_ffmpeg.py` +
+  `build_green.py --ffmpeg`，可选，包会大 100-260 MB）；没有就退回卡片 + 系统播放器。
+  安卓 App **默认就内置** libVLC（自带 FFmpeg），所以手机端开箱即用。
+- **手机端是"电脑的客户端"**：手机之间不能直连，发给另一台手机的流程是"上传到电脑 →
+  电脑把它交给那台手机的页面"。群聊、多选发送都走这条链路，所以电脑必须开着。
 - **取消是"取消"，不是"失败"**：引擎把用户取消报成 `cancelled`（发送侧、接收侧、对端取消
   都算），卡片显示「已取消」且按钮变灰；只有真的出错才是红色「已失败」。
 
@@ -375,6 +398,8 @@ runs instead of in a second pass.
 - Five discovery channels: multicast, broadcast, mDNS, subnet scan, manual / QR
 - Encrypted: Ed25519 identity, X25519 agreement, AES-256-GCM or ChaCha20-Poly1305
 - Zero-install Android via the built-in mobile web UI, with ranged downloads
+- Bundled playback: the Android app ships libVLC (its own FFmpeg) so voice and video play
+  without depending on the device's codecs; the desktop uses a bundled FFmpeg when present
 - A native Android app (Kotlin + Compose) that keeps the link alive in the background,
   finds the computer on the LAN (directed broadcast, a per-host unicast sweep and a TCP
   fallback for networks that drop UDP), previews images, plays video and voice in-app,
