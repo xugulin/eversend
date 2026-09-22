@@ -109,6 +109,11 @@ def describe_agent(agent: str) -> str:
     # so keeps the desktop's list from showing a mystery client.
     if any(token in text for token in ("urllib", "curl/", "wget", "http-client", "python-requests", "okhttp", "axios")):
         return "命令行/脚本"
+    if "eversend-android" in text:
+        # The Android app identifies itself; saying "安卓 App" instead of
+        # "浏览器" matters because the desktop lists it as a paired device and
+        # the user has to recognise it there.
+        return "安卓 App"
     if "micromessenger" in text:
         browser = "微信内置浏览器"
     elif "edg" in text:
@@ -174,7 +179,7 @@ _MIME_TYPES = {
 
 #: Routes that only accept POST, so a GET can be answered with 405.
 _POST_ONLY_ROUTES = frozenset(
-    {"/api/announce", "/api/scan", "/api/upload", "/api/share", "/api/leave", "/api/chat/send", "/api/chat/upload", "/api/offer/respond", "/api/cancel", "/api/trust", "/api/peer"}
+    {"/api/announce", "/api/scan", "/api/upload", "/api/share", "/api/leave", "/api/hello", "/api/chat/send", "/api/chat/upload", "/api/offer/respond", "/api/cancel", "/api/trust", "/api/peer"}
 )
 
 _JSON_TYPE = "application/json; charset=utf-8"
@@ -692,6 +697,72 @@ class WebUI:
         found.sort(key=lambda c: c["lastSeen"], reverse=True)
         return found
 
+    def register_app(
+        self,
+        device_id: str,
+        name: str = "",
+        version: str = "",
+        address: str = "",
+        agent: str = "",
+    ) -> dict[str, Any]:
+        """A native app introduces itself with a stable id.
+
+        The browser registry keys a phone by *address + User-Agent*, which is
+        fine for a page but wrong for an app: the address changes when the phone
+        moves between networks, and then the desktop would show a second device
+        and every conversation would point at the old one.  An app that sends
+        its own device id gets one stable entry instead.
+        """
+        device_id = str(device_id or "").strip()
+        if not device_id:
+            raise ValueError("缺少 deviceId")
+        key = f"android:{device_id}"
+        now = time.time()
+        with self._state_lock:
+            entry = self._known.get(key) or {
+                "key": key,
+                "firstSeen": now,
+            }
+            entry.update(
+                {
+                    "address": address or entry.get("address", ""),
+                    "agent": agent[:200] if agent else entry.get("agent", ""),
+                    "label": name or entry.get("label") or "安卓 App",
+                    "name": name or entry.get("name", ""),
+                    "deviceId": device_id,
+                    "version": version or entry.get("version", ""),
+                    "kind": "app",
+                    "lastSeen": now,
+                }
+            )
+            self._known[key] = entry
+            # Serve it as a live client too, so everything that reads
+            # ``clients()`` (the device list, the QR dialog) sees it right away.
+            self._clients[key] = {
+                "address": entry["address"],
+                "agent": entry["agent"],
+                "label": entry["label"],
+                "since": entry.get("firstSeen", now),
+                "lastSeen": now,
+            }
+        self._save_known()
+        return dict(entry)
+
+    def register_from_discovery(self, event: dict[str, Any]) -> None:
+        """A phone announced itself over UDP (before opening any page)."""
+        device_id = str(event.get("device_id") or "")
+        if not device_id:
+            return
+        try:
+            self.register_app(
+                device_id,
+                name=str(event.get("name") or "") or "手机",
+                version=str(event.get("version") or ""),
+                address=str(event.get("address") or ""),
+            )
+        except ValueError:
+            pass
+
     def forget_client(self, address: str, agent: str = "") -> bool:
         """Forget one browser entirely — the phone's 「断开连接」 button.
 
@@ -870,6 +941,11 @@ class WebUI:
                         del self._offers[key]
             elif kind == "engine_stopped":
                 self._offers.clear()
+            elif kind == "mobile_found":
+                # A phone (the Android app, or any HTTP-only client) announced
+                # itself: remember it as a paired device so the desktop lists it
+                # even before it opens a page.
+                self.register_from_discovery(event)
             # Offers the user never answers expire inside the engine after
             # OFFER_TIMEOUT; prune them so the list cannot grow forever.
             if len(self._offers) > 32:
@@ -1460,6 +1536,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/share":
                 self._share_files()
+                return
+            if path == "/api/hello":
+                self._hello()
                 return
             if path == "/api/chat/send":
                 self._chat_send()
@@ -2060,6 +2139,35 @@ class _Handler(BaseHTTPRequestHandler):
         address = self.client_address[0] if self.client_address else ""
         key = ui.client_key(address, self.headers.get("User-Agent", ""))
         return "web:" + key
+
+    def _hello(self) -> None:
+        """``POST /api/hello``: a native app says who it is."""
+        body = self._json_body()
+        device_id = str(body.get("deviceId") or body.get("id") or "")
+        name = str(body.get("name") or "")
+        version = str(body.get("version") or "")
+        address = self.client_address[0] if self.client_address else ""
+        try:
+            entry = self.server_ui.register_app(
+                device_id,
+                name=name,
+                version=version,
+                address=address,
+                agent=self.headers.get("User-Agent", ""),
+            )
+        except ValueError as exc:
+            raise _BadRequest(str(exc)) from None
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "ok": True,
+                "device": {
+                    "id": entry.get("deviceId", ""),
+                    "name": entry.get("label", ""),
+                    "address": entry.get("address", ""),
+                },
+            },
+        )
 
     def _send_chat(self, query: dict[str, list[str]]) -> None:
         """``GET /api/chat``: conversations plus one conversation's messages."""

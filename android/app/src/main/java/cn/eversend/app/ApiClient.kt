@@ -174,58 +174,131 @@ class ApiClient(val base: String, val token: String) {
             }
         }
 
+        /** 广播公告用的端口，和电脑端约定一致。 */
+        const val DISCOVERY_PORT = 52118
+
         /**
-         * 在局域网里找电脑：电脑端每隔一会儿往 52118 广播一条 JSON 公告。
-         * 找不到也没关系，用户还可以手输地址。
+         * 在局域网里找电脑：**先绑住 52118 收公告，再发一条自己的探针**。
+         *
+         * 第一版只发探针、不等回包，永远找不到电脑——两个原因：电脑端的广播
+         * 间隔是 30 秒（等不到），而且它原本不回探针。现在电脑端收到公告会立刻
+         * 单播回一条（回包发到来源端口，所以任何端口的 socket 都收得到）。
+         *
+         * 绑定 52118 是第二条路：即使回包被路由器丢掉，也能听到电脑的定时广播。
          */
-        fun discover(timeoutMs: Int = 2500): List<Found> {
+        fun discover(timeoutMs: Int = 4000, deviceId: String = "probe"): List<Found> {
             val found = LinkedHashMap<String, Found>()
-            val socket = DatagramSocket()
+            val socket = DatagramSocket(null)
+            var bound = false
+            try {
+                socket.reuseAddress = true
+                socket.bind(InetSocketAddress(DISCOVERY_PORT))
+                bound = true
+            } catch (ignored: Exception) {
+                // 端口被别的进程占着也没关系，还能靠探针的回包。
+                socket.bind(InetSocketAddress(0))
+            }
             socket.broadcast = true
             socket.soTimeout = 500
             val deadline = System.currentTimeMillis() + timeoutMs
             try {
-                val payload = """{"t":"eversend/1","id":"probe","n":"android","port":0,"web":0,"ts":0}"""
-                    .toByteArray(Charsets.UTF_8)
-                val broadcast = InetAddress.getByName("255.255.255.255")
+                val probe = """{"t":"eversend/1","id":"$deviceId","n":"安卓 App","k":"mobile",""" +
+                    """"p":"android","v":"1.0.0","port":0,"web":0,"ts":0}"""
+                val payload = probe.toByteArray(Charsets.UTF_8)
+                val targets = mutableListOf(InetAddress.getByName("255.255.255.255"))
+                try {
+                    targets.add(InetAddress.getByName("224.0.0.167"))
+                } catch (ignored: Exception) {
+                }
+                var lastProbe = 0L
                 while (System.currentTimeMillis() < deadline) {
-                    try {
-                        socket.send(DatagramPacket(payload, payload.size, broadcast, 52118))
-                    } catch (ignored: Exception) {
-                    }
-                    val buffer = ByteArray(4096)
-                    try {
-                        while (true) {
-                            val packet = DatagramPacket(buffer, buffer.size)
-                            socket.receive(packet)
-                            val text = String(packet.data, 0, packet.length, Charsets.UTF_8)
-                            val json = try {
-                                JSONObject(text)
+                    if (System.currentTimeMillis() - lastProbe > 1000) {
+                        lastProbe = System.currentTimeMillis()
+                        for (target in targets) {
+                            try {
+                                socket.send(DatagramPacket(payload, payload.size, target, DISCOVERY_PORT))
                             } catch (ignored: Exception) {
-                                continue
                             }
-                            if (json.optString("t") != "eversend/1") continue
-                            val web = json.optInt("web", 0)
-                            if (web <= 0) continue
-                            val host = packet.address.hostAddress ?: continue
-                            val key = "$host:$web"
-                            found[key] = Found(
-                                name = json.optString("n", host),
-                                host = host,
-                                webPort = web,
-                                platform = json.optString("p", ""),
-                            )
                         }
+                    }
+                    val buffer = ByteArray(8192)
+                    try {
+                        val packet = DatagramPacket(buffer, buffer.size)
+                        socket.receive(packet)
+                        val text = String(packet.data, 0, packet.length, Charsets.UTF_8)
+                        val json = try {
+                            JSONObject(text)
+                        } catch (ignored: Exception) {
+                            continue
+                        }
+                        if (json.optString("t") != "eversend/1") continue
+                        val web = json.optInt("web", 0)
+                        if (web <= 0) continue
+                        val host = packet.address.hostAddress ?: continue
+                        found["$host:$web"] = Found(
+                            name = json.optString("n", host),
+                            host = host,
+                            webPort = web,
+                            platform = json.optString("p", ""),
+                        )
+                        if (found.size >= 8) break
                     } catch (ignored: SocketTimeoutException) {
                     }
                 }
             } finally {
                 socket.close()
             }
+            if (!bound) Log.d(TAG, "52118 被占用，只靠探针回包发现")
             return found.values.toList()
         }
+
+        /** 定期广播自己的存在，电脑端就能在设备列表里看到这台手机。 */
+        fun announce(deviceId: String, name: String, version: String = "1.0.0") {
+            val socket = DatagramSocket()
+            socket.broadcast = true
+            try {
+                val payload = (
+                    "{\"t\":\"eversend/1\",\"id\":\"" + deviceId +
+                        "\",\"n\":\"" + escapeJson(name) +
+                        "\",\"k\":\"mobile\",\"p\":\"android\",\"v\":\"" + version +
+                        "\",\"port\":0,\"web\":0,\"ts\":" + (System.currentTimeMillis() / 1000) + "}"
+                    ).toByteArray(Charsets.UTF_8)
+                for (target in listOf("255.255.255.255", "224.0.0.167")) {
+                    try {
+                        socket.send(
+                            DatagramPacket(
+                                payload, payload.size,
+                                InetAddress.getByName(target), DISCOVERY_PORT,
+                            )
+                        )
+                    } catch (ignored: Exception) {
+                    }
+                }
+            } catch (ignored: Exception) {
+            } finally {
+                socket.close()
+            }
+        }
+
+        /** 最小的 JSON 字符串转义：设备名是用户自己起的，可能带引号或反斜杠。 */
+        fun escapeJson(value: String): String {
+            val builder = StringBuilder()
+            for (ch in value) {
+                when (ch) {
+                    '"' -> builder.append("\\\"")
+                    '\\' -> builder.append("\\\\")
+                    '\n' -> builder.append("\\n")
+                    '\r' -> builder.append("\\r")
+                    '\t' -> builder.append("\\t")
+                    else -> if (ch < ' ') builder.append("?") else builder.append(ch)
+                }
+            }
+            return builder.toString()
+        }
+
     }
 
+    /** 发现到的一台电脑。放在 companion 外面，类型名才是 ``ApiClient.Found``。 */
     data class Found(val name: String, val host: String, val webPort: Int, val platform: String) {
         val base: String get() = "http://$host:$webPort/"
     }

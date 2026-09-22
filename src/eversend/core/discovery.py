@@ -235,6 +235,9 @@ class DiscoveryService:
 
         self.peers = PeerStore()
         self._interfaces: list[Interface] = []
+        #: address -> last time we answered it (see :meth:`_maybe_reply`).
+        self._replies: dict[str, float] = {}
+        self._reply_lock = threading.Lock()
         self._multicast_rx: list[socket.socket] = []
         self._broadcast_rx: socket.socket | None = None
         self._mdns_rx: socket.socket | None = None
@@ -412,12 +415,71 @@ class DiscoveryService:
             if address.startswith("::ffff:"):
                 address = address[7:]
 
+            # A phone running the Android app, or any client that only speaks
+            # HTTP, announces itself with no TCP port.  It is not a protocol
+            # peer, so it must not enter the peer list (a peer with port 0 would
+            # be un-dialable); the web layer turns this event into a paired
+            # client instead.
+            if announcement.port <= 0 or announcement.kind == "mobile":
+                self.events.emit(
+                    "mobile_found",
+                    device_id=announcement.device_id,
+                    name=announcement.name,
+                    # 不能再叫 kind：emit(kind, **payload) 的第一个参数已经占了它。
+                    device_kind=announcement.kind,
+                    platform=announcement.platform,
+                    version=announcement.version,
+                    address=address,
+                )
+                self._maybe_reply(addr)
+                continue
+
             peer, is_new = self.peers.upsert(announcement, address, source_kind)
             self.events.emit(
                 "device_found" if is_new else "device_updated",
                 peer=peer,
                 is_new=is_new,
             )
+            # Answer a device we did not know about, so its own "search for
+            # computers" finishes immediately instead of waiting up to
+            # ANNOUNCE_INTERVAL (30 s) for our next broadcast.
+            if is_new:
+                self._maybe_reply(addr)
+
+    #: How often we answer a single address, in seconds.  A broadcast burst
+    #: from several devices must not turn into an amplification loop.
+    REPLY_COOLDOWN = 1.0
+
+    def _maybe_reply(self, addr: tuple) -> None:
+        """Send our announcement straight back to whoever just spoke.
+
+        The periodic broadcast is every 30 seconds, which is far too slow for a
+        phone that just tapped "搜索电脑"; a unicast answer arrives immediately,
+        and because it goes to the *source port* it reaches a client that is not
+        listening on our discovery port at all.
+        """
+        try:
+            address = addr[0]
+        except (IndexError, TypeError):
+            return
+        now = time.monotonic()
+        # 两个接收线程会同时到达这里，用一个专门的锁保护这张表（原来的实现没有）。
+        with self._reply_lock:
+            last = self._replies.get(address, 0.0)
+            if now - last < self.REPLY_COOLDOWN:
+                return
+            self._replies[address] = now
+            if len(self._replies) > 256:
+                cutoff = now - 60.0
+                for key in [k for k, v in self._replies.items() if v < cutoff]:
+                    del self._replies[key]
+        payload = Announcement.from_device(self.device_info()).to_bytes()
+        for sock in list(self._senders):
+            try:
+                sock.sendto(payload, addr)
+                return
+            except OSError:
+                continue
 
     # -- mDNS --------------------------------------------------------------
 

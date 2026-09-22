@@ -40,6 +40,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -71,6 +72,18 @@ class MainActivity : ComponentActivity() {
 
 class AppState(context: android.content.Context) {
     private val prefs = context.getSharedPreferences("eversend", android.content.Context.MODE_PRIVATE)
+
+    /** 稳定设备 id：电脑端靠它认出"还是这台手机"，换 Wi-Fi 也不会变成新设备。 */
+    val deviceId: String
+        get() = prefs.getString("deviceId", null) ?: java.util.UUID.randomUUID().toString().also {
+            prefs.edit().putString("deviceId", it).apply()
+        }
+
+    /** 手机型号当名字，用户一眼能认出是哪台。 */
+    val deviceName: String
+        get() = prefs.getString("deviceName", null) ?: (Build.MODEL ?: "安卓手机").also {
+            prefs.edit().putString("deviceName", it).apply()
+        }
 
     var host: String
         get() = prefs.getString("host", "") ?: ""
@@ -106,6 +119,27 @@ fun Root(store: AppState) {
                 NavigationBarItem(
                     selected = tab == 1,
                     onClick = { tab = 1 },
+                    icon = { Icon(Icons.Filled.Upload, null) },
+                    label = { Text("发送") },
+                    modifier = Modifier.testTag("tab-send"),
+                )
+                NavigationBarItem(
+                    selected = tab == 2,
+                    onClick = { tab = 2 },
+                    icon = { Icon(Icons.Filled.Download, null) },
+                    label = { Text("接收") },
+                    modifier = Modifier.testTag("tab-receive"),
+                )
+                NavigationBarItem(
+                    selected = tab == 3,
+                    onClick = { tab = 3 },
+                    icon = { Icon(Icons.Filled.SwapVert, null) },
+                    label = { Text("传输") },
+                    modifier = Modifier.testTag("tab-transfers"),
+                )
+                NavigationBarItem(
+                    selected = tab == 4,
+                    onClick = { tab = 4 },
                     icon = { Icon(Icons.Filled.Settings, null) },
                     label = { Text("设置") },
                     modifier = Modifier.testTag("tab-settings"),
@@ -114,7 +148,13 @@ fun Root(store: AppState) {
         }
     ) { padding ->
         Box(Modifier.padding(padding)) {
-            if (tab == 0) ChatScreen(store) else SettingsScreen(store)
+            when (tab) {
+                0 -> ChatScreen(store)
+                1 -> SendScreen(store)
+                2 -> ReceiveScreen(store)
+                3 -> TransfersScreen(store)
+                else -> SettingsScreen(store)
+            }
         }
     }
 }
@@ -298,8 +338,32 @@ fun ChatScreen(store: AppState) {
                 error = "连不上电脑（$host）：拿不到令牌"
                 return null
             }
-            ApiClient(base, token).also {
-                client = it
+            ApiClient(base, token).also { api ->
+                // 自报身份：带上稳定的设备 id 与名字，电脑端就会把它显示成
+                // 「我的手机（安卓 App）」，而不是一串地址+浏览器的合成名。
+                try {
+                    api.postJson(
+                        "/api/hello",
+                        JSONObject()
+                            .put("deviceId", store.deviceId)
+                            .put("name", store.deviceName)
+                            .put("kind", "android")
+                            .put("version", "1.0.0"),
+                    )
+                } catch (ignored: Exception) {
+                }
+                // 并广播自己的存在，让电脑端在设备列表里主动看到这台手机
+                // （不必等我们先访问它）。
+                CoroutineScope(Dispatchers.IO).launch {
+                    while (true) {
+                        try {
+                            ApiClient.announce(store.deviceId, store.deviceName)
+                        } catch (ignored: Exception) {
+                        }
+                        delay(5000)
+                    }
+                }
+                client = api
                 error = ""
             }
         } catch (problem: Exception) {
@@ -679,4 +743,348 @@ fun saveToDownloads(context: android.content.Context, name: String, sink: (java.
         Log.d("EverSend", "保存失败: ${problem.message}")
         null
     }
+}
+
+// ------------------------------------------------------------------ 发送
+
+/**
+ * 发送页：选设备 → 选文件 → 发送。
+ *
+ * 走的是电脑端已有的 `/api/upload`：字节流上去，电脑再按设备的身份转发或落地。
+ * 选择设备时同时列出「协议对端（电脑）」和「网页/App 客户端（手机）」，
+ * 后者会在电脑端变成一次交接。
+ */
+@Composable
+fun SendScreen(store: AppState) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var devices by remember { mutableStateOf<List<DeviceRow>>(emptyList()) }
+    var picked by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var target by remember { mutableStateOf<DeviceRow?>(null) }
+    var progress by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf("") }
+
+    val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        if (uris.isNotEmpty()) picked = uris
+    }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            withContext(Dispatchers.IO) {
+                try {
+                    val base = "http://${normalizeHost(store.host)}/"
+                    val token = ApiClient.fetchToken(base)
+                    if (token.isNotBlank()) {
+                        val api = ApiClient(base, token)
+                        devices = loadDevices(api, store)
+                    }
+                } catch (problem: Exception) {
+                    status = "连不上电脑：${problem.message ?: problem.javaClass.simpleName}"
+                }
+            }
+            delay(4000)
+        }
+    }
+
+    Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("选择接收设备", fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
+        if (devices.isEmpty()) Text("还没有发现设备。确认手机和电脑在同一 Wi-Fi。", fontSize = 13.sp)
+        LazyColumn(Modifier.weight(1f)) {
+            items(devices) { device ->
+                Card(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                        .clickable { target = device }
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(
+                            device.name + if (device.id == target?.id) "  ✅" else "",
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text("${device.kind} · ${device.address}", fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { pick.launch("*/*") }, modifier = Modifier.testTag("btn-pick")) {
+                Text(if (picked.isEmpty()) "选择文件" else "已选 ${picked.size} 个")
+            }
+            Button(
+                enabled = !busy && picked.isNotEmpty() && target != null,
+                onClick = {
+                    val device = target ?: return@Button
+                    busy = true
+                    status = ""
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            try {
+                                val base = "http://${normalizeHost(store.host)}/"
+                                val api = ApiClient(base, ApiClient.fetchToken(base))
+                                picked.forEach { uri ->
+                                    val info = queryFile(context, uri)
+                                    val query = "/api/upload?name=${encodeUrl(info.first)}" +
+                                        "&deviceId=${encodeUrl(device.id)}"
+                                    context.contentResolver.openInputStream(uri)?.use { stream ->
+                                        api.upload(query, stream, info.second, "application/octet-stream") {
+                                            progress = "已发送 $it 字节"
+                                        }
+                                    }
+                                }
+                                status = "已交给电脑端，正在传输"
+                            } catch (problem: Exception) {
+                                status = "发送失败：${problem.message ?: problem.javaClass.simpleName}"
+                            }
+                        }
+                        busy = false
+                        picked = emptyList()
+                    }
+                },
+                modifier = Modifier.testTag("btn-send-files"),
+            ) { Text(if (busy) "发送中…" else "发送") }
+        }
+        if (progress.isNotBlank()) Text(progress, fontSize = 12.sp)
+        if (status.isNotBlank()) Text(status, fontSize = 13.sp)
+    }
+}
+
+// ------------------------------------------------------------------ 接收
+
+/** 接收页：待确认的传输 + 电脑上的文件（可直接下载到手机）。 */
+@Composable
+fun ReceiveScreen(store: AppState) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var offers by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var files by remember { mutableStateOf<List<Pair<String, Long>>>(emptyList()) }
+    var status by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            withContext(Dispatchers.IO) {
+                try {
+                    val base = "http://${normalizeHost(store.host)}/"
+                    val api = ApiClient(base, ApiClient.fetchToken(base))
+                    val state = api.getJson("/api/state")
+                    val list = state.optJSONArray("offers")
+                    offers = (0 until (list?.length() ?: 0)).mapNotNull { list?.optJSONObject(it) }
+                    val payload = api.getJson("/api/files")
+                    val array = payload.optJSONArray("files")
+                    files = (0 until (array?.length() ?: 0)).mapNotNull { index ->
+                        val entry = array?.optJSONObject(index) ?: return@mapNotNull null
+                        Pair(entry.optString("path"), entry.optLong("size", 0))
+                    }
+                } catch (problem: Exception) {
+                    status = "连不上电脑"
+                }
+            }
+            delay(3000)
+        }
+    }
+
+    Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("待确认", fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
+        if (offers.isEmpty()) Text("没有等待确认的传输。", fontSize = 13.sp)
+        offers.forEach { offer ->
+            val requestId = offer.optString("request_id")
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp)) {
+                    Text(offer.optJSONObject("peer")?.optString("name") ?: "对方", fontWeight = FontWeight.SemiBold)
+                    Text("${offer.optInt("files")} 个文件 · ${offer.optLong("total")} 字节", fontSize = 12.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = {
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    try {
+                                        val base = "http://${normalizeHost(store.host)}/"
+                                        val api = ApiClient(base, ApiClient.fetchToken(base))
+                                        api.postJson(
+                                            "/api/offer/respond",
+                                            JSONObject().put("requestId", requestId).put("accept", true),
+                                        )
+                                    } catch (problem: Exception) {
+                                        status = "接受失败"
+                                    }
+                                }
+                            }
+                        }) { Text("接收") }
+                        OutlinedButton(onClick = {
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    try {
+                                        val base = "http://${normalizeHost(store.host)}/"
+                                        val api = ApiClient(base, ApiClient.fetchToken(base))
+                                        api.postJson(
+                                            "/api/offer/respond",
+                                            JSONObject().put("requestId", requestId).put("accept", false),
+                                        )
+                                    } catch (ignored: Exception) {
+                                    }
+                                }
+                            }
+                        }) { Text("拒绝") }
+                    }
+                }
+            }
+        }
+        Text("电脑上的文件", fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
+        if (files.isEmpty()) Text("电脑上还没有文件。", fontSize = 13.sp)
+        LazyColumn(Modifier.weight(1f)) {
+            items(files) { entry ->
+                Card(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                        .clickable {
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    try {
+                                        val base = "http://${normalizeHost(store.host)}/"
+                                        val api = ApiClient(base, ApiClient.fetchToken(base))
+                                        val name = entry.first.substringAfterLast('/')
+                                        val saved = saveToDownloads(context, name) { sink ->
+                                            api.download(
+                                                "/api/download?path=" + encodeUrl(entry.first),
+                                                sink,
+                                            )
+                                        }
+                                        status = if (saved != null) "已下载到「下载」目录：$name" else "下载失败"
+                                    } catch (problem: Exception) {
+                                        status = "下载失败：${problem.message ?: problem.javaClass.simpleName}"
+                                    }
+                                }
+                            }
+                        }
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(entry.first.substringAfterLast('/'), fontWeight = FontWeight.SemiBold)
+                        Text("${entry.second} 字节 · 点一下下载", fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+        if (status.isNotBlank()) Text(status, fontSize = 13.sp, modifier = Modifier.testTag("receive-status"))
+    }
+}
+
+// ------------------------------------------------------------------ 传输
+
+/** 传输页：正在跑的传输与最近的上传。 */
+@Composable
+fun TransfersScreen(store: AppState) {
+    var transfers by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var uploads by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var status by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            withContext(Dispatchers.IO) {
+                try {
+                    val base = "http://${normalizeHost(store.host)}/"
+                    val api = ApiClient(base, ApiClient.fetchToken(base))
+                    val state = api.getJson("/api/state")
+                    val list = state.optJSONArray("transfers")
+                    transfers = (0 until (list?.length() ?: 0)).mapNotNull { list?.optJSONObject(it) }
+                    val recent = state.optJSONArray("recentUploads")
+                    uploads = (0 until (recent?.length() ?: 0)).mapNotNull { recent?.optJSONObject(it) }
+                    status = ""
+                } catch (problem: Exception) {
+                    status = "连不上电脑"
+                }
+            }
+            delay(2000)
+        }
+    }
+
+    Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("正在传输", fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
+        if (transfers.isEmpty()) Text("当前没有传输。", fontSize = 13.sp)
+        transfers.forEach { transfer ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp)) {
+                    val direction = if (transfer.optString("direction") == "send") "发送到" else "接收自"
+                    Text(
+                        "$direction ${transfer.optJSONObject("peer")?.optString("name") ?: "对方"}",
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    val done = transfer.optLong("doneBytes")
+                    val total = transfer.optLong("totalBytes").coerceAtLeast(1)
+                    LinearProgressIndicator(
+                        progress = { (done.toFloat() / total).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    )
+                    Text("$done / $total 字节", fontSize = 12.sp)
+                }
+            }
+        }
+        Text("最近的上传", fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
+        if (uploads.isEmpty()) Text("还没有上传记录。", fontSize = 13.sp)
+        LazyColumn {
+            items(uploads) { upload ->
+                Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(upload.optString("name"), fontWeight = FontWeight.SemiBold)
+                        Text(
+                            upload.optString("status") + " · " + upload.optLong("size") + " 字节",
+                            fontSize = 12.sp,
+                        )
+                    }
+                }
+            }
+        }
+        if (status.isNotBlank()) Text(status, fontSize = 13.sp)
+    }
+}
+
+/** 设备行：电脑（协议对端）与手机（网页/App 客户端）都在这里。 */
+data class DeviceRow(val id: String, val name: String, val kind: String, val address: String)
+
+fun loadDevices(api: ApiClient, store: AppState): List<DeviceRow> {
+    val rows = mutableListOf<DeviceRow>()
+    val state = api.getJson("/api/state")
+    val devices = state.optJSONArray("devices")
+    for (index in 0 until (devices?.length() ?: 0)) {
+        val device = devices.optJSONObject(index) ?: continue
+        if (device.optBoolean("isSelf")) continue
+        rows.add(
+            DeviceRow(
+                id = device.optString("id"),
+                name = device.optString("name"),
+                kind = "电脑",
+                address = "${device.optString("address")}:${device.optInt("port")}",
+            )
+        )
+    }
+    val clients = state.optJSONArray("knownClients")
+    for (index in 0 until (clients?.length() ?: 0)) {
+        val client = clients.optJSONObject(index) ?: continue
+        val deviceId = client.optString("deviceId")
+        if (deviceId == store.deviceId) continue          // 就是本机
+        rows.add(
+            DeviceRow(
+                id = "web:" + client.optString("key"),
+                name = client.optString("label", "手机"),
+                kind = "手机",
+                address = client.optString("address"),
+            )
+        )
+    }
+    return rows
+}
+
+/** 从 content URI 读文件名与大小。 */
+fun queryFile(context: android.content.Context, uri: Uri): Pair<String, Long> {
+    var name = "file"
+    var size = 0L
+    context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+        if (cursor.moveToFirst()) {
+            val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            val sizeIndex = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
+            if (nameIndex >= 0) name = cursor.getString(nameIndex) ?: name
+            if (sizeIndex >= 0) size = cursor.getLong(sizeIndex)
+        }
+    }
+    return Pair(name, size)
 }
