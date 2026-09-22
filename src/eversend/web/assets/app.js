@@ -144,6 +144,9 @@
     files: [],
     receiveDir: '',
     freeSpace: 0,
+    // 记住的手机（网页版 / 安卓 App），带 online 与 secondsAgo：设备列表要
+    // 靠它打「已连接 / 未连接 · 最后在线」的标记。
+    knownClients: [],
     selectedDeviceId: null,
   shares: [],
   chat: { selfId: '', conversations: [], unread: 0 },
@@ -206,13 +209,53 @@
     return device.name || device.id || '未知设备';
   }
 
+  /** 「已连接 / 未连接 · 最后在线 X 前」——手机端也要一眼看出谁在线。
+   *
+   *  手机的设备列表其实有两拨人：协议对端（电脑，来自 /api/state 的 devices，
+   *  在发现表里就说明刚刚还听见它）和设备列表里记住的手机（knownClients，带
+   *  online 与 secondsAgo）。两拨人以前长一个样，用户分不清谁连着了。
+   */
+  function statusChip(online, secondsAgo, isSelf) {
+    if (isSelf) return h('span', { class: 'tag is-self', text: '本机' });
+    if (online) return h('span', { class: 'tag is-online', text: '已连接' });
+    var ago = Number(secondsAgo || 0);
+    var when = ago < 60 ? Math.round(ago) + ' 秒前'
+      : ago < 3600 ? Math.round(ago / 60) + ' 分钟前'
+        : Math.round(ago / 3600) + ' 小时前';
+    return h('span', { class: 'tag is-offline', text: '未连接 · 最后在线 ' + when });
+  }
+
+  /** 名字后面跟"系统 · 版本 · IP"，规范到哪儿都一样。 */
+  function deviceFacts(device) {
+    var parts = [];
+    if (device.platform) parts.push(platformName(device.platform));
+    if (device.version) parts.push('韧传 ' + device.version);
+    if (device.address) parts.push(device.address + (device.webPort ? ':' + device.webPort : ''));
+    return parts.join(' · ');
+  }
+
+  function platformName(platform) {
+    var text = String(platform || '').toLowerCase();
+    if (text === 'android') return '安卓';
+    if (text === 'browser') return '网页版';
+    if (text === 'windows') return 'Windows';
+    if (text === 'linux') return 'Linux';
+    if (text === 'darwin' || text === 'macos') return 'macOS';
+    return platform || '';
+  }
+
   function renderDevices() {
     // The local machine is served first by /api/state: "send it to this
     // computer" is the common case, so it must never be filtered away.
     var devices = store.devices;
+    var phones = (store.knownClients || []).filter(function (c) { return c && c.deviceId !== store.selfId; });
     var signature = devices
-      .map(function (d) { return d.id + '|' + d.name + '|' + d.trusted + '|' + d.address; })
-      .join(',') + '#' + store.selectedDeviceId;
+      .map(function (d) { return d.id + '|' + d.name + '|' + d.trusted + '|' + d.address + '|' + d.online; })
+      .join(',')
+      + '#' + phones.map(function (c) {
+        return c.key + '|' + c.online + '|' + Math.round(c.secondsAgo || 0);
+      }).join(',')
+      + '#' + store.selectedDeviceId;
     if (!changed('devices', signature)) return;
 
     var list = $('#device-list');
@@ -233,6 +276,7 @@
       var selected = device.id === store.selectedDeviceId;
       var tags = [];
       if (device.local) tags.push(h('span', { class: 'tag is-self', text: '本机' }));
+      else tags.push(statusChip(device.online !== false, device.secondsAgo, false));
       if (device.trusted && !device.local) tags.push(h('span', { class: 'tag is-trusted', text: '已信任' }));
       if (device.webUrl && !device.local) tags.push(h('span', { class: 'tag', text: '可网页打开' }));
       var button = h('button', {
@@ -248,10 +292,36 @@
         h('span', { class: 'icon', text: platformIcon(device.platform, device.kind) }),
         h('span', { class: 'meta' },
           h('span', { class: 'name' }, deviceLabel(device), tags),
-          h('span', { class: 'addr', text: (device.address || '未知地址') + ':' + (device.tcpPort || '?') })
+          h('span', { class: 'addr', text: (device.address || '未知地址') + ':' + (device.tcpPort || '?') }),
+          h('span', { class: 'facts muted', text: deviceFacts(device) })
         )
       );
       list.appendChild(button);
+    });
+  }
+
+  /** 记住的手机（本机除外）：谁还连着、谁断开了，一眼看得出来。 */
+  function renderPhonePeers() {
+    var box = $('#phone-peers');
+    if (!box) return;
+    var phones = (store.knownClients || []).filter(function (c) { return c && c.deviceId !== store.selfId; });
+    var signature = phones.map(function (c) {
+      return c.key + '|' + c.label + '|' + c.online + '|' + Math.round(c.secondsAgo || 0);
+    }).join(',');
+    if (!changed('phonePeers', signature)) return;
+    clear(box);
+    box.hidden = phones.length === 0;
+    phones.forEach(function (client) {
+      var isApp = client.clientKind === 'app';
+      box.appendChild(h('div', { class: 'peer' },
+        h('span', { class: 'icon', text: isApp ? '📱' : '🌐' }),
+        h('span', { class: 'meta' },
+          h('span', { class: 'name' }, h('span', { text: client.label || '手机' }),
+            h('span', { class: 'tag ' + (isApp ? 'is-app' : 'is-web'), text: isApp ? '安卓 App' : '网页版' }),
+            statusChip(client.online, client.secondsAgo, client.isLocal)),
+          h('span', { class: 'facts muted', text: (client.address || '') + (client.version ? ' · 韧传 ' + client.version : '') })
+        )
+      ));
     });
   }
 
@@ -489,7 +559,7 @@
   // ------------------------------------------------------------------ chat
 
   var emojiOpen = false;
-  var recorder = { media: null, chunks: [], started: 0, timer: null };
+  var recorder = { media: null, chunks: [], started: 0, timer: null, state: 'idle' };
 
   function chatUnread() {
     return (store.chat && store.chat.unread) || 0;
@@ -543,11 +613,27 @@
     thread.hidden = !store.conversationId;
     if (!store.conversationId) return;
     var current = conversations.find(function (c) { return c.id === store.conversationId; }) || {};
-    $('#chat-title').textContent = current.title || '会话';
-    var members = (current.members || []).map(function (m) {
-      if (m === (store.chat.selfId || '')) return '我';
-      if (m.indexOf('web:') === 0) return '手机';
-      return m.slice(0, 8);
+    $('#chat-title').textContent = (current.id || '').indexOf('g:') === 0
+      ? ('👥 ' + (current.title || '群聊'))
+      : (current.title || '会话');
+    // 规范显示成员：名字（系统 · 韧传 版本 · IP），和设备列表用同一套字段。
+    var members = (current.members || []).map(function (id) {
+      if (id === (store.chat.selfId || '')) return '我';
+      var known = (store.knownClients || []).find(function (c) { return 'web:' + c.key === id; });
+      if (known) {
+        var parts = [known.clientKind === 'app' ? '安卓 App' : '网页版'];
+        if (known.version) parts.push('韧传 ' + known.version);
+        if (known.address) parts.push(known.address);
+        return (known.label || '手机') + '（' + parts.join(' · ') + '）';
+      }
+      var device = (store.devices || []).find(function (d) { return d.id === id; });
+      if (device) {
+        var bits = [platformName(device.platform) || '电脑'];
+        if (device.version) bits.push('韧传 ' + device.version);
+        if (device.address) bits.push(device.address);
+        return device.name + '（' + bits.join(' · ') + '）';
+      }
+      return id.slice(0, 8);
     });
     $('#chat-members').textContent = members.join(' · ');
 
@@ -592,18 +678,29 @@
   function attachmentNode(message) {
     var url = '/api/chat/media/' + encodeURIComponent(message.id);
     var name = message.mediaName || '附件';
+    // 附件一律给一个下载链接：能看的东西也要能存下来（用户明确要的）。
+    function downloadLink(label) {
+      return h('a', { class: 'msg-save', href: url, download: name, text: '⬇ ' + label });
+    }
     if (message.kind === 'image') {
-      return h('a', { href: url, target: '_blank', rel: 'noopener' },
-        h('img', { class: 'msg-image', src: url, alt: name, loading: 'lazy' }));
+      return h('div', { class: 'msg-media' },
+        h('a', { href: url, target: '_blank', rel: 'noopener' },
+          h('img', { class: 'msg-image', src: url, alt: name, loading: 'lazy' })),
+        h('span', { class: 'msg-actions' }, downloadLink('保存图片')),
+      );
     }
     if (message.kind === 'video') {
-      return h('video', { class: 'msg-video', src: url, controls: 'controls', preload: 'metadata' });
+      return h('div', { class: 'msg-media' },
+        h('video', { class: 'msg-video', src: url, controls: 'controls', preload: 'metadata' }),
+        h('span', { class: 'msg-actions' }, downloadLink('保存视频')),
+      );
     }
     if (message.kind === 'voice') {
       var seconds = message.durationMs ? Math.round(message.durationMs / 1000) : 0;
       return h('div', { class: 'msg-voice' },
         h('audio', { src: url, controls: 'controls', preload: 'metadata' }),
-        h('span', { class: 'muted', text: '语音' + (seconds ? ' · ' + seconds + ' 秒' : '') })
+        h('span', { class: 'muted', text: '语音' + (seconds ? ' · ' + seconds + ' 秒' : '') }),
+        downloadLink('保存语音')
       );
     }
     return h('a', { class: 'msg-file', href: url, download: name },
@@ -679,25 +776,56 @@
     return 'file';
   }
 
+  /** 表情面板：整份表情表（三端共用，来自 /api/emoji），分组、可上下滑动。
+   *
+   *  以前是写死在页面里的 48 个，用户说太少。现在拉 /api/emoji（服务端从
+   *  core/emoji.py 生成），分组渲染在一个可滚动的容器里，往下滑就是更多。
+   */
+  var emojiGroups = null;
+
+  function insertEmoji(emoji) {
+    var input = $('#chat-input');
+    input.value += emoji;
+    input.focus();
+  }
+
+  function renderEmojiGroups(pad, groups) {
+    clear(pad);
+    groups.forEach(function (group) {
+      pad.appendChild(h('div', { class: 'emoji-title', text: group.title + '（' + group.emoji.length + '）' }));
+      var grid = h('div', { class: 'emoji-grid' });
+      group.emoji.forEach(function (emoji) {
+        grid.appendChild(h('button', {
+          type: 'button', text: emoji, title: emoji,
+          onclick: function () { insertEmoji(emoji); }
+        }));
+      });
+      pad.appendChild(grid);
+    });
+  }
+
   function toggleEmoji() {
     var pad = $('#emoji-pad');
     emojiOpen = !emojiOpen;
     pad.hidden = !emojiOpen;
-    if (!pad.childElementCount) {
-      ['😀','😂','🥹','😊','😍','😘','🤔','😴','😎','🤩','😭','😅','🙃','😇','🥳','🤝',
-       '👍','👎','👌','🙏','👏','💪','🤙','✌️','❤️','💔','🔥','✨','🎉','🎁','⭐','💡',
-       '✅','❌','⚠️','❓','❗','📎','📷','🎬','🎵','🎤','💻','📱','🖥️','📁','📄','🗑️'
-      ].forEach(function (emoji) {
-        pad.appendChild(h('button', {
-          type: 'button', text: emoji,
-          onclick: function () {
-            var input = $('#chat-input');
-            input.value += emoji;
-            input.focus();
-          }
-        }));
-      });
+    if (!emojiOpen) return;
+    if (emojiGroups) {
+      if (!pad.childElementCount) renderEmojiGroups(pad, emojiGroups);
+      return;
     }
+    // 先用内置的一小组顶上，接口回来再换成整份表（离线也不至于没有表情）。
+    if (!pad.childElementCount) {
+      renderEmojiGroups(pad, [{ title: '常用', emoji: [
+        '😀','😂','🥹','😊','😍','😘','🤔','😴','😎','🤩','😭','😅','🙃','😇','🥳','🤝',
+        '👍','👎','👌','🙏','👏','💪','🤙','✌️','❤️','💔','🔥','✨','🎉','🎁','⭐','💡'] }]);
+    }
+    fetch('/api/emoji', { headers: { 'Accept': 'application/json' } })
+      .then(function (response) { return response.json(); })
+      .then(function (data) {
+        emojiGroups = (data && data.groups) || [];
+        if (emojiGroups.length) renderEmojiGroups(pad, emojiGroups);
+      })
+      .catch(function () { /* 拉不到就用内置的那一小份 */ });
   }
 
   // --- 语音消息：浏览器只在安全上下文里给麦克风 --------------------------
@@ -713,12 +841,35 @@
       typeof MediaRecorder !== 'undefined' && !!store.conversationId;
   }
 
+  /** 录音状态机：idle → starting → recording → sending → idle。
+   *
+   *  以前只看 MediaRecorder 自己的 state：getUserMedia 还没回来时按钮是灰的、
+   *  再点一下又去开第二个录音器，于是界面卡在"正在录音…"而语音根本没发出去。
+   *  现在以自己的状态为准，并且**每条路径都会把提示清掉**。
+   */
+  function setVoiceHint(text) {
+    var hint = $('#voice-hint');
+    if (!hint) return;
+    hint.hidden = !text;
+    hint.textContent = text || '';
+    $('#btn-voice').classList.toggle('is-recording', recorder.state === 'recording' || recorder.state === 'starting');
+  }
+
   function startRecording() {
     if (!canRecord()) {
       toast('这个地址不能录音：手机浏览器只在 HTTPS 页面里给麦克风。请用「设置」里那个 https:// 地址打开本页。', 'error');
       return;
     }
+    if (recorder.state !== 'idle') return;
+    recorder.state = 'starting';
+    setVoiceHint('正在准备麦克风…');
     navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+      if (recorder.state !== 'starting') {           // 用户在等待期间又点了一下
+        stream.getTracks().forEach(function (track) { track.stop(); });
+        recorder.state = 'idle';
+        setVoiceHint('');
+        return;
+      }
       recorder.media = new MediaRecorder(stream);
       recorder.chunks = [];
       recorder.started = Date.now();
@@ -728,31 +879,51 @@
       recorder.media.onstop = function () {
         stream.getTracks().forEach(function (track) { track.stop(); });
         var seconds = (Date.now() - recorder.started) / 1000;
+        var type = recorder.media.mimeType || 'audio/webm';
+        recorder.media = null;
+        recorder.state = 'idle';
         if (seconds < 0.6 || !recorder.chunks.length) {
+          setVoiceHint('');
           toast('太短了，没发出去');
           return;
         }
-        var blob = new Blob(recorder.chunks, { type: recorder.media.mimeType || 'audio/webm' });
-        var ext = (recorder.media.mimeType || '').indexOf('mp4') >= 0 ? 'm4a' : 'webm';
+        var blob = new Blob(recorder.chunks, { type: type });
+        var ext = type.indexOf('mp4') >= 0 ? 'm4a' : 'webm';
         var file = new File([blob], 'voice-' + Date.now() + '.' + ext, { type: blob.type });
-        toast('正在发送语音…');
-        uploadAttachment(file, 'voice', Math.round(seconds * 1000)).then(refreshChat).catch(function (error) {
-          toast('语音发送失败：' + error.message, 'error');
-        });
+        recorder.state = 'sending';
+        setVoiceHint('正在发送语音…（' + seconds.toFixed(1) + ' 秒）');
+        uploadAttachment(file, 'voice', Math.round(seconds * 1000))
+          .then(function () { refreshChat(); })
+          .catch(function (error) { toast('语音发送失败：' + error.message, 'error'); })
+          .then(function () {                        // 成功失败都要收尾
+            recorder.state = 'idle';
+            setVoiceHint('');
+          });
       };
       recorder.media.start();
-      $('#voice-hint').hidden = false;
-      $('#voice-hint').textContent = '正在录音…再按一次 🎤 结束并发送';
-      $('#btn-voice').classList.add('is-recording');
+      recorder.state = 'recording';
+      setVoiceHint('正在录音…再按一次 🎤 结束并发送');
     }).catch(function (error) {
+      recorder.state = 'idle';
+      setVoiceHint('');
       toast('拿不到麦克风：' + error.message, 'error');
     });
   }
 
   function stopRecording() {
-    if (recorder.media && recorder.media.state !== 'inactive') recorder.media.stop();
-    $('#voice-hint').hidden = true;
-    $('#btn-voice').classList.remove('is-recording');
+    // 'starting'（麦克风还没准备好）时点一下，就当作"别录了"。
+    if (recorder.state === 'starting') {
+      recorder.state = 'idle';
+      setVoiceHint('');
+      return;
+    }
+    if (recorder.media && recorder.media.state !== 'inactive') {
+      setVoiceHint('正在结束录音…');
+      recorder.media.stop();          // onstop 负责发送与清提示
+      return;
+    }
+    recorder.state = 'idle';
+    setVoiceHint('');
   }
 
   function renderShares() {
@@ -852,6 +1023,7 @@
     renderOffers();
     renderFiles();
     renderShares();
+    renderPhonePeers();
     renderSelf();
     renderApk();
     updateSendButton();
@@ -894,6 +1066,7 @@
     store.app = state.app || store.app;
     store.device = state.device || store.device;
     store.devices = state.devices || [];
+    store.knownClients = state.knownClients || [];
     store.shares = state.shares || [];
     store.chat = state.chat || store.chat;
     store.transfers = state.transfers || [];
@@ -1333,8 +1506,9 @@
     $('#chat-camera') && $('#chat-camera').addEventListener('change', onChatFile);
     $('#chat-file').addEventListener('change', onChatFile);
     $('#btn-voice').addEventListener('click', function () {
-      if (recorder.media && recorder.media.state === 'recording') stopRecording();
-      else startRecording();
+      // 自己的状态说了算：不看 MediaRecorder 的内部状态（它可能还没 start）。
+      if (recorder.state === 'recording' || recorder.state === 'starting') stopRecording();
+      else if (recorder.state === 'idle') startRecording();
     });
     $('#pin').addEventListener('keydown', function (event) {
       if (event.key === 'Enter') pump();

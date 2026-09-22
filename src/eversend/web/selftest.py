@@ -1060,6 +1060,26 @@ def check_media_source_stays_local(ui, base: str, engine: Engine, root: Path) ->
     check("手机接口里也看不到这条路径", status == 200 and not leaked, f"{status} leaked={len(leaked)}")
 
 
+def check_emoji_api(base: str) -> None:
+    """``/api/emoji``: the phone page and the app draw the same palette."""
+    print("\n[表情] 三端共用一份表情表")
+    from eversend.core.emoji import EMOJI_GROUPS
+
+    status, _headers, body = http(base + "/api/emoji")
+    payload = json.loads(body.decode("utf-8")) if body else {}
+    groups = payload.get("groups") or []
+    check("接口给了表情分组", status == 200 and len(groups) == len(EMOJI_GROUPS), f"{status} {len(groups)}")
+    total = sum(len(group.get("emoji") or []) for group in groups)
+    expected = sum(len(group) for _title, group in EMOJI_GROUPS)
+    check("数量和核心里的表一致", total == expected, f"{total} vs {expected}")
+    check("够多（用户嫌 48 个太少）", total >= 300, str(total))
+    check(
+        "每个分组都有名字和表情",
+        all(group.get("title") and group.get("emoji") for group in groups),
+        str([group.get("title") for group in groups]),
+    )
+
+
 def check_discovery_reply(engine: Engine) -> None:
     """A phone that asks "who is there?" must be answered immediately.
 
@@ -1219,9 +1239,15 @@ def check_mdns_answer_against(engine: Engine) -> None:
             # 别把它记成失败，也别假装验证过了。
             print(f"  (跳过：这台机器发不出组播 —— {exc})")
             return
+        # Keep listening for the whole window: this machine may be running a
+        # *second* EverSend (the user's own copy, the desktop's own periodic
+        # announcement), and taking the first reply would then compare against
+        # the wrong device -- which is exactly how this check flaked once.
         deadline = time.monotonic() + 4
-        records = []
-        while time.monotonic() < deadline and not records:
+        answers: list[list] = []
+        kinds: set[int] = set()
+        ours: dict = {}
+        while time.monotonic() < deadline:
             try:
                 data, _address = sock.recvfrom(9000)
             except socket.timeout:
@@ -1229,19 +1255,25 @@ def check_mdns_answer_against(engine: Engine) -> None:
             if MDNS_SERVICE_TYPE.split(".")[0].encode("utf-8") not in data:
                 continue
             records = mdns.parse_records(data)
-        kinds = {record.rtype for record in records}
-        check("查询得到回答", bool(records), "4 秒内没有回答")
+            if not records:
+                continue
+            answers.append(records)
+            kinds |= {record.rtype for record in records}
+            txt = next((r for r in records if r.rtype == mdns.TYPE_TXT), None)
+            fields = mdns.parse_txt(txt.rdata) if txt is not None else {}
+            if fields.get("id") == engine.info.device_id:
+                ours = fields
+                break
+        check("查询得到回答", bool(answers), "4 秒内没有回答")
         check(
             "回答里有 PTR/SRV/TXT/A 四段",
             {mdns.TYPE_PTR, mdns.TYPE_SRV, mdns.TYPE_TXT, mdns.TYPE_A} <= kinds,
             str(sorted(kinds)),
         )
-        txt = next((r for r in records if r.rtype == mdns.TYPE_TXT), None)
-        fields = mdns.parse_txt(txt.rdata) if txt is not None else {}
         check(
             "TXT 里带着设备号与网页端口（手机要用来拼地址）",
-            fields.get("id") == engine.info.device_id and int(fields.get("web", 0) or 0) > 0,
-            str(fields),
+            bool(ours) and int(ours.get("web", 0) or 0) > 0,
+            str(ours or "没等到本引擎自己的那条"),
         )
     finally:
         sock.close()
@@ -1401,6 +1433,7 @@ def main() -> int:
         check_https_copy_keeps_http_port(engine_a, port)
         check_apk_download(base, ui, engine_a, root)
         check_discovery_reply(engine_a)
+        check_emoji_api(base)
         check_mdns_answer(engine_a)
         check_media_source_stays_local(ui, base, engine_a, root)
 

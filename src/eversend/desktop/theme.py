@@ -40,6 +40,8 @@ def stylesheet(dark: bool) -> str:
         text = "#e6edf3"
         text_dim = "#8b949e"
         hover = "#21262d"
+        bubble_out = "#173a5e"
+        bubble_out_line = "#1f5c92"
     else:
         bg = "#f6f8fa"
         surface = "#ffffff"
@@ -48,6 +50,8 @@ def stylesheet(dark: bool) -> str:
         text = "#1f2328"
         text_dim = "#59636e"
         hover = "#eaeef2"
+        bubble_out = "#d8ebff"
+        bubble_out_line = "#a9cdf3"
 
     return f"""
     QWidget {{
@@ -139,6 +143,24 @@ def stylesheet(dark: bool) -> str:
         background: {ACCENT};
         border-color: {ACCENT};
     }}
+    /* 聊天气泡：自己发的靠右、用品牌色底；别人发的靠左、用中性底。
+       objectName 早就在 chat_view 里设了（BubbleIn/BubbleOut），但样式表里
+       一直没有对应的规则 —— 于是两边长得一模一样，用户根本分不清哪句是自己
+       说的。（左右对齐本来就是对的，缺的是颜色。） */
+    QFrame#BubbleOut {{
+        background: {bubble_out};
+        border: 1px solid {bubble_out_line};
+        border-radius: 12px;
+    }}
+    QFrame#BubbleIn {{
+        background: {surface_alt};
+        border: 1px solid {border};
+        border-radius: 12px;
+    }}
+    QLabel#BubbleMeta {{ color: {text_dim}; font-size: 11px; }}
+    QLabel#BubbleState {{ color: {text_dim}; font-size: 11px; }}
+    QLabel#BubbleImage {{ border-radius: 8px; }}
+
     QFrame#DeviceCard {{
         background: {surface_alt};
         border: 1px solid {border};

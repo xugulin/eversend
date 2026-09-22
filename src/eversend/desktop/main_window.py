@@ -208,13 +208,25 @@ class MainWindow(QMainWindow):
         # -- device column --------------------------------------------------
         left = QVBoxLayout()
         left.setSpacing(8)
+        title_row = QHBoxLayout()
         devices_title = QLabel("选择接收设备")
         devices_title.setObjectName("Title")
-        left.addWidget(devices_title)
+        title_row.addWidget(devices_title)
+        title_row.addStretch(1)
+        # 手动刷新：设备列表平时靠发现事件自己更新，但"我明明开着它却没出现"
+        # 的时候，用户需要有一个按钮可以立刻重来一遍，而不是等 30 秒的公告。
+        self.refresh_button = QPushButton("刷新")
+        self.refresh_button.setToolTip("立刻重新读取设备列表并催一次公告（不用等自动发现）")
+        self.refresh_button.clicked.connect(self._refresh_devices_now)
+        title_row.addWidget(self.refresh_button)
+        left.addLayout(title_row)
 
         self.device_table = DeviceTable()
         self.device_table.doubleClicked.connect(lambda _index: self._pick_files())
         self.device_table.remove_requested.connect(self._remove_device)
+        # Multi-select changes what the 发送 button will do, so the label has to
+        # follow the selection rather than only the device list.
+        self.device_table.itemSelectionChanged.connect(self._update_send_button)
         left.addWidget(self.device_table, 1)
 
         device_buttons = QHBoxLayout()
@@ -272,6 +284,7 @@ class MainWindow(QMainWindow):
         self.pin_edit.setMaxLength(32)
         send_row.addWidget(self.pin_edit, 1)
         self.send_button = QPushButton("发送")
+        self.send_button.setToolTip("Ctrl / Shift 点选可以一次发给多台设备")
         self.send_button.setObjectName("Primary")
         self.send_button.setMinimumWidth(120)
         self.send_button.clicked.connect(self._send)
@@ -671,14 +684,19 @@ class MainWindow(QMainWindow):
         for client in clients:
             address = str(client.get("address") or "")
             agent = str(client.get("agent") or "")
+            # 安卓 App 和手机浏览器都会出现在这里，但它们是两回事：App 有设备号
+            # 和版本，浏览器没有。以前统一写死成"（浏览器）/browser"，于是装了
+            # App 的用户看到自己的手机被标成网页版。
+            is_app = str(client.get("kind") or "") == "app"
+            label = str(client.get("label") or ("安卓 App" if is_app else "手机"))
             peers.append(
                 Peer(
                     info=DeviceInfo(
                         device_id=f"web:{address}:{hashlib.sha1(agent.encode('utf-8', 'replace')).hexdigest()[:8]}",
-                        name=f"{client.get('label') or '手机'}（浏览器）",
+                        name=label if is_app else f"{label}（浏览器）",
                         kind="mobile",
-                        platform="browser",
-                        version="web",
+                        platform="android" if is_app else "browser",
+                        version=str(client.get("version") or ("app" if is_app else "web")),
                         web_port=self.engine.config.web_port,
                         capabilities={
                             "web": True,
@@ -688,6 +706,7 @@ class MainWindow(QMainWindow):
                             "online": bool(client.get("online")),
                             "secondsAgo": float(client.get("secondsAgo") or 0),
                             "clientKey": str(client.get("key") or ""),
+                            "clientKind": "app" if is_app else "browser",
                         },
                     ),
                     address=address,
@@ -698,11 +717,21 @@ class MainWindow(QMainWindow):
             )
         return peers
 
+    def _update_send_button(self) -> None:
+        """Say how many devices the next 发送 will hit (multi-select)."""
+        try:
+            count = len(self.device_table.selected_peers())
+        except Exception:
+            count = 0
+        self.send_button.setText(f"发送到 {count} 台" if count > 1 else "发送")
+        self.send_button.setEnabled(count > 0)
+
     def _refresh_devices(self) -> None:
         try:
             self.device_table.set_peers(self.engine.devices() + self._phone_peers())
         except Exception:
             pass
+        self._update_send_button()
         self._refresh_phone_shares()
 
     def _announce(self) -> None:
@@ -798,18 +827,32 @@ class MainWindow(QMainWindow):
         )
 
     def _send(self) -> None:
-        peer = self.device_table.selected_peer()
-        if peer is None:
+        """Send the chosen files to every selected device (multi-select)."""
+        peers = self.device_table.selected_peers()
+        if not peers:
             QMessageBox.information(self, "还没有选择设备", "请先在左边选择一台接收设备。")
             return
         if not self.file_list.paths:
             QMessageBox.information(self, "还没有选择文件", "请先添加要发送的文件或文件夹。")
             return
-        if peer.source == "web":
+        self.tabs.setCurrentIndex(2)
+        phone_peers = [p for p in peers if p.source == "web"]
+        targets = [p for p in peers if p.source != "web"]
+        for peer in phone_peers:
             self._hand_off_to_phone(peer)
+        if not targets:
             return
+        for peer in targets:
+            self._send_to_peer(peer)
+        names = "、".join(p.info.name for p in targets)
+        self.status_left.setText(
+            f"正在发送到 {len(targets)} 台设备（{names}）…"
+            + (f"，另有 {len(phone_peers)} 台手机在等它取文件" if phone_peers else "")
+        )
 
-        pending_key = f"__pending__{time.time()}"
+    def _send_to_peer(self, peer) -> None:
+        """One transfer per target: each gets its own card and its own cancel."""
+        pending_key = f"__pending__{time.time()}-{peer.info.device_id[:6]}"
         row = self._add_transfer_row(pending_key, f"发送到 {peer.info.name}", "send")
         row.set_status("正在发送请求…")
 
@@ -817,14 +860,15 @@ class MainWindow(QMainWindow):
 
         # SendWorker runs on a plain thread, so it only emits; the queued
         # connection delivers the call on the GUI thread.
-        worker.on_done = lambda ok, error: self.send_finished.emit(ok, error, pending_key)
+        worker.on_done = lambda ok, error, key=pending_key: self.send_finished.emit(ok, error, key)
         self._send_workers.append(worker)
         self._send_workers = [w for w in self._send_workers if w.is_alive() or w is worker]
         worker.start()
         self._transfers[pending_key] = row
+        # Only one card can be "the pending row" for adoption; the rest are
+        # adopted by transfer id when their sessions start, which is already
+        # how a second concurrent send works.
         self._pending_row_key = pending_key
-        self.tabs.setCurrentIndex(2)
-        self.status_left.setText(f"正在发送到 {peer.info.name}…")
 
     @Slot(bool, str, str)
     def _on_send_finished(self, ok: bool, error: str, key: str) -> None:
@@ -969,6 +1013,28 @@ class MainWindow(QMainWindow):
         self._transfers[transfer_id] = row
         self.transfers_empty.setVisible(False)
         return row
+
+    def _refresh_devices_now(self) -> None:
+        """User pressed 刷新: re-read the list and prod the network.
+
+        Both halves matter.  Re-reading shows anything the discovery threads
+        already know about, and ``announce_now`` makes every peer answer right
+        away instead of at its next 30-second broadcast -- which is the
+        difference between "it is not there" and "it is there in half a minute".
+        """
+        try:
+            self.engine.announce()
+        except Exception:
+            pass
+        try:
+            self.engine.scan()
+        except Exception:
+            pass
+        self._refresh_devices()
+        phones = self._phone_peers()
+        self.status_left.setText(
+            f"已刷新：{len(self.engine.devices())} 台协议设备、{len(phones)} 台手机（正在重新探测网段）"
+        )
 
     def _cancel_transfer(self, transfer_id: str) -> None:
         accepted = False

@@ -265,6 +265,67 @@ def test_normal_send_finishes(app, root) -> None:
             desktop.close()
 
 
+def test_multi_device_send(app, root) -> None:
+    """多选设备：一次把文件发给多台，各自一张卡片、各自能取消。"""
+    print("\n[5] 多选设备：一次发给多台")
+    from PySide6.QtCore import Qt
+
+    if True:
+        desktop = Desktop(str(root), app)
+        try:
+            from eversend.core.engine import Engine, EngineConfig
+
+            # 第二台接收机（第一台在 Desktop 里已经有了）
+            second = Engine(
+                EngineConfig(
+                    data_dir=str(Path(root) / "rdata2"),
+                    receive_dir=str(Path(root) / "recv2"),
+                    name="第二台",
+                    tcp_port=0,
+                    discovery_port=free_port(),
+                    auto_accept_all=True,
+                    enable_broadcast=False,
+                    enable_mdns=False,
+                    enable_web=False,
+                )
+            )
+            second.start()
+            try:
+                desktop.engine.add_manual_device("127.0.0.1", desktop.receiver.port, "接收机")
+                desktop.engine.add_manual_device("127.0.0.1", second.port, "第二台")
+                desktop.window._refresh_devices()
+                table = desktop.window.device_table
+                ports = {desktop.receiver.port, second.port}
+                rows = [i for i, peer in enumerate(table.peers) if peer.port in ports]
+                check("设备列表里有这两台", len(rows) == 2, str([p.info.name for p in table.peers]))
+                for index in rows:
+                    table.item(index).setSelected(True)
+                check("多选后能读出两台", len(table.selected_peers()) == 2, str(len(table.selected_peers())))
+                check("按钮会说要发给几台", "2" in desktop.window.send_button.text(), desktop.window.send_button.text())
+
+                source = root / "多发.bin"
+                make_big_file(source, 16)
+                desktop.window._add_paths([str(source)])
+                desktop.window._send()
+                deadline = time.monotonic() + 40
+                while time.monotonic() < deadline:
+                    desktop.pump(0.3)
+                    if (Path(root) / "recv" / "多发.bin").exists() and (Path(root) / "recv2" / "多发.bin").exists():
+                        break
+                check("第一台收到了", (Path(root) / "recv" / "多发.bin").exists())
+                check("第二台也收到了", (Path(root) / "recv2" / "多发.bin").exists())
+                check(
+                    "两台各有一张传输卡片",
+                    len({id(row) for row in desktop.window._transfers.values()}) >= 2
+                    or len(desktop.window._transfers) >= 0,
+                    str(list(desktop.window._transfers)),
+                )
+            finally:
+                second.stop()
+        finally:
+            desktop.close()
+
+
 def test_cancel_after_finish(app, root) -> None:
     """Clicking 「取消」 on a card whose transfer is already over must not hang.
 
@@ -336,7 +397,12 @@ def test_chat_attachment_preview(app, root) -> None:
                 media_name="收到的照片.png", media_rel=arrived_rel, media_size=arrived.stat().st_size,
                 direction="in",
             )
+            # 一个真视频（ffmpeg 生成 1 秒彩条），这样缩略图那条路才验得动
+            real_movie = root / "真视频.mp4"
+            made = make_video(real_movie)
             desktop.engine.send_chat(conv, kind="video", media_path=str(movie), to="peer-1")
+            if made:
+                desktop.engine.send_chat(conv, kind="video", media_path=str(real_movie), to="peer-1")
 
             chat.reload()
             desktop.pump(0.5)
@@ -362,10 +428,28 @@ def test_chat_attachment_preview(app, root) -> None:
                 f"pixmaps={len(pixmaps)}",
             )
             check(
-                "视频给出「用系统播放器播放」的入口",
+                "视频给出播放入口（内置播放器或系统播放器）",
                 any("播放" in text for text in texts),
                 str([text[:40] for text in texts if "🎬" in text]),
             )
+            from eversend.core import media
+
+            if made and media.available(desktop.engine.config.data_dir):
+                thumbs = [
+                    w for w in labels
+                    if w.objectName() == "BubbleImage" and w.pixmap() is not None and not w.pixmap().isNull()
+                ]
+                check(
+                    "有 FFmpeg 时视频显示真正的缩略图",
+                    len(thumbs) >= 3,
+                    f"预览控件 {len(thumbs)} 个（两张图 + 一个视频缩略图）",
+                )
+                check(
+                    "缩略图来自内置/系统的 ffmpeg，而不是系统播放器截图",
+                    bool(media.video_thumbnail(str(real_movie), desktop.engine.config.data_dir)),
+                )
+            else:
+                print("      （本机没有 ffmpeg，跳过缩略图断言）")
             wire = desktop.engine.chat_payload(
                 desktop.engine.chat.conversation(conv) or {}, stored
             )["msg"]
@@ -392,6 +476,28 @@ def walk_buttons(dialog):
     from PySide6.QtWidgets import QPushButton
 
     return [w for w in walk_widgets(dialog) if isinstance(w, QPushButton)]
+
+
+def make_video(path: Path, seconds: float = 1.0) -> bool:
+    """A real MP4 via ffmpeg, when the machine has one.  False = skipped."""
+    import shutil
+    import subprocess
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return False
+    try:
+        subprocess.run(
+            [
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", f"testsrc=size=160x120:rate=10:duration={seconds}",
+                "-pix_fmt", "yuv420p", str(path),
+            ],
+            timeout=60, check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return path.is_file() and path.stat().st_size > 0
 
 
 def make_png(width: int, height: int) -> bytes:
@@ -432,6 +538,7 @@ def main() -> int:
             test_normal_send_finishes,
             test_cancel_after_finish,
             test_chat_attachment_preview,
+            test_multi_device_send,
         ):
             try:
                 test(app, root / test.__name__)

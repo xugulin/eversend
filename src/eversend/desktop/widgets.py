@@ -252,7 +252,8 @@ class DeviceTable(QListWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("DeviceTable")
-        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        # 多选：一次把文件发给多台设备（Ctrl/Shift 点选）。
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.setUniformItemSizes(False)
         self.setWordWrap(True)
@@ -276,10 +277,28 @@ class DeviceTable(QListWidget):
         return list(self._peers)
 
     def selected_peer(self) -> Peer | None:
+        """The one row the user is on (kept for the single-target paths).
+
+        With a multi-selection this is the row under the cursor, which is what
+        "open this device's page" and similar single-target actions want.
+        """
         row = self.currentRow()
         if 0 <= row < len(self._peers):
             return self._peers[row]
         return None
+
+    def selected_peers(self) -> list[Peer]:
+        """Every selected device, in list order.
+
+        Multi-select is what makes "send this to the desktop *and* the phone"
+        one action instead of two; the table had single selection only, so the
+        user had to repeat the whole flow per device.
+        """
+        rows = sorted(index.row() for index in self.selectedIndexes())
+        if not rows:
+            peer = self.selected_peer()
+            return [peer] if peer is not None else []
+        return [self._peers[row] for row in rows if 0 <= row < len(self._peers)]
 
     def select_first(self) -> None:
         if self._peers and self.currentRow() < 0:

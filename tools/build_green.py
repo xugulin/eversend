@@ -981,6 +981,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--compress-level", type=int, default=6, choices=range(0, 10))
     parser.add_argument("--fetch", action="store_true", help="run fetch_runtime.py first if the staging dir is missing")
     parser.add_argument("--no-selftest", action="store_true", help="skip the post-build self-test")
+    parser.add_argument(
+        "--ffmpeg",
+        type=Path,
+        default=None,
+        help="把 FFmpeg 二进制放进绿色包（tools/fetch_ffmpeg.py 下载的目录），"
+             "视频就有缩略图、语音/视频能窗口内播放；代价是包大 100-260 MB",
+    )
     return parser.parse_args(argv)
 
 
@@ -1078,6 +1085,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             break
     else:
         print("    no Android installer found (phone page will hide the download card)")
+
+    # Optional FFmpeg: video thumbnails and in-window playback on the desktop,
+    # without adding Qt Addons (~160 MB) just for a media framework.  Off by
+    # default because it roughly doubles the package.
+    ffmpeg_dir = args.ffmpeg
+    if ffmpeg_dir is None:
+        default_dir = Path(__file__).resolve().parent / ".cache" / "ffmpeg" / args.platform
+        if default_dir.is_dir():
+            ffmpeg_dir = default_dir
+    if ffmpeg_dir is not None and Path(ffmpeg_dir).is_dir():
+        copied = 0
+        for name in ("ffmpeg", "ffmpeg.exe", "ffplay", "ffplay.exe", "ffprobe", "ffprobe.exe"):
+            source = Path(ffmpeg_dir) / name
+            if source.is_file():
+                shutil.copy2(source, tree / name)
+                copied += 1
+        if copied:
+            size = sum((tree / n).stat().st_size for n in ("ffmpeg", "ffmpeg.exe") if (tree / n).is_file())
+            print(f"    FFmpeg bundled: {copied} 个文件（ffmpeg 本体 {human(size)}）")
+            steps.append(Step("bundle ffmpeg", size, size))
+    else:
+        print("    no FFmpeg (video shows a card; run tools/fetch_ffmpeg.py to bundle one)")
 
     # -- 3. no symlinks anywhere --------------------------------------------
     print("\n[3/7] materialising symlinks (FAT32/exFAT + zip safety)")

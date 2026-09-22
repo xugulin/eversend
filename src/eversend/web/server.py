@@ -702,12 +702,16 @@ class WebUI:
                 return True
         return False
 
-    def share_files(self, paths: Iterable[str]) -> list[dict[str, Any]]:
+    def share_files(self, paths: Iterable[str], only_key: str = "") -> list[dict[str, Any]]:
         """Publish local files for the connected browser to download.
 
         Called by the desktop window, in this process: the paths never travel
         over the network, so `/api/share/<id>` cannot be turned into a file
         read primitive.  The phone gets an opaque id.
+
+        ``only_key`` addresses the hand-off to one paired client (its registry
+        key).  Without it every connected phone sees the file -- right for the
+        desktop's 「发送给手机」, wrong for "this upload was meant for that one".
         """
         added: list[dict[str, Any]] = []
         for raw in paths:
@@ -727,6 +731,8 @@ class WebUI:
                 "added": time.time(),
                 "downloaded": False,
             }
+            if only_key:
+                entry["forKey"] = only_key
             with self._state_lock:
                 self._shares[share_id] = entry
                 # A long-running session shares file after file; keep the
@@ -747,8 +753,12 @@ class WebUI:
             )
         return added
 
-    def shares(self) -> list[dict[str, Any]]:
-        """Shares as the *phone* may see them: no filesystem paths."""
+    def shares(self, for_key: str = "") -> list[dict[str, Any]]:
+        """Shares as the *phone* may see them: no filesystem paths.
+
+        ``for_key`` filters to what was addressed to that client (plus anything
+        addressed to nobody, i.e. the desktop's broadcast 「发送给手机」).
+        """
         with self._state_lock:
             found = [
                 {
@@ -759,6 +769,7 @@ class WebUI:
                     "downloaded": bool(s.get("downloaded")),
                 }
                 for s in self._shares.values()
+                if not for_key or not s.get("forKey") or s.get("forKey") == for_key
             ]
         found.sort(key=lambda s: s["added"], reverse=True)
         return found
@@ -815,6 +826,10 @@ class WebUI:
             client["isLocal"] = client["address"] in ("127.0.0.1", "::1")
             client["secondsAgo"] = round(max(0.0, now - client["lastSeen"]), 1)
             client["online"] = client["key"] in live
+            # One word for "what is this": the phone lists its peers with a
+            # status chip, and it must not have to guess from the User-Agent.
+            client["clientKind"] = "app" if str(client.get("kind") or "") == "app" else "browser"
+            client["platform"] = "android" if client["clientKind"] == "app" else "browser"
         found.sort(key=lambda c: c["lastSeen"], reverse=True)
         return found
 
@@ -1166,6 +1181,12 @@ class WebUI:
             entry = peer_dict(peer)
             entry["isSelf"] = False
             entry["local"] = False
+            # Everything in the peer store was heard from within DEVICE_TTL, so
+            # it is online by construction -- but the *phone* needs that said
+            # out loud, and it needs "how long ago", so it can show the same
+            # 在线 / 未连接 distinction the desktop shows.
+            entry["online"] = True
+            entry["secondsAgo"] = round(max(0.0, time.time() - float(entry.get("lastSeen") or 0)), 1)
             out.append(entry)
         # Remote devices with a reachable web UI first, then by name: the list
         # is a picker, and the wanted entry is almost always near the top.
@@ -1694,11 +1715,21 @@ class _Handler(BaseHTTPRequestHandler):
         if path.startswith("/assets/"):
             self._send_asset(path[len("/assets/") :])
             return
+        if path == "/api/emoji":
+            # One palette for all three clients: the desktop imports the module,
+            # the page and the app fetch it here.  A face you can send from the
+            # phone but not from the desktop would otherwise be a bug report.
+            from ..core.emoji import emoji_payload
+
+            self._send_json(HTTPStatus.OK, {"ok": True, "groups": emoji_payload()})
+            return
         if path == "/api/state":
             state = ui.state()
             # ``state()`` is also used by the desktop, which has no HTTP client
             # identity; only here do we know which phone is asking.
             state["chat"]["selfId"] = self._self_client_id(ui)
+            # A file addressed to one phone must not show up on another's page.
+            state["shares"] = ui.shares(for_key=self._self_client_key(ui))
             self._send_json(HTTPStatus.OK, state)
             return
         if path == "/api/devices":
@@ -2291,6 +2322,13 @@ class _Handler(BaseHTTPRequestHandler):
         device_id = (query.get("deviceId") or [""])[0]
         address = (query.get("address") or [""])[0]
         pin = (query.get("pin") or [""])[0]
+
+        # A phone cannot receive a protocol transfer, so "send to that phone"
+        # means "hand my file to its page".  The file is the one just uploaded
+        # -- the caller never names a path on this machine, which is what keeps
+        # this safe to expose to the LAN (unlike /api/share, which is loopback
+        # only for exactly that reason).
+        phone_key = device_id[4:] if device_id.startswith("web:") else ""
         try:
             port = int((query.get("port") or ["0"])[0] or 0)
         except ValueError:
@@ -2339,13 +2377,23 @@ class _Handler(BaseHTTPRequestHandler):
             "id": uuid.uuid4().hex,
             "name": os.path.basename(final),
             "size": written,
-            "deviceId": peer.info.device_id,
-            "deviceName": peer.info.name,
+            "deviceId": peer.info.device_id if peer is not None else device_id,
+            "deviceName": peer.info.name if peer is not None else "手机",
             "status": "queued",
             "error": "",
             "started": time.time(),
             "finished": 0.0,
         }
+        if peer is None and phone_key:
+            shared = ui.share_files([final], only_key=phone_key)
+            if not shared:
+                self._fail(HTTPStatus.NOT_FOUND, "这台手机不在已配对的列表里")
+                return
+            upload["status"] = "handed-off"
+            upload["finished"] = time.time()
+            ui.register_upload(upload)
+            self._send_json(HTTPStatus.ACCEPTED, {"ok": True, "upload": upload, "handedOff": True})
+            return
         ui.register_upload(upload)
         transfer_id = ui.start_send(peer, final, pin, upload)
         self._send_json(
@@ -2372,6 +2420,19 @@ class _Handler(BaseHTTPRequestHandler):
         address = self.client_address[0] if self.client_address else ""
         key = ui.client_key(address, self.headers.get("User-Agent", ""))
         return "web:" + key
+
+    def _self_client_key(self, ui) -> str:
+        """This phone's registry key (``address|digest``), for addressed shares."""
+        address = self.client_address[0] if self.client_address else ""
+        agent = self.headers.get("User-Agent", "")
+        # A native app registers under its device id, so its key is that one;
+        # a browser is keyed by address + User-Agent.  Either way the reply must
+        # name the same key the registry stored.
+        for client in ui.known_clients():
+            if bool(client.get("online")) and str(client.get("address") or "") == address:
+                if str(client.get("kind") or "") == "app" or client.get("agent") == agent:
+                    return str(client.get("key") or "")
+        return ui.client_key(address, agent)
 
     def _hello(self) -> None:
         """``POST /api/hello``: a native app says who it is."""
@@ -2494,7 +2555,11 @@ class _Handler(BaseHTTPRequestHandler):
             source="phone",
         )
         result["delivered"] = engine.relay_chat(conv_id, result)
-        self._send_json(HTTPStatus.OK, {"ok": True, **result})
+        # 建群的人要能直接打开这个会话：把 id 明确回给它。
+        self._send_json(
+            HTTPStatus.OK,
+            {"ok": True, "conversationId": conv_id, "members": members, **result},
+        )
 
     def _chat_upload(self, query: dict[str, list[str]]) -> None:
         """``POST /api/chat/upload``: an attachment (or a voice note) from the phone."""

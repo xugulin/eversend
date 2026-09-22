@@ -257,6 +257,27 @@ body {
 }
 
 .tag.is-trusted { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+/* 表情面板：分组 + 网格，整体可上下滑动（.emoji-pad 自己滚） */
+.emoji-pad { max-height: 44vh; overflow-y: auto; overscroll-behavior: contain; }
+.emoji-title { font-size: 12px; color: var(--muted); margin: 8px 2px 4px; }
+.emoji-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; }
+.emoji-grid button {
+  appearance: none; border: 0; background: transparent; color: inherit;
+  font-size: 22px; line-height: 1; padding: 6px 0; border-radius: 8px; cursor: pointer;
+}
+.emoji-grid button:hover { background: var(--surface-2); }
+
+.tag.is-online { background: color-mix(in srgb, var(--success, #1a7f37) 18%, transparent); color: #1a7f37; }
+.tag.is-offline { background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--muted); }
+.tag.is-app { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.tag.is-web { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
+.device .facts, .peer .facts { display: block; font-size: 11px; margin-top: 2px; }
+.peer { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--line); }
+.peer:first-child { border-top: 0; }
+.peer .icon { font-size: 22px; }
+.peer .meta { display: flex; flex-direction: column; gap: 2px; }
+.peer .name { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
 .tag.is-self { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
 
 .empty { text-align: center; padding: 18px 8px; }
@@ -562,6 +583,10 @@ button { font: inherit; cursor: pointer; }
 .msg-text { white-space: pre-wrap; }
 .msg-system { text-align: center; color: var(--muted); font-size: 13px; }
 .msg-image { max-width: 100%; border-radius: 10px; display: block; }
+.msg-media { display: flex; flex-direction: column; gap: 4px; }
+.msg-actions { display: flex; gap: 10px; }
+.msg-save { font-size: 12px; color: var(--accent); text-decoration: none; }
+.msg-save:hover { text-decoration: underline; }
 .msg-video { max-width: 100%; border-radius: 10px; }
 .msg-voice { display: flex; flex-direction: column; gap: 4px; }
 .msg-file { display: flex; gap: 8px; align-items: baseline; }
@@ -577,10 +602,8 @@ button { font: inherit; cursor: pointer; }
   border: 1px solid var(--border); background: var(--surface-2);
 }
 .composer .emoji.is-recording { border-color: var(--danger); color: var(--danger); }
-.emoji-pad {
-  display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; margin-top: 8px;
-}
-.emoji-pad button {
+.emoji-pad { margin-top: 8px; }
+.emoji-pad .emoji-grid button {
   font-size: 20px; padding: 4px 0; border-radius: 8px; border: 1px solid var(--border);
   background: var(--surface-2);
 }

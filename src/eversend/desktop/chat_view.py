@@ -48,21 +48,65 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core import platform_open
+from ..core import media, platform_open
 from ..core.chat import MEDIA_KINDS, direct_conversation_id
+from ..core.emoji import EMOJI_GROUPS
 from ..core.engine import Engine
 from ..core.model import human_bytes
 
-#: A small palette is enough: the picker is for the emoji people actually send,
-#: not for a full Unicode browser.
-EMOJI = [
-    "😀", "😂", "🥹", "😊", "😍", "😘", "🤔", "😴",
-    "😎", "🤩", "😭", "😅", "🙃", "😇", "🥳", "🤝",
-    "👍", "👎", "👌", "🙏", "👏", "💪", "🤙", "✌️",
-    "❤️", "💔", "🔥", "✨", "🎉", "🎁", "⭐", "💡",
-    "✅", "❌", "⚠️", "❓", "❗", "📎", "📷", "🎬",
-    "🎵", "🎤", "💻", "📱", "🖥️", "📁", "📄", "🗑️",
-]
+#: The palette itself lives in the core so all three clients offer the same
+#: set (see :mod:`eversend.core.emoji`); this module only draws it.
+EMOJI = [emoji for _title, group in EMOJI_GROUPS for emoji in group]
+
+
+class EmojiPicker(QDialog):
+    """A scrollable, grouped emoji palette.
+
+    The old picker was a QMenu with 48 faces and no scrolling, which is why the
+    user asked for "more emoji, and let me scroll".  This one shows the whole
+    palette grouped by category inside a scroll area; clicking an emoji inserts
+    it and keeps the dialog open, so a message can be decorated with several.
+    """
+
+    def __init__(self, on_pick, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("选择表情")
+        self.resize(420, 520)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        body = QWidget()
+        grid = QVBoxLayout(body)
+        grid.setContentsMargins(4, 4, 4, 4)
+        grid.setSpacing(10)
+        per_row = 8
+        for title, group in EMOJI_GROUPS:
+            header = QLabel(f"{title}（{len(group)}）")
+            header.setObjectName("Subtitle")
+            grid.addWidget(header)
+            for start in range(0, len(group), per_row):
+                row = QHBoxLayout()
+                row.setSpacing(2)
+                for emoji in group[start : start + per_row]:
+                    button = QPushButton(emoji)
+                    button.setFixedSize(38, 34)
+                    button.setFlat(True)
+                    button.setToolTip(emoji)
+                    button.clicked.connect(lambda _=False, e=emoji: on_pick(e))
+                    row.addWidget(button)
+                row.addStretch(1)
+                grid.addLayout(row)
+        grid.addStretch(1)
+        area.setWidget(body)
+        layout.addWidget(area, 1)
+
+        buttons = QDialogButtonBox()
+        close = buttons.addButton("关闭", QDialogButtonBox.RejectRole)
+        close.clicked.connect(self.reject)
+        layout.addWidget(buttons)
 
 
 class ChatView(QWidget):
@@ -257,7 +301,7 @@ class ChatView(QWidget):
         others = [self._member_label(m) for m in members if m != mine]
         self.subheader.setText(
             ("群聊 · " if conversation.get("kind") == "group" else "一对一 · ")
-            + f"成员：{self.engine.info.name}"
+            + f"成员：{self.engine.info.name}（本机）"
             + ("、" + "、".join(others) if others else "")
         )
         messages = self.engine.chat.messages(self._conversation, limit=200)
@@ -271,17 +315,52 @@ class ChatView(QWidget):
             self._add_bubble(message)
         QTimer.singleShot(0, self._scroll_to_bottom)
 
+    #: 系统代号 -> 中文，聊天里显示给用户看
+    PLATFORM_NAMES = {
+        "linux": "Linux",
+        "windows": "Windows",
+        "darwin": "macOS",
+        "macos": "macOS",
+        "android": "安卓",
+        "ios": "iOS",
+        "browser": "网页版",
+    }
+
     def _member_label(self, member: str) -> str:
+        """A member as the user should read it: 名字（系统 · 韧传 版本 · IP）.
+
+        The raw member id is a device id (``web:<key>`` for a phone), which is
+        meaningless in a chat.  Everything needed to describe the device is
+        already on hand -- the peer list, or the paired-client list for phones.
+        """
         if member.startswith("web:"):
             key = member[4:]
             for client in getattr(self, "_clients_provider", lambda: [])() or []:
                 if client.get("key") == key:
-                    return f"{client.get('label') or '手机'}（手机）"
-            return "手机（浏览器）"
+                    is_app = str(client.get("kind") or "") == "app"
+                    parts = ["安卓 App" if is_app else "网页版"]
+                    if client.get("version"):
+                        parts.append(f"韧传 {client['version']}")
+                    if client.get("address"):
+                        parts.append(str(client["address"]))
+                    return f"{client.get('label') or '手机'}（{' · '.join(parts)}）"
+            return "手机（网页版）"
         for peer in self.engine.devices():
             if peer.info.device_id == member:
-                return peer.info.name
+                return f"{peer.info.name}（{self._peer_facts(peer)}）"
+        if member == self.engine.info.device_id:
+            return f"{self.engine.info.name}（本机）"
         return member[:10]
+
+    def _peer_facts(self, peer) -> str:
+        """系统 · 韧传 版本 · IP —— 聊天和设备卡片用同一套说法。"""
+        info = peer.info
+        parts = [self.PLATFORM_NAMES.get(str(info.platform).lower(), str(info.platform or "未知系统"))]
+        if info.version:
+            parts.append(f"韧传 {info.version}")
+        if peer.address:
+            parts.append(str(peer.address))
+        return " · ".join(parts)
 
     def _clear_messages(self) -> None:
         while self.messages_layout.count() > 1:
@@ -384,13 +463,43 @@ class ChatView(QWidget):
                 detail = f"{int(message['durationMs']) / 1000:.0f} 秒" + (
                     f" · {detail}" if detail else ""
                 )
-            headline = f"{icon}  {name}   {detail}"
-            if kind == "video":
-                # QtMultimedia is not in PySide6-Essentials, so there is no
-                # in-window video surface to draw into.  Say what the button
-                # does instead of showing a card that looks broken.
+            # A video gets a real poster frame when FFmpeg is available (the
+            # packaged build can carry one -- see tools/fetch_ffmpeg.py); without
+            # it the card stays, and the button says what it will do.  Either
+            # way the user sees *something* before clicking.
+            preview_path = ""
+            if kind == "video" and exists:
+                preview_path = media.video_thumbnail(
+                    path, self.engine.config.data_dir
+                ) or ""
+                if not preview_path:
+                    seconds = media.media_duration(path, self.engine.config.data_dir)
+                    if seconds:
+                        detail = f"{seconds:.0f} 秒" + (f" · {detail}" if detail else "")
+            if kind == "video" and not preview_path:
                 headline = f"{icon}  {name}\n{detail} · 双击「打开」用系统播放器播放"
+            else:
+                headline = f"{icon}  {name}   {detail}"
+            if preview_path:
+                pixmap = QPixmap(preview_path)
+                if not pixmap.isNull():
+                    label = QLabel()
+                    label.setPixmap(
+                        pixmap.scaled(320, 320, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    )
+                    label.setToolTip(f"{name}（点击播放）")
+                    label.setCursor(Qt.PointingHandCursor)
+                    label.setObjectName("BubbleImage")
+                    label.mousePressEvent = (  # type: ignore[method-assign]
+                        lambda _event, p=path: self._play_media(p)
+                    )
+                    layout.addWidget(label)
             layout.addWidget(QLabel(headline))
+            if kind == "voice" and exists and media.find_tool("ffplay", self.engine.config.data_dir):
+                # 自带 ffplay 时，桌面端也能直接听语音（Essentials 自己没有音频输出）。
+                voice_button = QPushButton("▶ 播放语音（内置播放器）")
+                voice_button.clicked.connect(lambda _=False, p=path: self._play_media(p))
+                layout.addWidget(voice_button)
 
         box.mouseDoubleClickEvent = (  # type: ignore[method-assign]
             lambda _event, p=path: self._open_path(p) if p else None
@@ -413,6 +522,28 @@ class ChatView(QWidget):
             missing.setWordWrap(True)
             layout.addWidget(missing)
         return box
+
+    def _play_media(self, path: str) -> None:
+        """Play with the bundled ffplay, or hand the file to the system.
+
+        ``ffplay`` ships with FFmpeg, and when the package carries one (see
+        ``tools/fetch_ffmpeg.py``) that is the whole reason for it: PySide6
+        Essentials has no audio output and no video surface, so without this the
+        only option was "open it in another program".
+        """
+        if not path or not os.path.isfile(path):
+            return
+        command = media.play_command(path, self.engine.config.data_dir)
+        if command is None:
+            self._open_path(path)
+            return
+        try:
+            creation = 0
+            if os.name == "nt":  # pragma: no cover - Windows only
+                creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            subprocess.Popen(command, creationflags=creation)
+        except OSError as exc:
+            QMessageBox.warning(self, "打不开这个文件", str(exc))
 
     def _show_image(self, path: str, name: str = "") -> None:
         """Show an attachment full size.
@@ -441,30 +572,8 @@ class ChatView(QWidget):
     # -- actions -----------------------------------------------------------
 
     def _pick_emoji(self) -> None:
-        menu = QMenu(self)
-        grid = QWidget()
-        layout = QVBoxLayout(grid)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(2)
-        row_layout = None
-        for index, emoji in enumerate(EMOJI):
-            if index % 8 == 0:
-                row_layout = QHBoxLayout()
-                row_layout.setSpacing(2)
-                layout.addLayout(row_layout)
-            button = QPushButton(emoji)
-            button.setFixedSize(34, 30)
-            button.setFlat(True)
-            button.clicked.connect(lambda _=False, e=emoji: self._insert_emoji(e))
-            row_layout.addWidget(button)
-        action = menu.addAction("常用表情")
-        action.setEnabled(False)
-        menu.layout().addWidget(grid) if hasattr(menu, "layout") else None
-        menu.addSeparator()
-        more = menu.addAction("更多…（自己输入）")
-        more.triggered.connect(lambda: self.input.setFocus())
-        menu.exec(self.emoji_button.mapToGlobal(self.emoji_button.rect().bottomLeft()))
-        grid.setParent(None)
+        dialog = EmojiPicker(self._insert_emoji, self)
+        dialog.exec()
 
     def _insert_emoji(self, emoji: str) -> None:
         self.input.insert(emoji)
@@ -709,4 +818,4 @@ def guess_kind(path: str) -> str:
     return "file"
 
 
-__all__ = ["ChatView", "EMOJI", "ImageViewer", "guess_kind"]
+__all__ = ["ChatView", "EMOJI", "EMOJI_GROUPS", "EmojiPicker", "ImageViewer", "guess_kind"]
