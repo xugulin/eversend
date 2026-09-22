@@ -57,6 +57,10 @@ def use_utf8_console() -> None:
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
+#: The page carries this header on every POST; the desktop reads it from
+#: the <meta> tag it serves.
+TOKEN_HEADER = "X-EverSend-Token"
+
 PASS = "\033[32mPASS\033[0m"
 FAIL = "\033[31mFAIL\033[0m"
 _failures: list[str] = []
@@ -300,6 +304,51 @@ def wait_for_http(url: str, timeout: float = 60.0) -> bool:
     return False
 
 
+def desktop_token(host_url: str) -> str:
+    """The page's CSRF token, read from the shell it serves.
+
+    A local script has to do this too (the token is per-run and only ever
+    delivered inside the page), which is exactly what makes it a real check of
+    the documented path rather than of a back door.
+    """
+    try:
+        with urllib.request.urlopen(host_url, timeout=10) as resp:
+            html = resp.read().decode("utf-8", "replace")
+    except Exception:
+        return ""
+    match = re.search(r'name="eversend-token"\s+content="([^"]+)"', html)
+    return match.group(1) if match else ""
+
+
+def share_on_desktop(host_url: str, paths: list[str]) -> list[dict]:
+    """Publish files for the phone, through the loopback-only API."""
+    token = desktop_token(host_url)
+    if not token:
+        return []
+    body = json.dumps({"paths": paths}).encode("utf-8")
+    request = urllib.request.Request(
+        host_url + "api/share",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json", TOKEN_HEADER: token},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as resp:
+            return json.load(resp).get("shares", [])
+    except Exception as exc:
+        print(f"      调用 /api/share 失败: {exc}")
+        return []
+
+
+def desktop_shares_state(host_url: str) -> dict[str, dict]:
+    """``/api/state``'s shares, keyed by id (the desktop's own view)."""
+    try:
+        with urllib.request.urlopen(host_url + "api/state", timeout=10) as resp:
+            return {s["id"]: s for s in json.load(resp).get("shares", [])}
+    except Exception:
+        return {}
+
+
 def main() -> int:
     use_utf8_console()
     parser = argparse.ArgumentParser()
@@ -518,6 +567,66 @@ def main() -> int:
         if check("上传的文件落到了桌面端", landed.exists(), str(landed)):
             check("上传逐字节一致", hashlib.sha256(landed.read_bytes()).hexdigest() == expected,
                   str(landed))
+
+    # -- 4. 电脑 → 手机（浏览器只能"拉"，所以是交接） -------------------------
+    print("\n[4] 电脑 → 手机：把文件交给手机页面，再从手机里取回来")
+    if cdp_ok:
+        handoff_name = "desktop-to-phone.bin"
+        handoff_path = work / handoff_name
+        payload4 = os.urandom(4 * 1024 * 1024)
+        handoff_path.write_bytes(payload4)
+        expected4 = hashlib.sha256(payload4).hexdigest()
+
+        shares = share_on_desktop(args.host_url, [str(handoff_path)])
+        check("桌面端把文件交给了手机", bool(shares), str(shares)[:120])
+
+        if shares:
+            # 页面自己应该出现「电脑发来的文件」那张卡片
+            shown = ""
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                state = devtools.evaluate(
+                    "(function(){var c=document.querySelector('#share-card');"
+                    "var l=document.querySelector('#share-list');"
+                    "return {card:!!c && !c.hidden,"
+                    "text:(l?(l.innerText||l.textContent):'')||''};})()"
+                ) or {}
+                shown = str(state.get("text") or "").replace("\n", " ").strip()
+                if handoff_name in shown:
+                    break
+                time.sleep(2)
+            check("手机上出现「电脑发来的文件」", handoff_name in shown, shown[:90])
+            shot4 = adb("exec-out", "screencap", "-p", binary=True, timeout=120)
+            (shots / "04-phone-handoff.png").write_bytes(shot4)
+
+            # 点页面上的「下载」，让这台真 Chrome 去取文件
+            adb_shell(f"rm -f /sdcard/Download/{handoff_name}")
+            clicked = devtools.evaluate(
+                "(function(){var a=[...document.querySelectorAll('#share-list a')]"
+                ".find(x=>/下载/.test(x.textContent));if(a){a.click();return true;}return false;})()"
+            )
+            check("点到了页面上的下载按钮", clicked is True, str(clicked))
+
+            got = work / f"pulled-{handoff_name}"
+            deadline = time.monotonic() + 90
+            size4 = 0
+            while time.monotonic() < deadline:
+                reported = adb_shell(
+                    f"stat -c %s /sdcard/Download/{handoff_name} 2>/dev/null || echo 0"
+                ).strip()
+                size4 = int(reported) if reported.isdigit() else 0
+                if size4 >= len(payload4):
+                    break
+                time.sleep(3)
+            adb("pull", f"/sdcard/Download/{handoff_name}", str(got), timeout=180)
+            if check("手机把电脑发来的文件下载完了",
+                     got.exists() and got.stat().st_size == len(payload4),
+                     f"{got.stat().st_size if got.exists() else 0} / {len(payload4)} 字节"):
+                check("下载逐字节一致（电脑 → 手机）",
+                      hashlib.sha256(got.read_bytes()).hexdigest() == expected4)
+            landed_by_desktop = desktop_shares_state(args.host_url).get(shares[0]["id"], {})
+            check("桌面端看到手机已经取走",
+                  bool(landed_by_desktop.get("downloaded")), str(landed_by_desktop))
 
     print("\n" + "=" * 66)
     print(f"截图: {shots}")

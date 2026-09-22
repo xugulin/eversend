@@ -165,7 +165,7 @@ _MIME_TYPES = {
 
 #: Routes that only accept POST, so a GET can be answered with 405.
 _POST_ONLY_ROUTES = frozenset(
-    {"/api/announce", "/api/scan", "/api/upload", "/api/offer/respond", "/api/cancel", "/api/trust", "/api/peer"}
+    {"/api/announce", "/api/scan", "/api/upload", "/api/share", "/api/offer/respond", "/api/cancel", "/api/trust", "/api/peer"}
 )
 
 _JSON_TYPE = "application/json; charset=utf-8"
@@ -463,6 +463,12 @@ class WebUI:
         #: the user "your phone is connected", and clicking 「手机连接」 looked
         #: like it had done nothing.
         self._clients: dict[str, dict[str, Any]] = {}
+        #: Files the desktop handed to the browser, by share id.  A browser has
+        #: no receiving service, so "send to phone" cannot be a push: the
+        #: desktop publishes the file and the phone picks it up with one tap.
+        #: Only paths that came from *this* process are ever served, so the
+        #: network can never ask for an arbitrary file.
+        self._shares: dict[str, dict[str, Any]] = {}
         self._workers: set[threading.Thread] = set()
         self._upload_lock = threading.Lock()
         self._index_cache: tuple[float, str] | None = None
@@ -541,6 +547,78 @@ class WebUI:
                 }
             else:
                 known["lastSeen"] = now
+
+    def share_files(self, paths: Iterable[str]) -> list[dict[str, Any]]:
+        """Publish local files for the connected browser to download.
+
+        Called by the desktop window, in this process: the paths never travel
+        over the network, so `/api/share/<id>` cannot be turned into a file
+        read primitive.  The phone gets an opaque id.
+        """
+        added: list[dict[str, Any]] = []
+        for raw in paths:
+            path = os.path.abspath(str(raw))
+            if not os.path.isfile(path):
+                continue
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            share_id = secrets.token_urlsafe(9)
+            entry = {
+                "id": share_id,
+                "name": os.path.basename(path),
+                "size": size,
+                "path": path,
+                "added": time.time(),
+                "downloaded": False,
+            }
+            with self._state_lock:
+                self._shares[share_id] = entry
+            added.append(entry)
+            self.engine.events.emit(
+                "share_added",
+                share_id=share_id,
+                name=entry["name"],
+                size=size,
+                total=len(added),
+            )
+        return added
+
+    def shares(self) -> list[dict[str, Any]]:
+        """Shares as the *phone* may see them: no filesystem paths."""
+        with self._state_lock:
+            found = [
+                {
+                    "id": s["id"],
+                    "name": s["name"],
+                    "size": s["size"],
+                    "added": s["added"],
+                    "downloaded": bool(s.get("downloaded")),
+                }
+                for s in self._shares.values()
+            ]
+        found.sort(key=lambda s: s["added"], reverse=True)
+        return found
+
+    def share_path(self, share_id: str) -> str | None:
+        """The local path behind a share id, or ``None`` if it is unknown."""
+        with self._state_lock:
+            entry = self._shares.get(str(share_id))
+            if entry is None:
+                return None
+            path = str(entry["path"])
+        return path if os.path.isfile(path) else None
+
+    def mark_share_downloaded(self, share_id: str) -> None:
+        with self._state_lock:
+            entry = self._shares.get(str(share_id))
+            if entry is not None:
+                entry["downloaded"] = True
+
+    def clear_shares(self) -> None:
+        with self._state_lock:
+            self._shares.clear()
 
     def clients(self, ttl: float = CLIENT_TTL) -> list[dict[str, Any]]:
         """Browsers with the page open right now, newest activity first."""
@@ -761,6 +839,7 @@ class WebUI:
             # Who has this page open.  The phone sees itself here, and the
             # desktop reads the same list to show "手机已连接".
             "webClients": self.clients(),
+            "shares": self.shares(),
             "serverTime": time.time(),
         }
 
@@ -1210,6 +1289,10 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/download":
             self._send_download(query)
             return
+        if path.startswith("/api/share/"):
+            # What the desktop handed over for this phone, by opaque id.
+            self._send_share(path[len("/api/share/") :])
+            return
         if path == "/api/events":
             # A stream has no end, so it can never be answered with HEAD, and
             # any other verb would leave a thread parked on an open response.
@@ -1226,6 +1309,9 @@ class _Handler(BaseHTTPRequestHandler):
             if path == "/api/scan":
                 ui.engine.scan()
                 self._send_json(HTTPStatus.ACCEPTED, {"ok": True, "scanning": True})
+                return
+            if path == "/api/share":
+                self._share_files()
                 return
             if path == "/api/upload":
                 self._receive_upload(query)
@@ -1559,6 +1645,19 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- downloads ---------------------------------------------------------
 
+    def _send_share(self, share_id: str) -> None:
+        """Stream a file the desktop published for the browser.
+
+        Marked as downloaded once the whole file has gone out, so the desktop
+        can show "手机已取走" instead of guessing.
+        """
+        share_id = urllib.parse.unquote(share_id)
+        path = self.server_ui.share_path(share_id)
+        if path is None:
+            self._fail(HTTPStatus.NOT_FOUND, "这个文件已经不在分享列表里了")
+            return
+        self._stream_file(path, on_complete=lambda: self.server_ui.mark_share_downloaded(share_id))
+
     def _send_download(self, query: dict[str, list[str]]) -> None:
         """Stream a received file, honouring a single-range ``Range`` header."""
         relative = (query.get("path") or [""])[0]
@@ -1566,6 +1665,10 @@ class _Handler(BaseHTTPRequestHandler):
         if path is None:
             self._fail(HTTPStatus.NOT_FOUND, "文件不存在或不在接收目录内")
             return
+        self._stream_file(path)
+
+    def _stream_file(self, path: str, on_complete=None) -> None:
+        """Send one local file, honouring a single-range ``Range`` header."""
         try:
             size = os.path.getsize(path)
         except OSError:
@@ -1628,6 +1731,8 @@ class _Handler(BaseHTTPRequestHandler):
                     remaining -= len(block)
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             self.close_connection = True
+        if remaining == 0 and on_complete is not None:
+            on_complete()
 
     # -- event stream ------------------------------------------------------
 
@@ -1777,6 +1882,39 @@ class _Handler(BaseHTTPRequestHandler):
                 "name": upload["name"],
                 "size": written,
                 "device": device_dict(peer.info),
+            },
+        )
+
+    def _is_loopback_client(self) -> bool:
+        """True when this request came from this very machine."""
+        address = self.client_address[0] if self.client_address else ""
+        return address in ("127.0.0.1", "::1", "localhost")
+
+    def _share_files(self) -> None:
+        """Publish local files for the connected phone to pick up.
+
+        The desktop window does this in-process (``WebUI.share_files``); this
+        route exists so a local script or a test can do the same.  It is
+        **loopback only** on purpose: a device on the network must never be
+        able to name a path on this machine and then download it.
+        """
+        if not self._is_loopback_client():
+            self._fail(HTTPStatus.FORBIDDEN, "只有本机可以指定要交给手机的文件")
+            return
+        body = self._json_body()
+        paths = body.get("paths")
+        if paths is None and body.get("path"):
+            paths = [body["path"]]
+        if not isinstance(paths, list) or not paths:
+            raise _BadRequest("需要 paths 数组")
+        added = self.server_ui.share_files([str(p) for p in paths])
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "ok": True,
+                "shares": [
+                    {"id": a["id"], "name": a["name"], "size": a["size"]} for a in added
+                ],
             },
         )
 

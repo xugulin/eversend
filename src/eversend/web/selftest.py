@@ -500,6 +500,72 @@ def check_download_range(base: str, engine: Engine) -> None:
     os.unlink(target)
 
 
+def check_share_handoff(ui, base: str, root: Path) -> None:
+    """The "send to phone" direction: a browser can only pull, never be pushed.
+
+    The desktop publishes local files (paths never leave the process) and the
+    phone downloads them by opaque id.  This is the whole answer to "the
+    computer found my phone but cannot send to it".
+    """
+    print("\n[3b] Hand-off to the browser (send to phone)")
+    payload = bytes(range(256)) * 64  # 16 KiB, position-dependent
+    source = root / "handoff-source.bin"
+    source.write_bytes(payload)
+
+    added = ui.share_files([str(source)])
+    check("sharing a local file succeeds", len(added) == 1, str(added)[:100])
+    if not added:
+        return
+    share_id = added[0]["id"]
+
+    status, _headers, body = http(base + "/api/state")
+    shares = json.loads(body.decode("utf-8")).get("shares", [])
+    check("the share shows up in /api/state", any(s["id"] == share_id for s in shares), str(shares)[:120])
+    check("the share does not leak the local path",
+          "handoff-source" in json.dumps(shares) and str(root) not in json.dumps(shares),
+          json.dumps(shares)[:160])
+
+    status, headers, body = http(base + "/api/share/" + share_id)
+    check("the phone can download the shared file", status == 200 and body == payload, str(status))
+    check("the download is an attachment with the real name",
+          "attachment" in headers.get("Content-Disposition", "")
+          and "handoff-source.bin" in headers.get("Content-Disposition", ""),
+          headers.get("Content-Disposition", ""))
+
+    status, headers, body = http(base + "/api/share/" + share_id, headers={"Range": "bytes=10-19"})
+    check("a resumed (ranged) download works too",
+          status == 206 and body == payload[10:20], f"{status} {len(body)}")
+
+    status, _headers, _body = http(base + "/api/share/does-not-exist")
+    check("an unknown share id is a 404", status == 404, str(status))
+
+    shares = {s["id"]: s for s in ui.shares()}
+    check("the desktop learns that the phone took the file",
+          shares.get(share_id, {}).get("downloaded") is True, str(shares.get(share_id)))
+
+    # A file that does not exist must never be published.
+    check("a missing file is not shared",
+          ui.share_files([str(root / "nope.bin")]) == [])
+
+    # And the route a script would use: loopback only, CSRF-checked.
+    status, _headers, body = http(
+        base + "/api/share",
+        method="POST",
+        data=json.dumps({"paths": [str(source)]}).encode("utf-8"),
+        headers={TOKEN_HEADER: ui.token, "Content-Type": "application/json"},
+    )
+    payload_json = json.loads(body.decode("utf-8")) if body else {}
+    check("a local script can publish a file over the API",
+          status == 200 and payload_json.get("shares"), f"{status} {body[:80]!r}")
+    status, _headers, _body = http(
+        base + "/api/share",
+        method="POST",
+        data=json.dumps({"paths": [str(source)]}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    check("publishing without the token is refused", status == 403, str(status))
+
+
 def check_sse(base: str) -> None:
     print("\n[4] Server-Sent Events")
     request = urllib.request.Request(base + "/api/events", headers={"Accept": "text/event-stream"})
@@ -780,6 +846,7 @@ def main() -> int:
         check_keepalive(port, ui.token)
         check_download_range(base, engine_a)
         check_sse(base)
+        check_share_handoff(ui, base, root)
         check_upload(engine_a, engine_b, base, ui.token, root)
         check_offer_roundtrip(engine_a, engine_b, base, ui.token, ui)
     finally:

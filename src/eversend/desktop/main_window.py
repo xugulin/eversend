@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -29,7 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.engine import Engine, EngineConfig
-from ..core.model import Peer, human_bytes
+from ..core.model import DeviceInfo, Peer, human_bytes
 from ..core.sockutil import list_interfaces
 from . import theme
 from .bridge import EngineBridge, SendWorker
@@ -75,6 +76,8 @@ class MainWindow(QMainWindow):
         self._offer_dialogs: dict[str, OfferDialog] = {}
         self._last_tick = time.monotonic()
         self._last_bytes: dict[str, int] = {}
+        #: share id -> 传输行，用于显示"手机已经取走"。
+        self._phone_shares: dict[str, TransferRow] = {}
 
         self.setWindowTitle("韧传 EverSend")
         self.resize(1080, 760)
@@ -572,11 +575,52 @@ class MainWindow(QMainWindow):
         self.web_url_label.setText(url or "（未找到可用的局域网地址）")
         self.receive_dir_label.setText(self.engine.config.receive_dir)
 
+    def _phone_peers(self) -> list[Peer]:
+        """Connected phones, as rows the device list can show.
+
+        A phone speaks HTTP rather than this protocol, so discovery can never
+        find it -- but it *is* reachable in the sense the user cares about:
+        files can be handed to its page.  Without this row, 「手机连接」 looked
+        like it had failed even when the phone was sitting there connected.
+        """
+        ui = getattr(self, "_web_ui", None)
+        if ui is None:
+            return []
+        try:
+            from ..web.server import is_mobile_client
+
+            clients = [c for c in ui.clients() if is_mobile_client(c)]
+        except Exception:
+            return []
+        peers: list[Peer] = []
+        for client in clients:
+            address = str(client.get("address") or "")
+            agent = str(client.get("agent") or "")
+            peers.append(
+                Peer(
+                    info=DeviceInfo(
+                        device_id=f"web:{address}:{hashlib.sha1(agent.encode('utf-8', 'replace')).hexdigest()[:8]}",
+                        name=f"{client.get('label') or '手机'}（浏览器）",
+                        kind="mobile",
+                        platform="browser",
+                        version="web",
+                        web_port=self.engine.config.web_port,
+                        capabilities={"web": True, "handoff": True},
+                    ),
+                    address=address,
+                    port=self.engine.config.web_port,
+                    source="web",
+                    trusted=True,  # it is the device the user just paired by QR
+                )
+            )
+        return peers
+
     def _refresh_devices(self) -> None:
         try:
-            self.device_table.set_peers(self.engine.devices())
+            self.device_table.set_peers(self.engine.devices() + self._phone_peers())
         except Exception:
             pass
+        self._refresh_phone_shares()
 
     def _announce(self) -> None:
         self.engine.announce()
@@ -647,6 +691,9 @@ class MainWindow(QMainWindow):
         if not self.file_list.paths:
             QMessageBox.information(self, "还没有选择文件", "请先添加要发送的文件或文件夹。")
             return
+        if peer.source == "web":
+            self._hand_off_to_phone(peer)
+            return
 
         row = self._add_transfer_row(
             f"__pending__{time.time()}", f"发送到 {peer.info.name}", "send"
@@ -677,6 +724,57 @@ class MainWindow(QMainWindow):
             if not ok and row.cancel_button.isEnabled():
                 row.finish(False, error or "对方拒绝或连接中断")
         self._send_workers = [w for w in self._send_workers if w.is_alive()]
+
+    def _hand_off_to_phone(self, peer: Peer) -> None:
+        """Give the selected files to a phone's page, for it to pull.
+
+        A browser has no receiving service, so this cannot be a push: the
+        desktop publishes the files and the phone downloads them with one tap.
+        Saying that plainly is the point -- "已发送" followed by a file that
+        never arrives is worse than a sentence about how it actually works.
+        """
+        ui = getattr(self, "_web_ui", None)
+        if ui is None:
+            QMessageBox.warning(
+                self,
+                "浏览器界面没有启动",
+                "手机是通过浏览器界面连接的，现在它没有运行，所以没法交给它。",
+            )
+            return
+        entries = ui.share_files(list(self.file_list.paths))
+        if not entries:
+            QMessageBox.warning(self, "没有可发送的文件", "选中的文件都读不到了。")
+            return
+        for entry in entries:
+            row = self._add_transfer_row(entry["id"], f"交给 {peer.info.name}：{entry['name']}", "send")
+            row.bar.setRange(0, 0)  # 不确定进度：等手机来取
+            row.set_status("已放到手机页面，等它在手机上点下载")
+            self._transfers[entry["id"]] = row
+            self._phone_shares[entry["id"]] = row
+        self.status_left.setText(
+            f"已把 {len(entries)} 个文件交给手机页面——请在手机上点「下载」。"
+        )
+
+    def _refresh_phone_shares(self) -> None:
+        """Move the hand-off rows along as the phone actually takes the files."""
+        if not self._phone_shares:
+            return
+        ui = getattr(self, "_web_ui", None)
+        if ui is None:
+            return
+        try:
+            shares = {s["id"]: s for s in ui.shares()}
+        except Exception:
+            return
+        for share_id, row in list(self._phone_shares.items()):
+            share = shares.get(share_id)
+            if share is None:
+                continue
+            if share.get("downloaded") and not getattr(row, "_phone_done", False):
+                row.bar.setRange(0, 1000)
+                row.finish(True, "手机已取走")
+                row._phone_done = True  # noqa: SLF001 - our own marker
+                self.status_left.setText("手机已经取走了文件。")
 
     def _adopt_pending_row(self, transfer_id: str, title: str, direction: str) -> TransferRow | None:
         """Reuse the placeholder card for the transfer that just started."""

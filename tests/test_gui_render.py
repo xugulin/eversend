@@ -25,7 +25,12 @@ OUT = Path(__file__).resolve().parent / "screenshots"
 
 def main() -> int:
     use_utf8_console()
-    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+    # Force the platform rather than inheriting one.  A Wayland desktop session
+    # exports QT_QPA_PLATFORM=wayland, and inside xvfb that cannot connect, so
+    # the whole run dies with "no Qt platform plugin could be initialized"
+    # before rendering a single screenshot.  EVERSEND_GUI_PLATFORM overrides
+    # this if someone wants to try another plugin.
+    os.environ["QT_QPA_PLATFORM"] = os.environ.get("EVERSEND_GUI_PLATFORM", "xcb")
 
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
@@ -95,6 +100,9 @@ def main() -> int:
     demo_ui.url = "http://192.168.1.5:52119/"
     window.on_web_ui_started(52119, demo_ui)
     window._refresh_web_clients()
+    # Refresh the list now, not in two seconds: the send-tab screenshot should
+    # show the connected phone the way a user sees it.
+    window._refresh_devices()
     window.show()
 
     # Put some content in the send tab so the screenshot shows a real state.
@@ -121,7 +129,10 @@ def main() -> int:
         port=52117,
         trusted=True,
     )
-    window.device_table.set_peers([fake] + engine.devices())
+    # The connected phone goes in the same list: that is the whole point of
+    # _phone_peers() -- a phone is a browser client, and before this it simply
+    # never appeared anywhere a user could see it.
+    window.device_table.set_peers([fake] + window._phone_peers() + engine.devices())
 
     window._add_transfer_row("demo-xfer", "发送到 客厅台式机", "send")
     row = window._transfers["demo-xfer"]

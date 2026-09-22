@@ -145,6 +145,7 @@
     receiveDir: '',
     freeSpace: 0,
     selectedDeviceId: null,
+  shares: [],
     picked: [],
     view: 'send'
   };
@@ -472,6 +473,32 @@
     });
   }
 
+  function renderShares() {
+    // Files the desktop handed over for this phone.  A browser cannot be
+    // pushed to, so this list *is* the "receive" direction: the computer puts
+    // the file here and the phone pulls it with one tap.
+    var signature = store.shares.map(function (s) {
+      return s.id + '|' + s.size + '|' + (s.downloaded ? 1 : 0);
+    }).join(',');
+    if (!changed('shares', signature)) return;
+    var card = $('#share-card');
+    var list = $('#share-list');
+    clear(list);
+    card.hidden = store.shares.length === 0;
+    if (!store.shares.length) return;
+    store.shares.forEach(function (share) {
+      list.appendChild(h('li', { class: 'file-item' },
+        h('span', { class: 'fname', title: share.name, text: share.name }),
+        h('span', { class: 'fsize', text: fmtBytes(share.size) }),
+        h('a', {
+          href: '/api/share/' + encodeURIComponent(share.id),
+          download: share.name,
+          text: share.downloaded ? '再下载' : '下载'
+        })
+      ));
+    });
+  }
+
   function renderSelf() {
     var device = store.device || {};
     var signature = [device.id, device.name, device.platform, store.receiveDir, store.freeSpace,
@@ -508,6 +535,7 @@
     renderTransfers();
     renderOffers();
     renderFiles();
+    renderShares();
     renderSelf();
     updateSendButton();
   }
@@ -549,6 +577,7 @@
     store.app = state.app || store.app;
     store.device = state.device || store.device;
     store.devices = state.devices || [];
+    store.shares = state.shares || [];
     store.transfers = state.transfers || [];
     store.offers = state.offers || [];
     store.uploads = state.uploads || [];
