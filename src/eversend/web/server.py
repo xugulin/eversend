@@ -170,7 +170,7 @@ _MIME_TYPES = {
 
 #: Routes that only accept POST, so a GET can be answered with 405.
 _POST_ONLY_ROUTES = frozenset(
-    {"/api/announce", "/api/scan", "/api/upload", "/api/share", "/api/offer/respond", "/api/cancel", "/api/trust", "/api/peer"}
+    {"/api/announce", "/api/scan", "/api/upload", "/api/share", "/api/leave", "/api/offer/respond", "/api/cancel", "/api/trust", "/api/peer"}
 )
 
 _JSON_TYPE = "application/json; charset=utf-8"
@@ -632,6 +632,17 @@ class WebUI:
     def clear_shares(self) -> None:
         with self._state_lock:
             self._shares.clear()
+
+    def forget_client(self, address: str, agent: str = "") -> bool:
+        """Drop one browser from the connected list right now.
+
+        Called when the page says goodbye (the phone's 「断开连接」 button) so
+        the desktop reflects it immediately instead of waiting for the TTL.
+        """
+        digest = hashlib.sha1((agent or "").encode("utf-8", "replace")).hexdigest()[:8]
+        key = f"{address}|{digest}"
+        with self._state_lock:
+            return self._clients.pop(key, None) is not None
 
     def clients(self, ttl: float = CLIENT_TTL) -> list[dict[str, Any]]:
         """Browsers with the page open right now, newest activity first."""
@@ -1325,6 +1336,15 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/share":
                 self._share_files()
+                return
+            if path == "/api/leave":
+                # The page is going away on purpose.  Drop it now; the desktop
+                # would otherwise keep showing it for another 15 seconds.
+                forgotten = self.server_ui.forget_client(
+                    self.client_address[0] if self.client_address else "",
+                    self.headers.get("User-Agent", ""),
+                )
+                self._send_json(HTTPStatus.OK, {"ok": True, "forgotten": forgotten})
                 return
             if path == "/api/upload":
                 self._receive_upload(query)

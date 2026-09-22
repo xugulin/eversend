@@ -175,6 +175,8 @@ _PLATFORM_GLYPHS = {
     "macos": "",
     "android": "🤖",
     "ios": "📱",
+    # A phone that reached us through the browser UI.
+    "browser": "📱",
 }
 
 

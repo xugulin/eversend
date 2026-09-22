@@ -233,7 +233,16 @@ def check_qr_decodes(url: str) -> None:
         )
 
 
-def check_http_surface(base: str, token: str) -> None:
+def _asset_text(ui, name: str) -> str:
+    """Read one of the page's assets as text (empty when it is missing)."""
+    try:
+        with open(os.path.join(ui.asset_dir, name), encoding="utf-8") as handle:
+            return handle.read()
+    except OSError:
+        return ""
+
+
+def check_http_surface(base: str, token: str, ui=None) -> None:
     print("\n[1] HTTP surface")
     status, headers, body = http(base + "/api/state")
     check("/api/state returns 200", status == 200, str(status))
@@ -285,6 +294,11 @@ def check_http_surface(base: str, token: str) -> None:
     # to call the computer's folder 「已接收的文件」, which on a phone reads as
     # "files I received" -- so a user who had just downloaded a file saw an
     # empty list and concluded the download had failed.
+    check("the phone page offers a disconnect button", "btn-disconnect" in html)
+    check("the phone page can keep the link alive with the screen off",
+          "keepalive" in html and "熄屏" in html)
+    check("the page explains who owns the computer's file list",
+          "这些文件在电脑上" in _asset_text(ui, "app.js"), "app.js")
     check("the phone page shows what the computer sent it", "电脑发来的文件" in html)
     check("the phone page calls the computer's folder the computer's", "电脑上的文件" in html)
     check("the CSRF token is embedded in the page", token in html)
@@ -553,6 +567,21 @@ def check_share_handoff(ui, base: str, root: Path) -> None:
     check("a missing file is not shared",
           ui.share_files([str(root / "nope.bin")]) == [])
 
+    # The phone's 「断开连接」 button: the desktop must stop showing it at once.
+    # Only *this* client may disappear -- the raw-socket probes above have no
+    # User-Agent and are therefore a different entry.
+    ours = {c["agent"] for c in ui.clients() if "urllib" in c.get("agent", "")}
+    status, _headers, body = http(
+        base + "/api/leave",
+        method="POST",
+        data=b"{}",
+        headers={"Content-Type": "application/json", TOKEN_HEADER: ui.token},
+    )
+    check("a browser can say goodbye", status == 200, f"{status} {body[:60]!r}")
+    remaining = {c["agent"] for c in ui.clients()}
+    check("saying goodbye removes that browser from the list",
+          bool(ours) and not (ours & remaining), f"ours={ours} remaining={remaining}")
+
     # And the route a script would use: loopback only, CSRF-checked.
     status, _headers, body = http(
         base + "/api/share",
@@ -570,6 +599,32 @@ def check_share_handoff(ui, base: str, root: Path) -> None:
         headers={"Content-Type": "application/json"},
     )
     check("publishing without the token is refused", status == 403, str(status))
+
+
+def check_scan_reports_back(engine: Engine) -> None:
+    """A scan has to finish *visibly*.
+
+    It used to leave the status line saying 「正在扫描局域网，稍等几秒…」 for the
+    rest of the session: nothing ever reported that the scan was over.
+    """
+    print("\n[1b] A scan reports when it is done")
+    queue_ = engine.events.subscribe()
+    engine.scan()
+    deadline = time.monotonic() + 90
+    seen = None
+    while time.monotonic() < deadline:
+        try:
+            event = queue_.get(timeout=1.0)
+        except Exception:
+            continue
+        if event.get("kind") == "scan_finished":
+            seen = event
+            break
+    check("the scan emits a completion event", seen is not None, "no scan_finished event")
+    if seen is not None:
+        check("the event says how many devices answered",
+              isinstance(seen.get("found"), int), str(seen))
+        check("the event carries no error", not seen.get("error"), str(seen.get("error")))
 
 
 def check_sse(base: str) -> None:
@@ -847,7 +902,8 @@ def main() -> int:
         check("the engine learns the bound web port", engine_a.info.web_port == port, f"{engine_a.info.web_port} vs {port}")
         base = f"http://127.0.0.1:{port}"
 
-        check_http_surface(base, ui.token)
+        check_scan_reports_back(engine_a)
+        check_http_surface(base, ui.token, ui)
         check_security(base, ui.token)
         check_keepalive(port, ui.token)
         check_download_range(base, engine_a)

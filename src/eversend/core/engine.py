@@ -357,14 +357,24 @@ class Engine:
         self.discovery.announce()
 
     def scan(self) -> int:
-        """Run an active subnet scan in the background."""
-        thread = threading.Thread(
-            target=self.discovery.scan_subnets,
-            args=(self.info.tcp_port,),
-            name="subnet-scan",
-            daemon=True,
-        )
-        thread.start()
+        """Run an active subnet scan in the background.
+
+        The result is reported as a ``scan_finished`` event.  Without it the UI
+        could only say "scanning…" and had no way to ever say anything else --
+        which is exactly what users saw: a status line stuck on "正在扫描" for
+        the rest of the session.
+        """
+
+        def run() -> None:
+            found = 0
+            error = ""
+            try:
+                found = self.discovery.scan_subnets(self.info.tcp_port)
+            except Exception as exc:  # pragma: no cover - defensive
+                error = str(exc)
+            self.events.emit("scan_finished", found=int(found), error=error)
+
+        threading.Thread(target=run, name="subnet-scan", daemon=True).start()
         return 0
 
     def add_manual_device(self, address: str, port: int = 0, name: str = "") -> Peer:

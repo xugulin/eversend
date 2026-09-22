@@ -151,9 +151,27 @@ class DeviceTable(QTableWidget):
                 )
             kind = QTableWidgetItem(_kind_label(info))
             address = QTableWidgetItem(f"{peer.address}:{peer.port}")
-            status = QTableWidgetItem("已信任" if peer.trusted else "在线")
-            if peer.trusted:
-                status.setForeground(QColor(theme.SUCCESS))
+            if info.capabilities.get("web"):
+                # A phone is a browser: it is online when its page is talking to
+                # us, and "asleep" (not gone) when the screen went off.
+                if info.capabilities.get("online"):
+                    status = QTableWidgetItem("在线")
+                    status.setForeground(QColor(theme.SUCCESS))
+                    name.setToolTip(
+                        "这台手机正开着韧传网页版。\n"
+                        "往它发送 = 把文件交给它的页面，在手机上点「下载」取走。"
+                    )
+                else:
+                    status = QTableWidgetItem("已离线")
+                    status.setForeground(QColor(theme.WARNING))
+                    name.setToolTip(
+                        "手机不响应了：多半是熄屏或被系统挂起。\n"
+                        "交给它的文件会留着，等它回来再点下载即可。"
+                    )
+            else:
+                status = QTableWidgetItem("已信任" if peer.trusted else "在线")
+                if peer.trusted:
+                    status.setForeground(QColor(theme.SUCCESS))
             for column, item in enumerate((name, kind, address, status)):
                 self.setItem(row, column, item)
 

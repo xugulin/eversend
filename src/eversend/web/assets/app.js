@@ -646,6 +646,87 @@
       : mode === 'poll' ? '轮询中' : '已断开';
   }
 
+  // ------------------------------------------------------- 连接保持 / 断开
+
+  // A silent, looping audio element is the only thing a *web page* can do to
+  // stay alive when the phone's screen goes off: Chrome freezes a background
+  // tab, but a tab that is playing media keeps running (that is how web music
+  // players survive).  It costs a little battery, so it is opt-in and the
+  // switch says so.
+  var SILENT_WAV =
+    'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=';
+
+  var keepalive = { audio: null, wakeLock: null, manual: false };
+  var disconnected = false;
+
+  function keepaliveSupported() {
+    return typeof Audio !== 'undefined';
+  }
+
+  function startKeepalive() {
+    if (keepalive.audio || !keepaliveSupported()) return;
+    try {
+      keepalive.audio = new Audio(SILENT_WAV);
+      keepalive.audio.loop = true;
+      keepalive.audio.volume = 0.001;   // not silent-silent: some systems drop audio at 0
+      var played = keepalive.audio.play();
+      if (played && played.catch) {
+        played.catch(function () {
+          // Autoplay policy: it needs a user gesture, which the switch click is.
+          keepalive.audio = null;
+          setKeepaliveState('浏览器拒绝了后台播放，熄屏后可能仍会断开。');
+        });
+      }
+    } catch (err) {
+      keepalive.audio = null;
+    }
+    // Screen Wake Lock would be better (no battery cost from audio) but it is
+    // only available in a secure context, and this page is plain http:// on a
+    // LAN address -- so on a phone it is almost never there.
+    if (navigator.wakeLock && navigator.wakeLock.request) {
+      navigator.wakeLock.request('screen').then(function (lock) {
+        keepalive.wakeLock = lock;
+      }).catch(function () { /* not available; the audio is the fallback */ });
+    }
+    setKeepaliveState('已开启：页面会尽量留在后台（有声音图标是正常的，那是无声音频）。');
+  }
+
+  function stopKeepalive() {
+    if (keepalive.audio) {
+      try { keepalive.audio.pause(); } catch (err) { /* already gone */ }
+      keepalive.audio = null;
+    }
+    if (keepalive.wakeLock) {
+      try { keepalive.wakeLock.release(); } catch (err) { /* already released */ }
+      keepalive.wakeLock = null;
+    }
+  }
+
+  function setKeepaliveState(text) {
+    var node = $('#keepalive-state');
+    if (node) node.textContent = text || '';
+  }
+
+  function disconnect() {
+    // Tell the desktop first (so its device list updates at once), then stop
+    // talking to it: close the stream, stop the timers.
+    api('/api/leave', { method: 'POST', json: {} }).catch(function () { /* best effort */ });
+    closeEvents();
+    disconnected = true;
+    setConnected('down');
+    setKeepaliveState('');
+    toast('已断开。点「重新连接」可以再连上。');
+    renderAll();
+  }
+
+  function reconnect() {
+    disconnected = false;
+    setConnected('poll');
+    refreshState().then(refreshFiles).catch(function () { /* the badge shows it */ });
+    connectEvents();
+    toast('正在重新连接…');
+  }
+
   // ---------------------------------------------------------------- events
 
   var SSE_KINDS_REFRESH = {
@@ -654,9 +735,20 @@
     device_found: 1, device_updated: 1, engine_started: 1, web_upload_failed: 1
   };
 
+  var eventSource = null;
+
+  function closeEvents() {
+    if (eventSource) {
+      try { eventSource.close(); } catch (err) { /* already closed */ }
+      eventSource = null;
+    }
+  }
+
   function connectEvents() {
     if (!window.EventSource) { setConnected('poll'); return; }
+    closeEvents();
     var source = new EventSource('/api/events');
+    eventSource = source;
     source.addEventListener('open', function () { setConnected('live'); });
     source.addEventListener('hello', function () { setConnected('live'); });
     source.addEventListener('error', function () {
@@ -894,8 +986,36 @@
     });
     window.addEventListener('online', function () { scheduleRefresh(0); });
     document.addEventListener('visibilitychange', function () {
-      if (!document.hidden) { scheduleRefresh(0); refreshFiles(); }
+      if (document.hidden || disconnected) return;
+      // Back from a locked screen: reconnect *now* rather than waiting for the
+      // next poll, so the desktop sees the phone again within a second or two.
+      scheduleRefresh(0);
+      refreshFiles();
+      if (!eventSource || eventSource.readyState === 2) connectEvents();
     });
+    var keepaliveBox = $('#keepalive');
+    if (keepaliveBox) {
+      keepaliveBox.checked = localStorage.getItem('eversend-keepalive') === '1';
+      if (keepaliveBox.checked) startKeepalive();
+      keepaliveBox.addEventListener('change', function () {
+        if (keepaliveBox.checked) {
+          localStorage.setItem('eversend-keepalive', '1');
+          startKeepalive();
+        } else {
+          localStorage.setItem('eversend-keepalive', '0');
+          stopKeepalive();
+          setKeepaliveState('已关闭：手机熄屏后连接会断开（文件不会丢，回来再传即可）。');
+        }
+      });
+    }
+    var disconnectButton = $('#btn-disconnect');
+    if (disconnectButton) {
+      disconnectButton.addEventListener('click', function () {
+        if (disconnected) { reconnect(); disconnectButton.textContent = '断开与电脑的连接'; return; }
+        disconnect();
+        disconnectButton.textContent = '重新连接';
+      });
+    }
   }
 
   // ------------------------------------------------------------------ boot
@@ -909,6 +1029,7 @@
     });
     connectEvents();
     setInterval(function () {
+      if (disconnected) return;
       refreshState().catch(function () { /* the connection badge says it all */ });
     }, POLL_MS);
     setInterval(paint, TICK_MS);

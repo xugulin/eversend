@@ -516,3 +516,11 @@ button { font: inherit; cursor: pointer; }
 .queue li { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); }
 .queue .state-ok { color: var(--ok); }
 .queue .state-err { color: var(--danger); }
+
+/* --------------------------------------------------- phone: link control */
+
+/* The 「连接」 card in the settings tab: a keep-alive switch and the way out. */
+.switch-row { display: flex; align-items: flex-start; gap: 10px; font-size: 14px; }
+.switch-row input { margin-top: 3px; width: 18px; height: 18px; flex: none; }
+.switch-row em { display: block; font-style: normal; margin-top: 4px; }
+.ghost.block { display: block; width: 100%; margin-top: 12px; }

@@ -59,6 +59,14 @@ def form_label(text: str) -> QLabel:
     return label
 
 
+#: How long a phone stays listed after its last request.  A browser that is
+#: asleep is not gone: the handed-off files are still waiting for it.
+PHONE_OFFLINE_GRACE = 300.0
+
+#: A phone that has not been heard from for this long is shown as 已离线.
+ONLINE_WINDOW = 12.0
+
+
 class MainWindow(QMainWindow):
     """EverSend's desktop window."""
 
@@ -86,6 +94,9 @@ class MainWindow(QMainWindow):
         #: Set by :meth:`on_web_ui_started`; ``None`` until (and unless) the
         #: browser interface is up.
         self._web_ui = None
+        #: Devices seen since the current scan started, and the backstop timer.
+        self._scan_hits = 0
+        self._scan_watchdog: QTimer | None = None
 
         self._build_ui()
         self._connect_bridge()
@@ -454,6 +465,7 @@ class MainWindow(QMainWindow):
         self.bridge.device_found.connect(self._on_device)
         self.bridge.device_updated.connect(self._on_device)
         self.bridge.scan_hit.connect(self._on_scan_hit)
+        self.bridge.scan_finished.connect(self._on_scan_finished)
         self.bridge.offer_received.connect(self._on_offer)
         self.bridge.transfer_finished.connect(self._on_transfer_finished)
         self.bridge.warning.connect(self._on_warning)
@@ -467,6 +479,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str, int)
     def _on_scan_hit(self, address: str, port: int) -> None:
+        self._scan_hits = getattr(self, "_scan_hits", 0) + 1
         """A host answered a scan probe; find out *who* it is.
 
         The probe only proved that something is listening.  Registering that
@@ -589,7 +602,13 @@ class MainWindow(QMainWindow):
         try:
             from ..web.server import is_mobile_client
 
-            clients = [c for c in ui.clients() if is_mobile_client(c)]
+            # Keep a phone listed for a few minutes after it stops answering:
+            # its screen went off, or the page was backgrounded.  Dropping the
+            # row instantly made the list flicker and hid the fact that a
+            # hand-off is still waiting for it.
+            clients = [
+                c for c in ui.clients(ttl=PHONE_OFFLINE_GRACE) if is_mobile_client(c)
+            ]
         except Exception:
             return []
         peers: list[Peer] = []
@@ -605,7 +624,12 @@ class MainWindow(QMainWindow):
                         platform="browser",
                         version="web",
                         web_port=self.engine.config.web_port,
-                        capabilities={"web": True, "handoff": True},
+                        capabilities={
+                            "web": True,
+                            "handoff": True,
+                            # The device table reads this to say 在线 / 已离线.
+                            "online": float(client.get("secondsAgo") or 0) <= ONLINE_WINDOW,
+                        },
                     ),
                     address=address,
                     port=self.engine.config.web_port,
@@ -628,7 +652,38 @@ class MainWindow(QMainWindow):
 
     def _scan(self) -> None:
         self.engine.scan()
+        self._scan_hits = 0
         self.status_left.setText("正在扫描局域网，稍等几秒…")
+        # The engine reports completion as an event; this timer is a backstop so
+        # the status line can never be left saying "scanning" forever, which is
+        # precisely what it used to do.
+        self._scan_watchdog = QTimer(self)
+        self._scan_watchdog.setSingleShot(True)
+        self._scan_watchdog.timeout.connect(
+            lambda: self._on_scan_finished(self._scan_hits, "", timed_out=True)
+        )
+        self._scan_watchdog.start(60_000)
+
+    def _on_scan_finished(self, found: int, error: str = "", timed_out: bool = False) -> None:
+        """Report what the scan actually found."""
+        watchdog = getattr(self, "_scan_watchdog", None)
+        if watchdog is not None:
+            watchdog.stop()
+        hits = getattr(self, "_scan_hits", 0)
+        if error:
+            self.status_left.setText(f"扫描出错：{error}")
+        elif hits:
+            self.status_left.setText(f"扫描完成：发现 {hits} 台设备（已列在左边）")
+        elif found:
+            # Reachable hosts that did not complete a handshake are not devices;
+            # saying "found 3" about them would invent identities.
+            self.status_left.setText(
+                f"扫描结束：{found} 个地址有响应，但没有一台完成握手（可能是别的程序占着端口）"
+            )
+        elif timed_out:
+            self.status_left.setText("扫描结束：没有发现新设备（看看对方是不是开了防火墙）")
+        else:
+            self.status_left.setText("扫描完成：没有发现新设备（对方可能开着防火墙，或不在同一网段）")
 
     def _manual_add(self) -> None:
         from PySide6.QtWidgets import QInputDialog
@@ -745,15 +800,25 @@ class MainWindow(QMainWindow):
         if not entries:
             QMessageBox.warning(self, "没有可发送的文件", "选中的文件都读不到了。")
             return
+        online = bool(peer.info.capabilities.get("online"))
         for entry in entries:
             row = self._add_transfer_row(entry["id"], f"交给 {peer.info.name}：{entry['name']}", "send")
             row.bar.setRange(0, 0)  # 不确定进度：等手机来取
-            row.set_status("已放到手机页面，等它在手机上点下载")
+            row.set_status(
+                "已放到手机页面，等它在手机上点下载"
+                if online
+                else "手机现在不在线（熄屏？）——文件已留着，等它回来点下载"
+            )
             self._transfers[entry["id"]] = row
             self._phone_shares[entry["id"]] = row
-        self.status_left.setText(
-            f"已把 {len(entries)} 个文件交给手机页面——请在手机上点「下载」。"
-        )
+        if online:
+            self.status_left.setText(
+                f"已把 {len(entries)} 个文件交给手机页面——请在手机上点「下载」。"
+            )
+        else:
+            self.status_left.setText(
+                f"已把 {len(entries)} 个文件留给手机（它现在不在线）——手机打开页面就能下载。"
+            )
 
     def _refresh_phone_shares(self) -> None:
         """Move the hand-off rows along as the phone actually takes the files."""

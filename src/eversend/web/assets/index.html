@@ -129,6 +129,20 @@
         <dl class="kv" id="self-info"></dl>
       </div>
       <div class="card">
+        <div class="card-head"><h2>连接</h2><span class="muted" id="conn-detail"></span></div>
+        <label class="switch-row">
+          <input type="checkbox" id="keepalive">
+          <span>
+            熄屏也保持连接
+            <em class="hint">手机熄屏后浏览器会被系统冻结，连接就断了。打开这个开关会用一段
+              无声音频让页面留在后台（略微耗电，个别系统的深度省电仍可能挂起）。
+              传输本身会等你回来，续传不会丢。</em>
+          </span>
+        </label>
+        <p class="hint" id="keepalive-state"></p>
+        <button class="ghost block" id="btn-disconnect" type="button">断开与电脑的连接</button>
+      </div>
+      <div class="card">
         <div class="card-head"><h2>关于</h2></div>
         <p class="hint">
           韧传 EverSend 手机网页版：在浏览器里直接收发文件，无需安装应用。<br>
