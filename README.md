@@ -41,9 +41,9 @@
 
 | 平台 | 状态 | 怎么验证的 |
 |---|---|---|
-| **Linux** | ✅ 完整支持 | 作者实机 + GitHub Actions `ubuntu-latest` 原生 runner：40 项内核测试、17 项恶劣网络测试、7 项并发测试、169 项浏览器界面自检、真 Qt 离屏渲染 |
+| **Linux** | ✅ 完整支持 | 作者实机 + GitHub Actions `ubuntu-latest` 原生 runner：40 项内核测试、17 项恶劣网络测试、7 项并发测试、177 项浏览器界面自检、19 项真点界面的交互测试、真 Qt 离屏渲染 |
 | **Windows** | ✅ 完整支持 | GitHub Actions `windows-latest` 原生 runner 跑同一整套；另有 `interop.yml` 由 **Wine 承载真 Windows CPython + win_amd64 轮子**与 Linux 双向互传 24 MiB，逐字节比对；`ci.yml` 再把**绿色包解压到「我的 U 盘」这样的中文带空格路径**，用包里自带的解释器跑传输与界面 |
-| **安卓 App** | ✅ 原生 App（推荐） | GitHub Actions 真机模拟器（API 34）**装真 APK 跑真机测试**：instrumentation 在设备上真的连电脑、真的发带 emoji 的中文并回查电脑端收到（且方向标为"收到"）、真的上传图片再按消息 id 取回逐字节比对，还有一条界面级测试断言会话页渲染出来 |
+| **安卓 App** | ✅ 原生 App（推荐） | GitHub Actions 真机模拟器（API 34）**装真 APK 跑真机测试（8 项）**：真的连电脑、真的发带 emoji 的中文并回查电脑端收到、真的上传图片再按消息 id 取回逐字节比对、**真的把探针发出去并认出回包**、**真的扫网段找到正在运行的电脑**、**真的把附件写进系统「下载」**；界面级那条会点开会话、点开图片看全屏大图、点「复制」查剪贴板、点「保存」查 MediaStore，并把截图与界面树一起归档 |
 | **安卓（网页版）** | ✅ 浏览器界面（零安装，保留） | 同一个模拟器 + 真 Chrome：CDP 把文件塞进页面的文件选择框再点发送，上传下载都逐字节比对 |
 | **macOS** | ⚠️ 内核已验证，**界面未验证** | GitHub Actions `macos-latest` 跑完整内核测试（含 512 MiB 传输与内存上界），但作者没有 Mac，桌面窗口从未在真机上看过 |
 
@@ -137,9 +137,9 @@ python -m eversend --cli selftest              # 自检
 | 一对一聊天 | ✅ 会话 id 由双方设备 id 算出来（`d:<a>|<b>`），不需要协商 |
 | 群聊 | ✅ 建群时选成员；每条消息携带群信息，所以当时不在线的成员下次收到消息就认识这个群了 |
 | 文字 / 表情 | ✅ 完整 Unicode，页面和桌面端都有表情面板 |
-| 图片 | ✅ 直接发原图（走文件传输通道，可续传、逐字节校验）；对方直接在气泡里看到缩略图 |
-| 视频 | ✅ 发送后在气泡里内嵌播放（手机页）/ 点开播放（桌面端） |
-| 文件 | ✅ 任意类型，带大小；点「打开」用本机默认程序 |
+| 图片 | ✅ 直接发原图（走文件传输通道，可续传、逐字节校验）。手机网页/安卓 App：气泡里就是缩略图，点开全屏；桌面端：气泡里是缩略图，点开是能切**原始大小**的查看器（可另存为）。**自己发出去的图片也能预览** —— 聊天记录里额外存了一条"本机路径"，只存本机、不进协议、也不给手机接口 |
+| 视频 | ✅ 手机网页：气泡里 `<video>` 直接播；安卓 App：**应用内播放**（可拖进度）；桌面端：卡片 + 「打开」交给系统播放器（PySide6-Essentials 没有 QtMultimedia，这条限制写在界面上） |
+| 文件 | ✅ 任意类型，带大小；安卓 App 有「保存」直接写进系统「下载」目录，桌面端点「打开」用本机默认程序 |
 | 语音消息 | ✅ 手机按住 🎤 录音（需要 HTTPS 地址，见下），电脑端显示成语音条；<br>⚠️ 桌面端**窗口内不能播放**：绿色包用的是 PySide6-Essentials，没有 QtMultimedia，点「打开」交给系统播放器 |
 | 视频/语音通话 | ⛔ 未实现。方案见 [`docs/CALLS_DESIGN.md`](docs/CALLS_DESIGN.md)：必须走 WebRTC，服务端只做信令，媒体点对点 |
 
@@ -168,11 +168,11 @@ python -m eversend --cli selftest              # 自检
 做了原生 App。两个入口各有用途：临时给别人的手机传个文件，扫码最快；自己的手机日常用，
 装 App。
 
-App 真机截图（Emoji 由系统字体渲染，和微信、相册一个水平）：
+App 真机截图（CI 上真模拟器跑完测试后自动截的，Emoji 由系统字体渲染，和微信、相册一个水平）：
 
-| 会话列表 | 聊天 |
-|---|---|
-| ![安卓 App 会话](docs/screenshots/android-app-chat.png) | ![安卓 App 聊天](docs/screenshots/android-app-conversation.png) |
+| 会话列表 | 聊天：图片直接显示、可复制、可保存 | 点开看大图 |
+|---|---|---|
+| ![安卓 App 会话](docs/screenshots/android-app-chat.png) | ![安卓 App 聊天](docs/screenshots/android-app-conversation.png) | ![安卓 App 看图](docs/screenshots/android-app-image-viewer.png) |
 
 装法：下载 `EverSend-1.0.0-android.apk` 安装即可（**debug 签名**，自用/测试没问题；
 正式分发请用自己的密钥重新签名）。打开后点「搜索电脑」自动发现，也可以手填地址。
@@ -187,15 +187,22 @@ App 有 5 个页签：**聊天 / 发送 / 接收 / 传输 / 设置**，不是只
 
 | 页签 | 能做什么 |
 |---|---|
-| 聊天 | 一对一/群聊，文字、Emoji、图片、视频、文件、语音消息 |
+| 聊天 | 一对一/群聊，文字、Emoji、图片、视频、文件、语音；**图片直接显示缩略图，点开全屏看大图**；**视频点开在应用内播放**；**语音点一下就能听**；每条都有「复制」（真的进系统剪贴板）和「保存」（真的写进系统「下载」目录） |
 | 发送 | 选文件/选图后传到电脑，进度就在本页 |
 | 接收 | 电脑发来的文件在这里，点「保存到手机」写进「下载」目录 |
 | 传输 | 当前传输与历史，成功/失败/已保存一目了然 |
 | 设置 | 电脑地址、连接状态、设备名、断开连接 |
 
-**发现是双向且即时的**：App 一启动就往局域网广播自己的公告（每 5 秒一次），电脑
-端收到就把它登记成配对设备（显示为「我的手机（安卓 App）」）；反过来 App 点
-「搜索电脑」时，电脑端收到探针会**立刻单播回一条**，不用等 30 秒的定时广播。
+**发现是双向且即时的，而且是三层**：
+
+1. App 一启动就每 5 秒广播一次自己的公告，电脑端收到就把它登记成配对设备
+   （显示为「我的手机（安卓 App）」）；
+2. App 点「搜索电脑」时，电脑端收到探针会**立刻单播回一条**，不用等 30 秒的定时广播；
+3. 光发广播是不够的 —— 手机做热点时默认网络是移动数据，`255.255.255.255` 这个包
+   按路由表会走蜂窝那一侧。所以 App 还会往**每个网卡的定向广播地址**发、再往
+   **子网内每一台主机**各发一条单播探针，最后还有一层 **TCP 兜底**：逐台敲网页
+   端口，谁答"我是韧传"就是电脑。UDP 被 ROM 拦掉也照样能找到 ——
+   "能打开网页就说明通了"，这正是用户的判据。
 
 手机**只要连过一次就会被记住**（写进 `data_dir/web_clients.json`）：熄屏、切到别的
 App、甚至把浏览器整个关掉，它都留在设备列表里，状态只是从「在线」变成
@@ -250,7 +257,8 @@ python tests/test_loopback.py            # 40 项：基本传输/目录/续传/�
 python tests/test_resilience.py          # 17 项：RST 杀连接/限速/512MiB/内存上界/对端不回话就挂断
 cd android && gradle assembleDebug       # 安卓 App（Kotlin + Compose，无第三方依赖）
 python tests/test_chat.py                # 33 项：会话存储/一对一/群聊扇出/附件落位
-python src/eversend/web/selftest.py      # 169 项：QR/CSRF/路径穿越/Range/完整收发链路/交给手机/APK 下载/App 登记
+python src/eversend/web/selftest.py      # 177 项：QR/CSRF/路径穿越/Range/完整收发链路/交给手机/APK 下载/App 登记/发现回包/本机路径不外泄
+xvfb-run -a python tests/test_gui_actions.py   # 19 项：真的点界面（取消发送/发送到底/聊天图片预览）
 python tests/test_interop_wine.py --stage tools/.cache/stage-windows   # Linux ↔ Windows 双向
 python tools/ci_android_http.py          # 手机页面的 HTTP 表面（上传/Range/SSE/安全边界）
 ```
@@ -291,6 +299,11 @@ python tools/ci_android_http.py          # 手机页面的 HTTP 表面（上传/
   好处是功能迭代不用动协议，代价是电脑必须开着。**APK 是 debug 签名**，自用和测试没问题，
   正式分发请用自己的密钥重新签名。
 - **同名文件会续传/覆盖，不会自动改名。** 这是续传语义的必然结果；需要保留两份请手动改名。
+- **桌面端窗口内不播放视频/语音**：PySide6-Essentials 不含 QtMultimedia，绿色包也没带系统解码器
+  依赖。图片是原生的（QLabel + QPixmap），视频/语音点「打开」交给系统播放器。手机网页与
+  安卓 App 都是应用内播放。
+- **取消是"取消"，不是"失败"**：引擎把用户取消报成 `cancelled`（发送侧、接收侧、对端取消
+  都算），卡片显示「已取消」且按钮变灰；只有真的出错才是红色「已失败」。
 
 ### 联系与支持
 
@@ -351,7 +364,10 @@ runs instead of in a second pass.
 - Encrypted: Ed25519 identity, X25519 agreement, AES-256-GCM or ChaCha20-Poly1305
 - Zero-install Android via the built-in mobile web UI, with ranged downloads
 - A native Android app (Kotlin + Compose) that keeps the link alive in the background,
-  discovers the computer on the LAN, and can be installed straight from the web page
+  finds the computer on the LAN (directed broadcast, a per-host unicast sweep and a TCP
+  fallback for networks that drop UDP), previews images, plays video and voice in-app,
+  copies message text to the system clipboard and saves attachments to Downloads
+- Cancelling a send says "cancelled", not "failed", and the card stops immediately
 - Portable: embedded Python 3.14.7, no registry, no `%APPDATA%`, runs read-only
 
 ### Platforms & verification

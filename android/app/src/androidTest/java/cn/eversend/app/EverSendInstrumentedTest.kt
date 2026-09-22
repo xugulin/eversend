@@ -63,12 +63,18 @@ class EverSendInstrumentedTest {
     @Test
     fun uploadsAnImageAttachmentAndDesktopCanFetchIt() {
         val api = client()
-        val payload = ByteArray(64 * 1024) { (it % 251).toByte() }
+        // 真图：截图里的气泡会真的显示出来（假 PNG 字节会让界面正确地提示
+        // "预览失败"，那张截图看上去就像功能坏了）。
         val file = File(
             InstrumentationRegistry.getInstrumentation().targetContext.cacheDir,
             "instrumented-图片.png",
         )
-        file.writeBytes(byteArrayOf(0x89.toByte(), 'P'.code.toByte(), 'N'.code.toByte(), 'G'.code.toByte()) + payload)
+        val bitmap = android.graphics.Bitmap.createBitmap(120, 80, android.graphics.Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(android.graphics.Color.rgb(47, 129, 247))
+        java.io.ByteArrayOutputStream().use { out ->
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+            file.writeBytes(out.toByteArray())
+        }
 
         val name = URLEncoder.encode(file.name, "UTF-8")
         val response = file.inputStream().use { stream ->
