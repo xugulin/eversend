@@ -106,6 +106,9 @@ class HostileProxy:
         self._threads: list[threading.Thread] = []
         self.kills = 0
         self.bytes_forwarded = 0
+        #: One shared rate budget for every pump (see :meth:`_throttle`).
+        self._rate_lock = threading.Lock()
+        self._rate_next = 0.0
 
     def start(self) -> None:
         self._stop.clear()
@@ -155,6 +158,23 @@ class HostileProxy:
             self._spawn(self._pump, client, upstream)
             self._spawn(self._pump, upstream, client)
 
+    def _throttle(self, count: int) -> None:
+        """Charge ``count`` bytes against one budget shared by all pumps.
+
+        Sleeping ``count / throttle_bps`` inside each pump looks right and is
+        not: the transfer runs four streams, so the "8 MB/s" link silently
+        became 32 MB/s and the test's own assertion (``throughput < 20``) went
+        red on a fast CI runner while nothing about the product had changed.
+        A single budget is what "an 8 MB/s link" actually means.
+        """
+        charge = count / self.throttle_bps
+        with self._rate_lock:
+            now = time.monotonic()
+            self._rate_next = max(now, self._rate_next) + charge
+            wait = self._rate_next - now
+        if wait > 0:
+            time.sleep(wait)
+
     def _pump(self, source: socket.socket, sink: socket.socket) -> None:
         """Forward bytes one way, applying latency and throttling."""
         source.settimeout(0.5)
@@ -172,8 +192,7 @@ class HostileProxy:
             if self.latency or self.jitter:
                 time.sleep(max(0.0, self.latency + self.random.uniform(0, self.jitter)))
             if self.throttle_bps:
-                # Sleep proportionally to the block just read.
-                time.sleep(count / self.throttle_bps)
+                self._throttle(count)
             try:
                 sink.sendall(view[:count])
                 self.bytes_forwarded += count
