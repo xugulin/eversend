@@ -91,8 +91,10 @@
     <!-- ---------------------------------------------------------- 接收 -->
     <section class="view" id="view-receive" role="tabpanel" aria-label="接收" hidden>
       <div class="card" id="share-card" hidden>
-        <div class="card-head"><h2>电脑发来的文件</h2><span class="muted">点「下载」取走</span></div>
+        <div class="card-head"><h2>电脑发来的文件</h2><span class="muted">点「下载」取到手机里</span></div>
         <ul class="file-list" id="share-list"></ul>
+        <p class="hint">下载完的文件在手机的「下载」目录里——网页看不到手机自己的文件系统，
+          所以这里只记录电脑发过来过什么。</p>
       </div>
       <div class="card">
         <div class="card-head"><h2>待确认</h2><span class="muted" id="offer-count"></span></div>
@@ -104,7 +106,7 @@
       </div>
       <div class="card">
         <div class="card-head">
-          <h2>已接收的文件</h2>
+          <h2>电脑上的文件</h2>
           <button class="ghost" id="btn-refresh-files" type="button">刷新</button>
         </div>
         <p class="hint" id="receive-dir"></p>

@@ -281,6 +281,12 @@ def check_http_surface(base: str, token: str) -> None:
     check("/ serves the app shell", status == 200 and "text/html" in headers.get("Content-Type", ""), str(status))
     check("the shell mentions 韧传", "韧传" in html)
     check("the shell declares a mobile viewport", "width=device-width" in html and "viewport-fit=cover" in html)
+    # The phone page must describe both directions for what they are.  It used
+    # to call the computer's folder 「已接收的文件」, which on a phone reads as
+    # "files I received" -- so a user who had just downloaded a file saw an
+    # empty list and concluded the download had failed.
+    check("the phone page shows what the computer sent it", "电脑发来的文件" in html)
+    check("the phone page calls the computer's folder the computer's", "电脑上的文件" in html)
     check("the CSRF token is embedded in the page", token in html)
     check("the page is never cached (it carries a token)", "no-store" in headers.get("Cache-Control", ""))
 

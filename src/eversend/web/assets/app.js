@@ -456,8 +456,12 @@
     if (!changed('files', signature)) return;
     var list = $('#received-files');
     clear(list);
+    // Spell out whose files these are.  The heading used to read 「已接收的文件」
+    // which, on a phone, reads as "files I received" -- it is the opposite:
+    // these live on the computer and are here to be downloaded.
+    $('#receive-dir').textContent = '这些文件在电脑上；点「下载」就能取到手机里。';
     if (!store.files.length) {
-      list.appendChild(h('li', { class: 'file-item' }, h('span', { class: 'fname muted', text: '还没有收到文件' })));
+      list.appendChild(h('li', { class: 'file-item' }, h('span', { class: 'fname muted', text: '电脑上还没有文件' })));
       return;
     }
     store.files.forEach(function (file) {
@@ -471,6 +475,12 @@
         })
       ));
     });
+  }
+
+  function noteShareDownload(share) {
+    // The browser handles the actual download (and writes it to the phone's
+    // Downloads folder); all this can do is tell the user where it went.
+    toast('开始下载：' + share.name + '（保存在手机的「下载」目录里）');
   }
 
   function renderShares() {
@@ -490,10 +500,18 @@
       list.appendChild(h('li', { class: 'file-item' },
         h('span', { class: 'fname', title: share.name, text: share.name }),
         h('span', { class: 'fsize', text: fmtBytes(share.size) }),
+        // Say plainly whether this phone already took it.  The download itself
+        // goes straight to the phone's Downloads folder, which a web page
+        // cannot look at -- so this marker is the only "received" record the
+        // page can honestly show.
+        share.downloaded
+          ? h('span', { class: 'state-ok', text: '✔ 已下载' })
+          : null,
         h('a', {
           href: '/api/share/' + encodeURIComponent(share.id),
           download: share.name,
-          text: share.downloaded ? '再下载' : '下载'
+          text: share.downloaded ? '再下载' : '下载',
+          onclick: function () { noteShareDownload(share); }
         })
       ));
     });
