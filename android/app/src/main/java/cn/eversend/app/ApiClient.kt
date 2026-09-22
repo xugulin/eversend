@@ -177,6 +177,9 @@ class ApiClient(val base: String, val token: String) {
         /** 广播公告用的端口，和电脑端约定一致。 */
         const val DISCOVERY_PORT = 52118
 
+        /** 电脑端用的组播地址；写错成别的组就永远收不到电脑的定时公告。 */
+        const val MULTICAST_GROUP = "239.255.83.68"
+
         /**
          * 在局域网里找电脑：**先绑住 52118 收公告，再发一条自己的探针**。
          *
@@ -207,7 +210,7 @@ class ApiClient(val base: String, val token: String) {
                 val payload = probe.toByteArray(Charsets.UTF_8)
                 val targets = mutableListOf(InetAddress.getByName("255.255.255.255"))
                 try {
-                    targets.add(InetAddress.getByName("224.0.0.167"))
+                    targets.add(InetAddress.getByName(MULTICAST_GROUP))
                 } catch (ignored: Exception) {
                 }
                 var lastProbe = 0L
@@ -263,7 +266,7 @@ class ApiClient(val base: String, val token: String) {
                         "\",\"k\":\"mobile\",\"p\":\"android\",\"v\":\"" + version +
                         "\",\"port\":0,\"web\":0,\"ts\":" + (System.currentTimeMillis() / 1000) + "}"
                     ).toByteArray(Charsets.UTF_8)
-                for (target in listOf("255.255.255.255", "224.0.0.167")) {
+                for (target in listOf("255.255.255.255", MULTICAST_GROUP)) {
                     try {
                         socket.send(
                             DatagramPacket(

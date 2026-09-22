@@ -860,11 +860,18 @@ class WebUI:
         # Advertise the real port: the engine's configured web_port is only a
         # wish until the socket is bound, and a peer that reads the wrong port
         # from discovery shows a dead link.
-        try:
-            self.engine.info.web_port = self._bound_port
-            self.engine.info.capabilities["web"] = True
-        except Exception:  # pragma: no cover - DeviceInfo is a plain dataclass
-            pass
+        #
+        # Only the plain-HTTP copy of the page owns this field.  The HTTPS copy
+        # is started right after it (the microphone needs a secure context) and
+        # used to overwrite it, which sent every discovery announcement out with
+        # ``"web": 52120`` -- a TLS port that anyone building "http://<host>:<web>/"
+        # from it, the Android app included, cannot open.
+        if self.ssl_context is None:
+            try:
+                self.engine.info.web_port = self._bound_port
+                self.engine.info.capabilities["web"] = True
+            except Exception:  # pragma: no cover - DeviceInfo is a plain dataclass
+                pass
 
         self._thread = threading.Thread(
             target=httpd.serve_forever, kwargs={"poll_interval": 0.2}, name="eversend-web", daemon=True

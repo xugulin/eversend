@@ -984,6 +984,54 @@ def check_offer_roundtrip(engine_a: Engine, engine_b: Engine, base: str, token: 
         print(f"      发送端返回: {result!r}")
 
 
+def check_https_copy_keeps_http_port(engine: Engine, http_port: int) -> None:
+    """The HTTPS page must not steal the port that discovery announces.
+
+    The desktop starts two copies of the same page: HTTP on 52119 and HTTPS on
+    52120, because a phone browser only hands over the microphone in a secure
+    context.  Both used to write ``engine.info.web_port``, so the second one
+    won and every discovery announcement went out saying ``"web": 52120`` --
+    and anything that builds "http://<host>:<web>/" from that (the Android app,
+    a peer's device card) asks a TLS socket for plain HTTP.  The symptom is
+    "the app found the computer but cannot connect", which is a long way from
+    the cause.
+    """
+    from eversend.core import tls as tls_module
+
+    print("\n[HTTPS 副本] 加密页面不能顶掉对外公告的 HTTP 端口")
+    context = tls_module.ssl_context(engine.config.data_dir)
+    if context is None:  # pragma: no cover - needs a broken openssl
+        check("自签证书可以生成", False, "ssl_context() 返回 None")
+        return
+    check("自签证书可以生成", True)
+
+    tls_ui = create_web_ui(engine, host="127.0.0.1", port=0, ssl_context=context, log_requests=False)
+    try:
+        tls_port = tls_ui.start()
+        check("HTTPS 页面用的是另一个端口", tls_port != http_port, f"{tls_port} vs {http_port}")
+        check(
+            "公告出去的仍然是 HTTP 端口",
+            engine.info.web_port == http_port,
+            f"{engine.info.web_port} vs {http_port}",
+        )
+        # And the secure copy still answers, i.e. it was not silently dropped.
+        import ssl as ssl_module
+        import urllib.request
+
+        ctx = ssl_module.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl_module.CERT_NONE
+        request = urllib.request.Request(f"https://127.0.0.1:{tls_port}/api/state", method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=5, context=ctx) as response:  # noqa: S310
+                body = response.read().decode("utf-8", "replace")
+            check("HTTPS 页面能应答", '"ok": true' in body, body[:80])
+        except Exception as exc:
+            check("HTTPS 页面能应答", False, repr(exc))
+    finally:
+        tls_ui.stop()
+
+
 def main() -> int:
     _use_utf8_console()
     print("EverSend web UI self-test")
@@ -1004,6 +1052,8 @@ def main() -> int:
         # URL that does not answer.
         check("the engine learns the bound web port", engine_a.info.web_port == port, f"{engine_a.info.web_port} vs {port}")
         base = f"http://127.0.0.1:{port}"
+
+        check_https_copy_keeps_http_port(engine_a, port)
 
         check_scan_reports_back(engine_a)
         check_http_surface(base, ui.token, ui)
