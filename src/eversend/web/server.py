@@ -80,6 +80,11 @@ _SPOOL_DIRNAME = ".eversend-uploads"
 #: How long a resolved local-address list is reused, in seconds.
 _ADDRESS_TTL = 30.0
 
+#: How many files one session may keep published for the browser.  Bounded so
+#: a long-running desktop does not accumulate entries (and so the phone's list
+#: stays readable); the oldest hand-offs fall off first.
+MAX_SHARES = 50
+
 #: How long an open page counts as "connected" after its last request.  The
 #: page polls ``/api/state`` every three seconds and keeps an event stream
 #: open, so this survives a few dropped polls without leaving a phone listed
@@ -575,6 +580,14 @@ class WebUI:
             }
             with self._state_lock:
                 self._shares[share_id] = entry
+                # A long-running session shares file after file; keep the
+                # registry bounded (and drop entries whose file is gone, so a
+                # stale row never sits on the phone's page forever).
+                if len(self._shares) > MAX_SHARES:
+                    for key in sorted(self._shares, key=lambda k: self._shares[k]["added"])[
+                        : len(self._shares) - MAX_SHARES
+                    ]:
+                        del self._shares[key]
             added.append(entry)
             self.engine.events.emit(
                 "share_added",
