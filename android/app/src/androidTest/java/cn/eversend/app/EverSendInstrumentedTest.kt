@@ -133,11 +133,13 @@ class EverSendInstrumentedTest {
             val device = androidx.test.uiautomator.UiDevice.getInstance(
                 InstrumentationRegistry.getInstrumentation()
             )
+            // 30 秒：模拟器刚开机、电脑端又被前面几条测试连着用时，界面渲染
+            // 慢很多；15 秒会偶发失败（dump 里能看到页面其实马上就出来了）。
             val shown = device.wait(
                 androidx.test.uiautomator.Until.hasObject(
                     androidx.test.uiautomator.By.textContains("会话")
                 ),
-                15_000,
+                60_000,
             )
             assertTrue("App 界面必须渲染出会话页", shown)
             val broken = device.hasObject(androidx.test.uiautomator.By.textContains("连不上电脑"))

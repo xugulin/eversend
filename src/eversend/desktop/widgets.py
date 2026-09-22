@@ -177,7 +177,11 @@ def _device_where_line(peer: Peer, is_web: bool, online: bool) -> str:
     """Where it is and how we know about it."""
     parts = [f"{peer.address}:{peer.port}" if peer.address else "地址未知"]
     if is_web:
-        parts.append("网页客户端（手机浏览器）")
+        # 手机有两种客户端：安卓 App 和手机浏览器。以前一律写成"网页客户端
+        # （手机浏览器）"，装了 App 的用户看到自己的手机被标成网页版。
+        caps = peer.info.capabilities or {}
+        is_app = str(caps.get("clientKind") or "") == "app" or peer.info.platform == "android"
+        parts.append("安卓 App" if is_app else "网页客户端（手机浏览器）")
     else:
         parts.append(_source_label(peer.source))
     if peer.same_host:
@@ -188,7 +192,9 @@ def _device_where_line(peer: Peer, is_web: bool, online: bool) -> str:
     elif peer.rtt_ms and not is_web:
         parts.append(f"{peer.rtt_ms:.0f} ms")
     if is_web:
-        parts.append("网页版")
+        caps = peer.info.capabilities or {}
+        is_app = str(caps.get("clientKind") or "") == "app" or peer.info.platform == "android"
+        parts.append("安卓 App" if is_app else "网页版")
     return " · ".join(parts)
 
 

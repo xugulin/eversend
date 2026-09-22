@@ -249,6 +249,15 @@ class ApiClient(val base: String, val token: String) {
         var lastTcpScanProbed: Int = 0
             private set
 
+        /** 上一次搜索各条路的结果，用来告诉用户"到底试过什么"。 */
+        @Volatile
+        var lastNsdFound: Int = -1
+            private set
+
+        @Volatile
+        var lastProbeTargets: Int = 0
+            private set
+
         /** HTTPS 那份页面的默认端口（手机录音要用安全上下文）。 */
         const val DEFAULT_TLS_PORT = 52120
 
@@ -287,6 +296,7 @@ class ApiClient(val base: String, val token: String) {
             // 而且不需要广播权限。找不到再往下走。
             if (context != null) {
                 val byMdns = discoverByNsd(context, timeoutMs = 3500)
+                lastNsdFound = byMdns.size
                 if (byMdns.isNotEmpty()) {
                     Log.d(TAG, "搜索结束（mDNS）：" + byMdns.joinToString { it.name + "@" + it.base })
                     return byMdns
@@ -320,6 +330,7 @@ class ApiClient(val base: String, val token: String) {
                     """"p":"android","v":"1.0.0","port":0,"web":0,"ts":0}"""
                 val payload = probe.toByteArray(Charsets.UTF_8)
                 val targets = probeTargets()
+                lastProbeTargets = targets.size
                 Log.d(TAG, "搜索电脑：向 ${targets.size} 个地址发探针")
                 var lastProbe = 0L
                 while (System.currentTimeMillis() < deadline) {

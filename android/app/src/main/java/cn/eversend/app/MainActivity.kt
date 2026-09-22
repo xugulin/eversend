@@ -298,9 +298,14 @@ fun SettingsScreen(store: AppState) {
                         discovered = withContext(Dispatchers.IO) {
                             ApiClient.discover(context = context, hint = remembered)
                         }
+                        // 搜不到时把"试过什么"写清楚：网络问题最难查的就是
+                        // "到底哪一步没成"。
+                        val tried = "试过：mDNS(" + (if (ApiClient.lastNsdFound >= 0) "有应答" else "无应答") +
+                            ") · 广播+子网单播(${ApiClient.lastProbeTargets} 个地址) · " +
+                            "TCP 扫 ${ApiClient.lastTcpScanProbed} 台(端口 $remembered 与 52119)"
                         scanning = false
                         if (discovered.isEmpty()) {
-                            status = "没搜到电脑。逐条查：① 手机和电脑在同一个 Wi-Fi 或热点里；" +
+                            status = "没搜到电脑。$tried。逐条查：① 手机和电脑在同一个 Wi-Fi 或热点里；" +
                                 "② 电脑上的韧传开着（电脑上写着「手机访问」的那个地址，手机浏览器能打开就说明通了）；" +
                                 "③ 电脑的防火墙允许 52119/TCP 与 52118/UDP（公司网络常会拦）。" +
                                 "也可以把电脑上显示的地址手输到上面。"
@@ -1611,6 +1616,9 @@ fun ReceiveScreen(store: AppState) {
     val scope = rememberCoroutineScope()
     var offers by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var files by remember { mutableStateOf<List<Pair<String, Long>>>(emptyList()) }
+    // 电脑"交给手机页面"的文件。App 用户以前完全看不到它们 —— 电脑上显示
+    // "已放到手机页面，等它点下载"，而 App 里空空如也，看起来就是"传不过来"。
+    var shares by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var status by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
@@ -1622,6 +1630,8 @@ fun ReceiveScreen(store: AppState) {
                     val state = api.getJson("/api/state")
                     val list = state.optJSONArray("offers")
                     offers = (0 until (list?.length() ?: 0)).mapNotNull { list?.optJSONObject(it) }
+                    val shared = state.optJSONArray("shares")
+                    shares = (0 until (shared?.length() ?: 0)).mapNotNull { shared?.optJSONObject(it) }
                     val payload = api.getJson("/api/files")
                     val array = payload.optJSONArray("files")
                     files = (0 until (array?.length() ?: 0)).mapNotNull { index ->
@@ -1681,6 +1691,61 @@ fun ReceiveScreen(store: AppState) {
                 }
             }
         }
+        Text(
+            "电脑发给我的（${shares.size}）",
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 18.sp,
+        )
+        if (shares.isEmpty()) Text("电脑还没有发文件过来。", fontSize = 13.sp)
+        shares.forEach { share ->
+            val shareId = share.optString("id")
+            val name = share.optString("name", "文件")
+            val done = share.optBoolean("downloaded", false)
+            Card(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp)
+                    .clickable {
+                        scope.launch {
+                            status = "正在下载 $name…"
+                            val saved = withContext(Dispatchers.IO) {
+                                try {
+                                    val base = "http://${normalizeHost(store.host)}/"
+                                    val api = ApiClient(base, ApiClient.fetchToken(base))
+                                    saveToDownloads(context, name) { sink ->
+                                        api.download("/api/share/" + java.net.URLEncoder.encode(shareId, "UTF-8"), sink)
+                                    }
+                                } catch (problem: Exception) {
+                                    status = "下载失败：${problem.message}"
+                                    null
+                                }
+                            }
+                            if (saved != null) {
+                                status = "已保存到「下载」：$name"
+                                withContext(Dispatchers.IO) {
+                                    try {
+                                        val base = "http://${normalizeHost(store.host)}/"
+                                        ApiClient(base, ApiClient.fetchToken(base))
+                                            .getJson("/api/share/" + java.net.URLEncoder.encode(shareId, "UTF-8"))
+                                    } catch (ignored: Exception) {
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .testTag("share-$name"),
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Text(name, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        (if (done) "已取走 · " else "点一下保存到手机 · ") +
+                            fmtSize(share.optLong("size", 0)),
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+        }
+
         Text("电脑上的文件", fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
         if (files.isEmpty()) Text("电脑上还没有文件。", fontSize = 13.sp)
         LazyColumn(Modifier.weight(1f)) {

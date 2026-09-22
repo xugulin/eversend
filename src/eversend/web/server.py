@@ -848,6 +848,14 @@ class WebUI:
         now = time.time()
         dropped = False
         with self._state_lock:
+            # 活跃记录按 TTL 过期：它们是"正在说话"的凭证，不是历史。
+            # 以前这里只读不清理，于是换过网络的旧记录会永远显示"在线"。
+            for key in [
+                key
+                for key, client in self._clients.items()
+                if now - float(client.get("lastSeen", 0)) > CLIENT_TTL
+            ]:
+                self._clients.pop(key, None)
             for key in [
                 key
                 for key, client in self._known.items()
