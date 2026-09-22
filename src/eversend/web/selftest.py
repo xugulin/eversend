@@ -34,6 +34,7 @@ if __package__ in (None, ""):  # allow "python3 src/eversend/web/selftest.py"
     if str(_SRC) not in sys.path:
         sys.path.insert(0, str(_SRC))
 
+from eversend.core.chat import direct_conversation_id  # noqa: E402
 from eversend.core.engine import Engine, EngineConfig  # noqa: E402
 from eversend.web import create_web_ui  # noqa: E402
 from eversend.web import qr  # noqa: E402
@@ -1034,6 +1035,113 @@ def check_https_copy_keeps_http_port(engine: Engine, http_port: int) -> None:
         tls_ui.stop()
 
 
+def check_media_source_stays_local(ui, base: str, engine: Engine, root: Path) -> None:
+    """The desktop's own copy of a sent picture: previewable, but never shared.
+
+    ``mediaSource`` is the absolute path this computer sent a file from.  The
+    desktop needs it (otherwise a photo *you* sent has no preview: your copy is
+    wherever you picked it, not in the receive folder), and the phone must not
+    get it -- it describes the desktop's folder layout and is of no use there.
+    """
+    print("\n[附件路径] 本机路径只留在本机")
+    picture = root / "自检图片.png"
+    picture.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 2048)
+    conv = direct_conversation_id(engine.info.device_id, "selftest-peer")
+    event = engine.send_chat(conv, kind="image", media_path=str(picture), to="selftest-peer")
+    message_id = str((event.get("message") or {}).get("id", ""))
+    stored = engine.chat.message(message_id) or {}
+    check("本机发出的图片记下了它的原始路径", stored.get("mediaSource") == str(picture), str(stored.get("mediaSource")))
+    wire = engine.chat_payload(engine.chat.conversation(conv) or {}, stored)["msg"]
+    check("这条路径不会随消息发给对方", "mediaSource" not in wire, str(sorted(wire)))
+    status, _headers, body = http(base + "/api/chat?conv=" + urllib.parse.quote(conv))
+    payload = json.loads(body.decode("utf-8")) if body else {}
+    leaked = [m for m in payload.get("messages", []) if "mediaSource" in m]
+    check("手机接口里也看不到这条路径", status == 200 and not leaked, f"{status} leaked={len(leaked)}")
+
+
+def check_discovery_reply(engine: Engine) -> None:
+    """A phone that asks "who is there?" must be answered immediately.
+
+    The phone's 「搜索电脑」 sends one small probe and waits; the desktop used to
+    answer only on its own 30-second broadcast schedule, so searching appeared
+    to find nothing.  This is the desktop half of that fix: an announcement
+    arriving from *any* port is answered with a unicast reply straight back to
+    the sender's port, and the answer is rate-limited so a burst cannot turn
+    into an amplification loop.
+    """
+    print("\n[发现回包] 电脑要立刻回答手机的探针")
+    import socket as socket_module
+
+    port = int(getattr(engine.discovery, "port", 0) or engine.config.discovery_port)
+    if not port:
+        check("引擎有发现端口", False, str(port))
+        return
+    announcement = json.dumps(
+        {
+            "t": "eversend/1",
+            "id": "selftest-phone",
+            "n": "测试手机",
+            "k": "mobile",
+            "p": "android",
+            "v": "1.0.0",
+            "port": 0,
+            "web": 0,
+            "ts": 0,
+        }
+    ).encode("utf-8")
+
+    probe = socket_module.socket(socket_module.AF_INET, socket_module.SOCK_DGRAM)
+    probe.bind(("127.0.0.1", 0))  # 临时端口：手机绑不上 52118 时走的就是这条路
+    probe.settimeout(2.0)
+    try:
+        probe.sendto(announcement, ("127.0.0.1", port))
+        reply = None
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline and reply is None:
+            try:
+                data, _address = probe.recvfrom(8192)
+            except socket_module.timeout:
+                continue
+            payload = json.loads(data.decode("utf-8", "replace"))
+            if payload.get("t") == "eversend/1":
+                reply = payload
+        check("手机发一条探针，电脑立刻单播回包", reply is not None, "4 秒内没有回包")
+        if reply is not None:
+            check(
+                "回包里带着电脑的网页端口（手机要靠它拼地址）",
+                int(reply.get("web", 0)) > 0,
+                str(reply),
+            )
+            check("回包回的是发送方的端口，不是广播", True)
+
+        # 冷却：紧接着再发一条，一秒内的第二次不应该再回（避免被当成放大器）
+        probe.sendto(announcement, ("127.0.0.1", port))
+        early = 0
+        deadline = time.monotonic() + 0.6
+        while time.monotonic() < deadline:
+            try:
+                data, _address = probe.recvfrom(8192)
+            except socket_module.timeout:
+                break
+            if json.loads(data.decode("utf-8", "replace")).get("t") == "eversend/1":
+                early += 1
+        check("一秒内的重复探针不会反复回包（有冷却）", early == 0, f"多回了 {early} 次")
+
+        # 不相干的 UDP 包不该得到任何回应（不做反射器）
+        probe.sendto(b"hello there, not eversend", ("127.0.0.1", port))
+        noise = 0
+        deadline = time.monotonic() + 0.6
+        while time.monotonic() < deadline:
+            try:
+                probe.recvfrom(8192)
+            except socket_module.timeout:
+                break
+            noise += 1
+        check("不是韧传的包一律不回应", noise == 0, f"回了 {noise} 次")
+    finally:
+        probe.close()
+
+
 def check_apk_download(base: str, ui, engine: Engine, root: Path) -> None:
     """Handing the Android installer to a phone from this computer.
 
@@ -1171,6 +1279,8 @@ def main() -> int:
 
         check_https_copy_keeps_http_port(engine_a, port)
         check_apk_download(base, ui, engine_a, root)
+        check_discovery_reply(engine_a)
+        check_media_source_stays_local(ui, base, engine_a, root)
 
         check_scan_reports_back(engine_a)
         check_http_surface(base, ui.token, ui)

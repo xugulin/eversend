@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS messages (
     media_rel   TEXT NOT NULL DEFAULT '',
     media_size  INTEGER NOT NULL DEFAULT 0,
     media_mime  TEXT NOT NULL DEFAULT '',
+    media_source TEXT NOT NULL DEFAULT '',
     duration_ms INTEGER NOT NULL DEFAULT 0,
     ts          REAL NOT NULL,
     direction   TEXT NOT NULL DEFAULT 'out',
@@ -155,6 +156,12 @@ class ChatStore:
         db = sqlite3.connect(self.path, check_same_thread=False)
         db.row_factory = sqlite3.Row
         db.executescript(_SCHEMA)
+        # ``media_source`` arrived later than the first release.  A user's
+        # existing chat.db must keep working (and keep its history), so the
+        # column is added here instead of asking anyone to delete the file.
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(messages)")}
+        if "media_source" not in columns:
+            db.execute("ALTER TABLE messages ADD COLUMN media_source TEXT NOT NULL DEFAULT ''")
         db.commit()
         return db
 
@@ -260,6 +267,7 @@ class ChatStore:
         media_rel: str = "",
         media_size: int = 0,
         media_mime: str = "",
+        media_source: str = "",
         duration_ms: int = 0,
         direction: str = "out",
         state: str = "sent",
@@ -285,6 +293,11 @@ class ChatStore:
             "mediaRel": str(media_rel),
             "mediaSize": int(media_size or 0),
             "mediaMime": str(media_mime),
+            # Where *this* machine keeps the file it sent.  Local bookkeeping
+            # only -- it never goes on the wire (see chat_wire_payload) and is
+            # stripped from the HTTP API, because a path like
+            # /home/me/相册/假期.jpg says a lot about this computer.
+            "mediaSource": str(media_source),
             "durationMs": int(duration_ms or 0),
             "ts": float(ts if ts is not None else time.time()),
             "direction": "in" if direction == "in" else "out",
@@ -301,6 +314,7 @@ class ChatStore:
             "media_rel": entry["mediaRel"],
             "media_size": entry["mediaSize"],
             "media_mime": entry["mediaMime"],
+            "media_source": entry["mediaSource"],
             "duration_ms": entry["durationMs"],
             "ts": entry["ts"],
             "direction": entry["direction"],
@@ -309,9 +323,10 @@ class ChatStore:
         with self._lock:
             self._db.execute(
                 "INSERT OR REPLACE INTO messages (id, conv, sender, sender_name, kind, text,"
-                " media_name, media_rel, media_size, media_mime, duration_ms, ts, direction, state)"
+                " media_name, media_rel, media_size, media_mime, media_source, duration_ms, ts,"
+                " direction, state)"
                 " VALUES (:id, :conv, :sender, :sender_name, :kind, :text, :media_name, :media_rel,"
-                " :media_size, :media_mime, :duration_ms, :ts, :direction, :state)",
+                " :media_size, :media_mime, :media_source, :duration_ms, :ts, :direction, :state)",
                 row,
             )
             preview = entry["text"] or {
@@ -412,6 +427,9 @@ class ChatStore:
             "mediaRel": row["media_rel"],
             "mediaSize": int(row["media_size"] or 0),
             "mediaMime": row["media_mime"],
+            # Local-only: the bubble previews the file you sent from wherever
+            # you sent it, instead of looking for it in the receive folder.
+            "mediaSource": row["media_source"] if "media_source" in row.keys() else "",
             "durationMs": int(row["duration_ms"] or 0),
             "ts": row["ts"],
             "direction": row["direction"],

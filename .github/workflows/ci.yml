@@ -153,6 +153,8 @@ jobs:
             libxcb-shape0 libxcb-xinerama0 libxcb-randr0 libxcb-render-util0 \
             libfontconfig1 libfreetype6
           xvfb-run -a -s "-screen 0 1280x900x24" python tests/test_gui_render.py
+          # 真的点一遍界面：取消发送、正常发送、聊天里的图片预览/视频入口
+          xvfb-run -a -s "-screen 0 1280x900x24" python tests/test_gui_actions.py
 
       - name: 上传界面截图（失败时才有人看，所以成败都传）
         if: always() && runner.os == 'Linux'

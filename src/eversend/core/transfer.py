@@ -339,6 +339,10 @@ class ReceiveSession:
         self._stream_threads: list[threading.Thread] = []
         self._control_thread: threading.Thread | None = None
         self._stop = threading.Event()
+        #: Set by :meth:`cancel` (or when the sender cancels): the transfer is
+        #: reported as ``cancelled`` so the UI can say 「已取消」 instead of
+        #: colouring a deliberate stop as a failure.
+        self._cancelled = False
         self._lock = threading.RLock()
         self._parts: dict[int, PartFile] = {}
         self._hashers: dict[int, IncrementalFileHasher] = {}
@@ -559,7 +563,7 @@ class ReceiveSession:
         #    sender can learn the outcome -- closing them first would leave it
         #    waiting out its grace period and reporting a failure for a
         #    transfer that actually succeeded.
-        self._finish("done" if ok else "failed")
+        self._finish("done" if ok else ("cancelled" if self._cancelled else "failed"))
         for conn in list(self._live):
             conn.abort()
 
@@ -1220,8 +1224,9 @@ class ReceiveSession:
             self._store_digest(frame)
             return
         if frame.type == MSG_CANCEL:
+            self._cancelled = True
             self._stop.set()
-            raise TransferCancelled("the sender cancelled the transfer")
+            raise TransferCancelled("发送方取消了这次传输")
         if frame.type == MSG_ERROR:
             try:
                 message = json.loads(frame.payload.decode("utf-8")).get("message", "peer error")
@@ -1316,6 +1321,7 @@ class ReceiveSession:
 
     def cancel(self, reason: str = "cancelled by user") -> None:
         """Abort from the receiving side."""
+        self._cancelled = True
         self.error = reason
         self._stop.set()
         self._send_control(MSG_CANCEL, {"t": self.transfer_id, "reason": reason})
@@ -1411,6 +1417,11 @@ class SendSession:
         self._data_conns: list[Connection] = []
         self._threads: list[threading.Thread] = []
         self._stop = threading.Event()
+        #: Set by :meth:`cancel`.  Without it a cancelled transfer was reported
+        #: as ``failed`` with the reason as its error, so the desktop showed
+        #: 「用户取消」 in red under a 失败 headline -- and the row could not tell
+        #: "the user stopped this" from "the network broke".
+        self._cancelled = False
         self._done_bytes = 0
         self._lock = threading.RLock()
         #: Opens additional data connections on demand (set by the engine).
@@ -1460,7 +1471,8 @@ class SendSession:
                 if frame.type == MSG_ERROR:
                     raise TransferFailed(_frame_error(frame))
                 if frame.type == MSG_CANCEL:
-                    raise TransferCancelled("the receiver cancelled")
+                    self._cancelled = True
+                    raise TransferCancelled("接收方取消了这次传输")
         finally:
             self.control.sock.settimeout(None)
 
@@ -1565,11 +1577,20 @@ class SendSession:
                 self.error = "the receiver never reported the transfer result"
         if self.error and self._finish_status == "done":
             ok = False
+        if ok:
+            status = "done"
+        elif self._cancelled:
+            status = "cancelled"
+            # The reason is already on screen as 「已取消」; repeating it as an
+            # error would put the same sentence in a red failure line.
+            self.error = ""
+        else:
+            status = "failed"
         self.events.emit(
             "send_finished",
             transfer_id=self.transfer_id,
             peer=self.peer,
-            status="done" if ok else "failed",
+            status=status,
             bytes=self._done_bytes,
             error=self.error,
         )
@@ -1760,7 +1781,8 @@ class SendSession:
             return False
 
         if frame.type == MSG_CANCEL:
-            self.error = _frame_error(frame) or "the receiver cancelled"
+            self._cancelled = True
+            self.error = _frame_error(frame) or "接收方取消了这次传输"
             self._finished.set()
             return False
 
@@ -1937,6 +1959,7 @@ class SendSession:
     # -- lifecycle ---------------------------------------------------------
 
     def cancel(self, reason: str = "cancelled by user") -> None:
+        self._cancelled = True
         self.error = reason
         self._stop.set()
         self.cancel_event.set()

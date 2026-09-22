@@ -73,7 +73,11 @@ class EngineBridge(QObject):
                 self.transfer_started.emit(
                     str(event.get("transfer_id", "")), int(event.get("streams", 0))
                 )
-            elif kind == "transfer_finished":
+            elif kind in ("transfer_finished", "send_finished"):
+                # Both endings are the same thing to the window.  Forwarding
+                # only the receive-side one left a cancelled *send* with no way
+                # to update its card, because the worker's callback knows the
+                # transfer by its placeholder key instead.
                 self.transfer_finished.emit(event)
             elif kind in ("warning", "discovery_warning"):
                 self.warning.emit(str(event.get("message", "")))

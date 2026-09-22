@@ -81,6 +81,9 @@ class MainWindow(QMainWindow):
         self.settings_path = settings_path
         self.bridge = EngineBridge(engine, self)
         self._transfers: dict[str, TransferRow] = {}
+        #: transfer id -> the placeholder key its card was created under, so a
+        #: send can be finished no matter which of the two names is used.
+        self._row_aliases: dict[str, str] = {}
         self._send_workers: list[SendWorker] = []
         self._offer_dialogs: dict[str, OfferDialog] = {}
         self._last_tick = time.monotonic()
@@ -535,12 +538,11 @@ class MainWindow(QMainWindow):
     @Slot(dict)
     def _on_transfer_finished(self, event: dict) -> None:
         transfer_id = str(event.get("transfer_id", ""))
-        row = self._transfers.get(transfer_id)
         status = str(event.get("status", ""))
         error = str(event.get("error", ""))
         ok = status in ("done", "finished")
-        if row is not None:
-            row.finish(ok, error or ("完成" if ok else f"已{ '取消' if status == 'cancelled' else '失败'}"))
+        message = error or ("完成" if ok else ("已取消" if status == "cancelled" else "已失败"))
+        self._finish_row(transfer_id, ok, message)
         if ok:
             self.status_left.setText(
                 f"传输完成：{human_bytes(int(event.get('bytes', 0)))}"
@@ -797,13 +799,11 @@ class MainWindow(QMainWindow):
             self._hand_off_to_phone(peer)
             return
 
-        row = self._add_transfer_row(
-            f"__pending__{time.time()}", f"发送到 {peer.info.name}", "send"
-        )
+        pending_key = f"__pending__{time.time()}"
+        row = self._add_transfer_row(pending_key, f"发送到 {peer.info.name}", "send")
         row.set_status("正在发送请求…")
 
         worker = SendWorker(self.engine, peer, list(self.file_list.paths), self.pin_edit.text())
-        pending_key = f"__pending__{time.time()}"
 
         # SendWorker runs on a plain thread, so it only emits; the queued
         # connection delivers the call on the GUI thread.
@@ -818,13 +818,18 @@ class MainWindow(QMainWindow):
 
     @Slot(bool, str, str)
     def _on_send_finished(self, ok: bool, error: str, key: str) -> None:
+        if getattr(self, "_pending_row_key", None) == key:
+            self._pending_row_key = None
         row = self._transfers.get(key)
-        if row is not None:
-            self._transfers.pop(key, None)
-            if getattr(self, "_pending_row_key", None) == key:
-                self._pending_row_key = None
-            if not ok and row.cancel_button.isEnabled():
-                row.finish(False, error or "对方拒绝或连接中断")
+        if row is not None and not getattr(row, "_finished", False):
+            # Keep the status the engine reported (a cancel is not a failure);
+            # only fill in a message when there is nothing better to say.
+            if ok:
+                self._finish_row(key, True, "")
+            elif error:
+                self._finish_row(key, False, error)
+            else:
+                self._finish_row(key, False, "对方拒绝或连接中断")
         self._send_workers = [w for w in self._send_workers if w.is_alive()]
 
     def _hand_off_to_phone(self, peer: Peer) -> None:
@@ -889,12 +894,23 @@ class MainWindow(QMainWindow):
                 self.status_left.setText("手机已经取走了文件。")
 
     def _adopt_pending_row(self, transfer_id: str, title: str, direction: str) -> TransferRow | None:
-        """Reuse the placeholder card for the transfer that just started."""
+        """Reuse the placeholder card for the transfer that just started.
+
+        The card starts under a placeholder key (``__pending__…``) because the
+        real transfer id only exists once the session is up.  Renaming it is
+        what let 「取消」 point at the right transfer -- but it also meant the
+        send worker's ``on_done`` could no longer find the card by its old key,
+        so a cancelled send sat at 「正在取消…」 forever while the engine had
+        already let it go.  Both keys therefore keep pointing at the same card
+        until it finishes.
+        """
         key = getattr(self, "_pending_row_key", None)
-        row = self._transfers.pop(key, None) if key else None
+        row = self._transfers.get(key) if key else None
         if row is None:
             return None
         self._pending_row_key = None
+        if key:
+            self._row_aliases[transfer_id] = key
         row.transfer_id = transfer_id
         row.title.setText(("⬆  " if direction == "send" else "⬇  ") + title)
         try:
@@ -905,6 +921,37 @@ class MainWindow(QMainWindow):
         self._transfers[transfer_id] = row
         return row
 
+    def _finish_row(self, key: str, ok: bool, message: str) -> bool:
+        """Finish the card for ``key`` (a transfer id *or* a placeholder key).
+
+        Finishing has to be idempotent and has to work from either name,
+        because the two things that end a send -- the ``send_finished`` event
+        and the worker thread's callback -- know it by different ones.
+        """
+        row = self._transfers.get(key)
+        if row is None:
+            for transfer_id, pending in self._row_aliases.items():
+                if transfer_id == key or pending == key:
+                    row = self._transfers.get(transfer_id) or self._transfers.get(pending)
+                    break
+        if row is None:
+            return False
+        if getattr(row, "_finished", False):
+            return True
+        # ``TransferRow.finish`` owns the "already finished" flag: marking it
+        # here first made the widget skip the very update we came for, so the
+        # card kept saying 「正在取消…」 while everything else had moved on.
+        row.finish(ok, message)
+        # The card can be known by two names; forget both so the empty-state
+        # label comes back and no stale key can be finished twice.
+        for name, mapped in list(self._transfers.items()):
+            if mapped is row:
+                self._transfers.pop(name, None)
+        for transfer_id, pending in list(self._row_aliases.items()):
+            if self._transfers.get(transfer_id) is None and self._transfers.get(pending) is None:
+                self._row_aliases.pop(transfer_id, None)
+        return True
+
     def _add_transfer_row(self, transfer_id: str, title: str, direction: str) -> TransferRow:
         row = TransferRow(transfer_id, title, direction, self.transfers_container)
         row.cancel_requested.connect(self._cancel_transfer)
@@ -914,10 +961,22 @@ class MainWindow(QMainWindow):
         return row
 
     def _cancel_transfer(self, transfer_id: str) -> None:
-        self.engine.cancel(transfer_id, "用户取消")
-        row = self._transfers.get(transfer_id)
-        if row is not None:
-            row.set_status("正在取消…")
+        accepted = False
+        try:
+            accepted = bool(self.engine.cancel(transfer_id, "用户取消"))
+        except Exception as exc:
+            self.status_left.setText(f"取消失败：{exc}")
+        if accepted:
+            row = self._transfers.get(transfer_id)
+            if row is not None:
+                row.set_status("正在取消…")
+                # A second click would only ask again for something already on
+                # its way out; the button comes back with the next transfer.
+                row.cancel_button.setEnabled(False)
+            return
+        # Nothing to cancel: the transfer already ended (or was never active).
+        # Saying 「正在取消…」 here is what left the card spinning forever.
+        self._finish_row(transfer_id, False, "已取消")
 
     def _refresh_progress(self) -> None:
         """Poll live transfers and update their rows."""

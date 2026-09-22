@@ -414,8 +414,22 @@ class TransferRow(QFrame):
             self.status.setStyleSheet(f"color: {color};")
 
     def finish(self, ok: bool, message: str = "") -> None:
+        """Put the card into a terminal state.
+
+        Called from two places (the engine event and the send worker) that may
+        both fire for the same transfer, and a card that could still be
+        "finished" twice would flash two different verdicts.  The cancel button
+        goes away too: there is nothing left to cancel.
+        """
+        if getattr(self, "_finished", False):
+            return
+        self._finished = True
         self.bar.setValue(1000 if ok else self.bar.value())
-        self.set_status(message or ("完成" if ok else "失败"), theme.SUCCESS if ok else theme.DANGER)
+        self.cancel_button.setEnabled(False)
+        self.set_status(
+            message or ("完成" if ok else "失败"),
+            theme.SUCCESS if ok else (theme.WARNING if "取消" in (message or "") else theme.DANGER),
+        )
         self.cancel_button.setEnabled(False)
         self.cancel_button.setText("关闭")
         try:

@@ -2392,7 +2392,13 @@ class _Handler(BaseHTTPRequestHandler):
                 "selfName": describe_agent(self.headers.get("User-Agent", "")),
                 "conversations": conversations,
                 "conversationId": conv_id,
-                "messages": messages,
+                # ``mediaSource`` is where *this* computer keeps the file it
+                # sent; a phone has no use for it and it describes the desktop's
+                # folder layout, so it stays on the desktop side.
+                "messages": [
+                    {k: v for k, v in message.items() if k != "mediaSource"}
+                    for message in messages
+                ],
             },
         )
 

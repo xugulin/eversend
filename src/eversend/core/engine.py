@@ -526,6 +526,10 @@ class Engine:
             text=text,
             media_name=media_name,
             media_rel=rel,
+            # Local-only: lets this machine show a preview of what it sent.
+            # chat_payload() deliberately drops it before anything goes on the
+            # wire, so the peer never learns this computer's folder layout.
+            media_source=media_path,
             media_size=os.path.getsize(media_path) if media_path and os.path.exists(media_path) else 0,
             media_mime=media_mime,
             duration_ms=duration_ms,

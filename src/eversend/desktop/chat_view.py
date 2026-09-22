@@ -344,6 +344,13 @@ class ChatView(QWidget):
     def _attachment_widget(self, message: dict[str, Any]) -> QWidget:
         rel = str(message.get("mediaRel") or "")
         path = os.path.join(self.engine.config.receive_dir, rel) if rel else ""
+        # A picture *we* sent never lands in our own receive folder, so the
+        # bubble used to show a bare file card for it.  The store keeps where
+        # this machine's copy lives (local-only, never sent to the peer); use
+        # it when the receive-folder copy is not there.
+        source = str(message.get("mediaSource") or "")
+        if source and os.path.isfile(source):
+            path = source
         name = str(message.get("mediaName") or os.path.basename(rel) or "附件")
         kind = message.get("kind")
         size = int(message.get("mediaSize") or 0)
@@ -361,7 +368,12 @@ class ChatView(QWidget):
                 label.setPixmap(
                     pixmap.scaled(320, 320, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 )
-                label.setToolTip(name)
+                label.setToolTip(f"{name}（点击看原图）")
+                label.setCursor(Qt.PointingHandCursor)
+                label.setObjectName("BubbleImage")
+                label.mousePressEvent = (  # type: ignore[method-assign]
+                    lambda _event, p=path, n=name: self._show_image(p, n)
+                )
                 layout.addWidget(label)
             else:
                 layout.addWidget(QLabel(f"🖼 {name}"))
@@ -372,8 +384,17 @@ class ChatView(QWidget):
                 detail = f"{int(message['durationMs']) / 1000:.0f} 秒" + (
                     f" · {detail}" if detail else ""
                 )
-            layout.addWidget(QLabel(f"{icon}  {name}   {detail}"))
+            headline = f"{icon}  {name}   {detail}"
+            if kind == "video":
+                # QtMultimedia is not in PySide6-Essentials, so there is no
+                # in-window video surface to draw into.  Say what the button
+                # does instead of showing a card that looks broken.
+                headline = f"{icon}  {name}\n{detail} · 双击「打开」用系统播放器播放"
+            layout.addWidget(QLabel(headline))
 
+        box.mouseDoubleClickEvent = (  # type: ignore[method-assign]
+            lambda _event, p=path: self._open_path(p) if p else None
+        )
         buttons = QHBoxLayout()
         buttons.setSpacing(6)
         open_button = QPushButton("打开")
@@ -392,6 +413,18 @@ class ChatView(QWidget):
             missing.setWordWrap(True)
             layout.addWidget(missing)
         return box
+
+    def _show_image(self, path: str, name: str = "") -> None:
+        """Show an attachment full size.
+
+        The bubble shows a 320 px thumbnail so a chat stays readable; a photo
+        you cannot actually look at is not a preview, so clicking it opens the
+        full-resolution image with a way to save it.
+        """
+        if not path or not os.path.isfile(path):
+            return
+        dialog = ImageViewer(path, name or os.path.basename(path), self)
+        dialog.exec()
 
     def _open_path(self, path: str) -> None:
         if not path:
@@ -582,6 +615,88 @@ class ChatView(QWidget):
         threading.Thread(target=run, name="chat-send", daemon=True).start()
 
 
+class ImageViewer(QDialog):
+    """Full-size look at one picture, with a way to save or open it.
+
+    Deliberately simple: the chat bubble already proves the image arrived, and
+    this is for the times you actually need to read what is in it.  Clicking
+    the picture toggles between "fit the window" and "actual pixels", because
+    a screenshot of a bug report is unreadable when scaled down to 800 px.
+    """
+
+    def __init__(self, path: str, name: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.path = path
+        self._original = QPixmap(path)
+        self._full_size = False
+        self.setWindowTitle(name)
+        self.resize(900, 680)
+
+        layout = QVBoxLayout(self)
+        self.canvas = QLabel()
+        self.canvas.setAlignment(Qt.AlignCenter)
+        self.canvas.setMinimumSize(320, 240)
+        self.canvas.setStyleSheet("background: #101418; border-radius: 8px;")
+        self.canvas.setCursor(Qt.PointingHandCursor)
+        self.canvas.mousePressEvent = self._toggle  # type: ignore[method-assign]
+        layout.addWidget(self.canvas, 1)
+
+        size = self._original.size()
+        hint = QLabel(
+            f"{name} · {size.width()}×{size.height()} · "
+            f"{human_bytes(os.path.getsize(path))}　（点击图片切换原始大小）"
+        )
+        hint.setObjectName("Subtitle")
+        layout.addWidget(hint)
+
+        buttons = QDialogButtonBox()
+        save = buttons.addButton("另存为…", QDialogButtonBox.ActionRole)
+        save.clicked.connect(self._save_as)
+        external = buttons.addButton("用系统看图工具打开", QDialogButtonBox.ActionRole)
+        external.clicked.connect(lambda: platform_open.open_path(self.path))
+        close = buttons.addButton("关闭", QDialogButtonBox.RejectRole)
+        close.clicked.connect(self.reject)
+        layout.addWidget(buttons)
+        self._fit()
+
+    def _fit(self) -> None:
+        if self._full_size:
+            self.canvas.setPixmap(self._original)
+            self.canvas.setScaledContents(False)
+        else:
+            self.canvas.setPixmap(
+                self._original.scaled(
+                    max(320, self.canvas.width()),
+                    max(240, self.canvas.height()),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+            )
+
+    def _toggle(self, _event) -> None:
+        self._full_size = not self._full_size
+        self._fit()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        super().resizeEvent(event)
+        if not self._full_size:
+            self._fit()
+
+    def _save_as(self) -> None:
+        target, _filter = QFileDialog.getSaveFileName(
+            self, "另存为", os.path.basename(self.path)
+        )
+        if not target:
+            return
+        try:
+            with open(self.path, "rb") as src, open(target, "wb") as dst:
+                dst.write(src.read())
+        except OSError as exc:
+            QMessageBox.warning(self, "保存失败", str(exc))
+            return
+        QMessageBox.information(self, "已保存", f"已保存到 {target}")
+
+
 def guess_kind(path: str) -> str:
     """Pick the message kind from the file's extension."""
     ext = os.path.splitext(path)[1].lower()
@@ -594,4 +709,4 @@ def guess_kind(path: str) -> str:
     return "file"
 
 
-__all__ = ["ChatView", "EMOJI", "guess_kind"]
+__all__ = ["ChatView", "EMOJI", "ImageViewer", "guess_kind"]
