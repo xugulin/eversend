@@ -1075,6 +1075,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     apk_sources = [
         Path(os.environ.get("EVERSEND_APK", "")) if os.environ.get("EVERSEND_APK") else None,
         Path(__file__).resolve().parent.parent / "dist" / "EverSend-android.apk",
+        # APK 按 ABI 分包（内置的 libVLC 一份就 40-50 MB）：手机要的是 arm64 那份。
+        # 先找分包，再找旧的合包名，免得 ABI 拆分之后包里悄悄没有安装包。
+        Path(__file__).resolve().parent.parent / "android" / "app" / "build" / "outputs" / "apk" / "debug" / "app-arm64-v8a-debug.apk",
+        Path(__file__).resolve().parent.parent / "android" / "app" / "build" / "outputs" / "apk" / "release" / "app-arm64-v8a-release.apk",
         Path(__file__).resolve().parent.parent / "android" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk",
     ]
     for candidate in apk_sources:
