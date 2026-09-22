@@ -282,6 +282,9 @@ fun ChatScreen(store: AppState) {
         }
     }
 
+    // 注意：这个函数会发网络请求，必须从 IO 线程调用。第一版在主线程直接调，
+    // 结果安卓抛 NetworkOnMainThreadException（message 是 null，界面上只显示
+    // "连不上电脑：null"）—— 是 CI 里那张真机截图把它暴露出来的。
     fun connect(): ApiClient? {
         val host = normalizeHost(store.host)
         if (host.isBlank()) {
@@ -292,7 +295,7 @@ fun ChatScreen(store: AppState) {
             val base = "http://$host/"
             val token = ApiClient.fetchToken(base)
             if (token.isBlank()) {
-                error = "连不上电脑（$host）"
+                error = "连不上电脑（$host）：拿不到令牌"
                 return null
             }
             ApiClient(base, token).also {
@@ -300,13 +303,14 @@ fun ChatScreen(store: AppState) {
                 error = ""
             }
         } catch (problem: Exception) {
-            error = "连不上电脑：${problem.message}"
+            error = "连不上电脑（$host）：" +
+                (problem.message ?: problem.javaClass.simpleName)
             null
         }
     }
 
     LaunchedEffect(Unit) {
-        val active = connect()
+        val active = withContext(Dispatchers.IO) { connect() }
         if (active != null) reload(active)
         while (true) {
             delay(3000)
@@ -351,14 +355,15 @@ fun ChatScreen(store: AppState) {
             }
             Button(
                 onClick = {
-                    val active = client ?: connect()
-                    if (active != null) {
-                        scope.launch {
+                    scope.launch {
+                        val active = client ?: withContext(Dispatchers.IO) { connect() }
+                        if (active != null) {
                             withContext(Dispatchers.IO) {
                                 try {
                                     active.postJson("/api/chat/send", JSONObject().put("text", "你好 👋"))
                                 } catch (problem: Exception) {
-                                    error = "发送失败：${problem.message}"
+                                    error = "发送失败：" +
+                                        (problem.message ?: problem.javaClass.simpleName)
                                 }
                             }
                             reload(active)

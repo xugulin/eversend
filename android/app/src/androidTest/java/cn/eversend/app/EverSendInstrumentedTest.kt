@@ -85,4 +85,40 @@ class EverSendInstrumentedTest {
         assertTrue("取回的图片要和发出去的一样大", sink.size() == file.length().toInt())
         assertTrue("取回的图片内容一致", sink.toByteArray().contentEquals(file.readBytes()))
     }
+
+    /**
+     * 界面级的真机测试：真的启动 App 界面，真的连上电脑，真的把会话显示出来。
+     *
+     * 为什么要有这一条：三个接口测试全绿的时候，App 界面仍然可能是坏的 —— 第一版
+     * 就是这样：`connect()` 在主线程发网络请求，安卓抛 NetworkOnMainThreadException，
+     * 界面上只有一行"连不上电脑：null"，而接口测试照样全过。CI 里那张真机截图是
+     * 唯一的线索，所以把这件事也变成断言。
+     */
+    @Test
+    fun appUiConnectsAndShowsTheConversation() {
+        val api = client()
+        api.postJson("/api/chat/send", JSONObject().put("text", "界面测试消息 " + System.currentTimeMillis()))
+
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        context.getSharedPreferences("eversend", android.content.Context.MODE_PRIVATE)
+            .edit()
+            .putString("host", host())
+            .apply()
+        val intent = android.content.Intent(context, MainActivity::class.java)
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        androidx.test.core.app.ActivityScenario.launch<MainActivity>(intent).use {
+            val device = androidx.test.uiautomator.UiDevice.getInstance(
+                InstrumentationRegistry.getInstrumentation()
+            )
+            val shown = device.wait(
+                androidx.test.uiautomator.Until.hasObject(
+                    androidx.test.uiautomator.By.textContains("会话")
+                ),
+                15_000,
+            )
+            assertTrue("App 界面必须渲染出会话页", shown)
+            val broken = device.hasObject(androidx.test.uiautomator.By.textContains("连不上电脑"))
+            assertTrue("界面不应该显示『连不上电脑』（主线程联网的坑）", !broken)
+        }
+    }
 }
