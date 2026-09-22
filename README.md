@@ -286,7 +286,10 @@ python tools/ci_android_http.py          # 手机页面的 HTTP 表面（上传/
   `cmd /c run.bat --selftest`（批处理解析、参数转发、内置解释器、回环传输全过），
   并用包里的 `python.exe` 跑完传输、加密与 Qt 建窗口。**没有**验证的只剩"双击时
   弹出的那个窗口长什么样"——那需要有人坐在 Windows 前面看。
-- **安卓端是浏览器界面，不是原生 App。** 这是 PySide6 的硬限制，也是唯一能做到"零安装"的路径。
+- **安卓 App 是桌面端的客户端，不是协议对端。** 它走的是手机页面那套 HTTP 接口
+  （所以能收发文件、聊天、语音），但不参加点对点加密握手——真正的对端是那台电脑。
+  好处是功能迭代不用动协议，代价是电脑必须开着。**APK 是 debug 签名**，自用和测试没问题，
+  正式分发请用自己的密钥重新签名。
 - **同名文件会续传/覆盖，不会自动改名。** 这是续传语义的必然结果；需要保留两份请手动改名。
 
 ### 联系与支持
@@ -301,7 +304,8 @@ CI 上的失败日志，定位会快很多。
 ### What is it
 
 **EverSend** is a from-scratch peer-to-peer file transfer tool. On a LAN it connects devices
-directly with no server involved; phones join through a browser, so nothing needs installing.
+directly with no server involved; phones join through a browser (or the native app), so
+nothing needs installing on the computer.
 The portable build is a zip you unzip and run — **it works from a USB stick**.
 
 It started as a line-by-line study of [LocalSend](https://github.com/localsend/localsend) and
@@ -346,15 +350,17 @@ runs instead of in a second pass.
 - Five discovery channels: multicast, broadcast, mDNS, subnet scan, manual / QR
 - Encrypted: Ed25519 identity, X25519 agreement, AES-256-GCM or ChaCha20-Poly1305
 - Zero-install Android via the built-in mobile web UI, with ranged downloads
+- A native Android app (Kotlin + Compose) that keeps the link alive in the background,
+  discovers the computer on the LAN, and can be installed straight from the web page
 - Portable: embedded Python 3.14.7, no registry, no `%APPDATA%`, runs read-only
 
 ### Platforms & verification
 
 | Platform | Status | How it was verified |
 |---|---|---|
-| Linux | ✅ Full | Author's machine: 26 core + 15 resilience checks, 500 MB real transfer |
+| Linux | ✅ Full | Author's machine + GitHub Actions: 40 core, 17 resilience, 7 concurrency and 158 browser-UI checks, plus a 512 MiB transfer |
 | Windows | ✅ Full | GitHub Actions `windows-latest` runs the whole suite, **plus** a bidirectional Linux ↔ Windows transfer with a real Windows CPython under Wine, **plus** the portable zip unzipped into a path with spaces and Chinese characters, launched through `cmd /c run.bat --selftest` and driven by its own bundled interpreter |
-| Android | ✅ Browser UI | A real Android emulator on CI: Chrome loads the page, files are uploaded and downloaded through it and compared byte for byte |
+| Android | ✅ Native app + browser UI | A real Android emulator on CI: the debug APK is installed and instrumented (it connects, sends a Chinese message with emoji and verifies it landed, uploads an image and fetches it back byte for byte), **and** Chrome drives the browser page: files uploaded and downloaded through it and compared byte for byte |
 | macOS | ⚠️ Core verified, GUI not | CI runs the full core suite (including a 512 MiB transfer and the memory bound), but no Mac was available to look at the window |
 
 ### Quick start
@@ -367,7 +373,9 @@ Grab a zip from [Releases](https://github.com/xugulin/eversend/releases), unzip,
 - Remote (internet) transfer is **designed but not implemented** — see
   [`docs/REMOTE_DESIGN.md`](docs/REMOTE_DESIGN.md).
 - macOS has never been run.
-- Android uses a browser UI rather than a native app, because PySide6 has no Android build.
+- The Android app is a client of the desktop's HTTP API, not a protocol peer, so the
+  computer has to be running. The APK is debug-signed; sign it with your own key to
+  distribute it.
 - Sending the same filename twice resumes or overwrites; it does not auto-rename.
 
 ### License
