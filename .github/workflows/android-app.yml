@@ -8,8 +8,10 @@ name: 安卓 App
 #   1. 在真实的安卓模拟器上装**真的 APK**；
 #   2. 启动电脑端（Linux 上真跑 eversend），模拟器通过 10.0.2.2 连它；
 #   3. 用 instrumentation（AndroidJUnit4）在设备上跑真实网络与真实文件：
-#      连上、读状态、发带 emoji 的文字并回查电脑端、上传图片再按消息 id 取回比对；
-#   4. 真的启动 App 界面并截图，连同日志一起归档。
+#      连上、读状态、发带 emoji 的文字并回查电脑端、上传图片再按消息 id 取回比对、
+#      真的把探针发出去并认出回包、真的扫网段找到电脑、真的把附件写进系统「下载」；
+#   4. 真的启动 App 界面，点开会话、点开图片看大图、点「复制」查剪贴板、
+#      点「保存」查 MediaStore，并截图归档（断言失败时能直接看图）。
 
 on:
   push:
@@ -90,12 +92,12 @@ jobs:
             adb logcat -c || true
             adb shell am instrument -w -e host 10.0.2.2:52119 cn.eversend.app.test/androidx.test.runner.AndroidJUnitRunner | tee "$RUNNER_TEMP/instrumented.txt"
             grep -q "OK (" "$RUNNER_TEMP/instrumented.txt"
-            adb shell am start -n cn.eversend.app/.MainActivity -e host 10.0.2.2:52119
+            # 界面测试自己会截图（会话列表 / 聊天页 / 全屏看图），连同一份界面树
+            # （断言失败时唯一能看的东西）一起从设备里取出来。
+            adb shell am start -n cn.eversend.app/.MainActivity -e host 10.0.2.2:52119 || true
             sleep 6
-            adb exec-out screencap -p > "$RUNNER_TEMP/android-app-chat.png"
-            adb shell input tap 540 1600 || true
-            sleep 3
-            adb exec-out screencap -p > "$RUNNER_TEMP/android-app-chat2.png"
+            adb exec-out screencap -p > "$RUNNER_TEMP/android-app-chat.png" || true
+            adb pull /sdcard/Android/data/cn.eversend.app/files/ "$RUNNER_TEMP/device-files/" || true
             adb logcat -d -s EverSend:* > "$RUNNER_TEMP/logcat.txt" || true
 
       - name: 电脑端日志
@@ -115,6 +117,7 @@ jobs:
             android/app/build/outputs/apk/debug/app-debug.apk
             android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
             ${{ runner.temp }}/android-app-chat*.png
+            ${{ runner.temp }}/device-files/
             ${{ runner.temp }}/instrumented.txt
             ${{ runner.temp }}/logcat.txt
             ${{ runner.temp }}/desktop.log

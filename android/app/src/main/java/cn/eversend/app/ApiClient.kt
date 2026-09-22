@@ -9,13 +9,16 @@ import java.io.BufferedReader
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.NetworkInterface
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.net.URLEncoder
+import java.util.Collections
 
 /**
  * 与电脑端通信的客户端。
@@ -121,6 +124,31 @@ class ApiClient(val base: String, val token: String) {
         }
     }
 
+    /** 聊天里某个附件（图片/视频/语音/文件）的下载地址。
+     *
+     *  直接给出完整 URL 是有意的：图片用 BitmapFactory、视频用 VideoView、
+     *  语音用 MediaPlayer，它们都只认 URL，塞不进自定义请求头。这个接口本来
+     *  也不需要令牌 —— 它就是手机页面里 <img>/<video> 取图的那条路。
+     */
+    fun mediaUrl(messageId: String): String =
+        base.trimEnd('/') + "/api/chat/media/" + java.net.URLEncoder.encode(messageId, "UTF-8")
+
+    /** 把聊天附件读成字节（图片预览用；图片通常几百 KB）。 */
+    fun mediaBytes(messageId: String, limit: Long = 24L * 1024 * 1024): ByteArray {
+        val conn = open("/api/chat/media/" + java.net.URLEncoder.encode(messageId, "UTF-8"))
+        try {
+            val declared = conn.contentLengthLong
+            if (declared > limit) throw IllegalStateException("图片太大（${declared / 1024} KB），请用「保存到手机」")
+            return conn.inputStream.use { it.readBytes() }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** 把聊天附件存到给定的输出流（保存到「下载」目录用）。 */
+    fun saveMedia(messageId: String, sink: java.io.OutputStream): Long =
+        download("/api/chat/media/" + java.net.URLEncoder.encode(messageId, "UTF-8"), sink)
+
     /** 事件流：电脑端一有消息就推过来，App 不用轮询。 */
     fun events(onEvent: (JSONObject) -> Unit, isRunning: () -> Boolean) {
         val conn = open("/api/events")
@@ -180,46 +208,71 @@ class ApiClient(val base: String, val token: String) {
         /** 电脑端用的组播地址；写错成别的组就永远收不到电脑的定时公告。 */
         const val MULTICAST_GROUP = "239.255.83.68"
 
+        /** 电脑端网页界面的默认端口，TCP 兜底扫描用它。 */
+        const val DEFAULT_WEB_PORT = 52119
+
         /**
-         * 在局域网里找电脑：**先绑住 52118 收公告，再发一条自己的探针**。
+         * 在局域网里找电脑：**先把整个子网戳一遍，同时听回包**。
          *
-         * 第一版只发探针、不等回包，永远找不到电脑——两个原因：电脑端的广播
-         * 间隔是 30 秒（等不到），而且它原本不回探针。现在电脑端收到公告会立刻
-         * 单播回一条（回包发到来源端口，所以任何端口的 socket 都收得到）。
+         * 第一版只往 255.255.255.255 发一条探针，在真手机上找不到电脑。原因
+         * 不在电脑端，而在手机的路由表：手机是热点（AP）时它的默认网络是移动
+         * 数据，发往 255.255.255.255 的包按路由表会走**蜂窝**那一侧，或者被
+         * ROM 直接丢掉，根本到不了热点子网。组播同理：没指定出口网卡时也不
+         * 知道从哪出去。
          *
-         * 绑定 52118 是第二条路：即使回包被路由器丢掉，也能听到电脑的定时广播。
+         * 所以现在按网卡逐个来：
+         *
+         * 1. 枚举所有 IPv4 网卡，往各自的**定向广播地址**（10.229.70.255 这种）
+         *    各发一条——它只会从该网卡出去，路由表没有歧义；
+         * 2. 再往该子网里**每一个主机地址**各发一条单播探针（最多 254 个，都是
+         *    几十字节的小包）。广播被 ROM 拦掉时，这一条仍然能把电脑叫醒；
+         * 3. 255.255.255.255 和组播照旧发一份，作为兜底。
+         *
+         * 电脑端收到探针会**立刻单播回一条**公告，回包发到本 socket 的源端口，
+         * 所以绑定 52118 只是"顺便听听定时广播"，绑不上也不影响发现。
          */
-        fun discover(timeoutMs: Int = 4000, deviceId: String = "probe"): List<Found> {
+        fun discover(
+            timeoutMs: Int = 5000,
+            deviceId: String = "probe",
+            port: Int = DISCOVERY_PORT,
+            webPort: Int = DEFAULT_WEB_PORT,
+        ): List<Found> {
             val found = LinkedHashMap<String, Found>()
-            val socket = DatagramSocket(null)
+            // 绑端口失败必须换一个**新的** socket 再绑：Java 的
+            // DatagramSocket.bind() 一旦抛异常，这个 socket 就已经被关掉了，
+            // 在它身上再 bind 只会得到 "Socket closed"（真机测试抓到的）。
+            var socket = DatagramSocket(null)
             var bound = false
             try {
                 socket.reuseAddress = true
-                socket.bind(InetSocketAddress(DISCOVERY_PORT))
+                socket.bind(InetSocketAddress(port))
                 bound = true
             } catch (ignored: Exception) {
-                // 端口被别的进程占着也没关系，还能靠探针的回包。
+                try {
+                    socket.close()
+                } catch (ignoredToo: Exception) {
+                }
+                // 端口被别的进程占着也没关系：回包是发到来源端口的，
+                // 临时端口一样收得到。
+                socket = DatagramSocket(null)
                 socket.bind(InetSocketAddress(0))
             }
             socket.broadcast = true
-            socket.soTimeout = 500
+            socket.soTimeout = 400
             val deadline = System.currentTimeMillis() + timeoutMs
             try {
                 val probe = """{"t":"eversend/1","id":"$deviceId","n":"安卓 App","k":"mobile",""" +
                     """"p":"android","v":"1.0.0","port":0,"web":0,"ts":0}"""
                 val payload = probe.toByteArray(Charsets.UTF_8)
-                val targets = mutableListOf(InetAddress.getByName("255.255.255.255"))
-                try {
-                    targets.add(InetAddress.getByName(MULTICAST_GROUP))
-                } catch (ignored: Exception) {
-                }
+                val targets = probeTargets()
+                Log.d(TAG, "搜索电脑：向 ${targets.size} 个地址发探针")
                 var lastProbe = 0L
                 while (System.currentTimeMillis() < deadline) {
                     if (System.currentTimeMillis() - lastProbe > 1000) {
                         lastProbe = System.currentTimeMillis()
                         for (target in targets) {
                             try {
-                                socket.send(DatagramPacket(payload, payload.size, target, DISCOVERY_PORT))
+                                socket.send(DatagramPacket(payload, payload.size, target, port))
                             } catch (ignored: Exception) {
                             }
                         }
@@ -235,6 +288,8 @@ class ApiClient(val base: String, val token: String) {
                             continue
                         }
                         if (json.optString("t") != "eversend/1") continue
+                        // 自己发的探针会被本机回环收回来，跳过。
+                        if (json.optString("n") == "安卓 App" && json.optInt("web", 0) <= 0) continue
                         val web = json.optInt("web", 0)
                         if (web <= 0) continue
                         val host = packet.address.hostAddress ?: continue
@@ -251,8 +306,210 @@ class ApiClient(val base: String, val token: String) {
             } finally {
                 socket.close()
             }
-            if (!bound) Log.d(TAG, "52118 被占用，只靠探针回包发现")
+            if (!bound) Log.d(TAG, "端口被占用，只靠探针的回包发现")
+            if (found.isEmpty()) {
+                // UDP 一无所获时再敲一遍网页端口。真机上这一步很值：
+                // 不少 ROM（vivo/小米的省电策略）会悄悄丢掉 UDP 广播，
+                // 而"能打开网页"是用户心里"通了"的标准，TCP 走得通就一定能连。
+                Log.d(TAG, "UDP 没找到电脑，改用 TCP 扫网页端口 $webPort")
+                for (attempt in 1..2) {
+                    for (candidate in discoverByTcp(webPort, timeoutMs = 6000)) {
+                        found[candidate.host + ":" + candidate.webPort] = candidate
+                    }
+                    if (found.isNotEmpty()) break
+                    Log.d(TAG, "第 $attempt 次 TCP 扫描没有结果，再扫一遍")
+                }
+            }
+            Log.d(TAG, "搜索结束：找到 ${found.size} 台电脑 " + found.values.joinToString { it.name + "@" + it.base })
             return found.values.toList()
+        }
+
+        /**
+         * TCP 兜底：逐台敲网页端口，看谁答"我是韧传"。
+         *
+         * 为什么需要它：UDP 广播在很多真机上不可靠（省电策略、路由器隔离、
+         * 默认路由跑到蜂窝数据），而网页端口是 TCP，只要能打开网页就一定能连上。
+         * 254 个地址、32 个并发、每个 300ms 超时，最坏两秒左右。
+         */
+        fun discoverByTcp(
+            webPort: Int = DEFAULT_WEB_PORT,
+            timeoutMs: Int = 5000,
+            threads: Int = 12,
+            hints: List<String> = emptyList(),
+        ): List<Found> {
+            val found = java.util.Collections.synchronizedMap(LinkedHashMap<String, Found>())
+            val candidates = subnets()
+                .filter { it.prefix >= 24 }
+                .flatMap { subnet ->
+                    val base = subnet.address.address
+                    (1..254).mapNotNull { last ->
+                        try {
+                            InetAddress.getByAddress(byteArrayOf(base[0], base[1], base[2], last.toByte()))
+                        } catch (ignored: Exception) {
+                            null
+                        }
+                    }
+                }
+                .distinctBy { it.hostAddress }
+            if (candidates.isEmpty()) return emptyList()
+
+            // 先按"最可能是电脑"的顺序串行试几个：上次连过的那台（hints）、
+            // 网关常见的 .1/.2/.254。真实网络里电脑通常就在这几个里，串行几条
+            // 连接既快又不会引起丢包 —— 一次铺开几百条连接，普通路由器（和
+            // 模拟器的 NAT）会开始丢，反而连活着的那台都连不上。
+            val preferred = LinkedHashSet<String>()
+            preferred.addAll(hints.filter { it.isNotBlank() })
+            val prefixes = candidates.mapNotNull { it.hostAddress?.substringBeforeLast(".") }.distinct()
+            prefixes.forEach { prefix ->
+                preferred.add("$prefix.1")
+                preferred.add("$prefix.2")
+                preferred.add("$prefix.254")
+            }
+            for (host in preferred) {
+                if (host !in candidates.map { it.hostAddress }) continue
+                val match = probeWeb(host, webPort, connectTimeoutMs = 500)
+                if (match != null) {
+                    found["$host:$webPort"] = match
+                    Log.d(TAG, "TCP 优先探测命中：$host:$webPort")
+                    return found.values.toList()
+                }
+            }
+            Log.d(TAG, "TCP 扫描：${candidates.size} 个地址，端口 $webPort")
+
+            // 并发不能太高：这台模拟器的 NAT（以及不少家用路由器）在几十个
+            // 同时发起、又大多连不上的连接面前会开始丢包，结果连"本来活着"的
+            // 那台电脑都超时了（真机测试里第一次扫描就是这样，隔两秒再扫就
+            // 找到了）。12 个并发足够快，也不至于把链路压垮。
+            val pool = java.util.concurrent.Executors.newFixedThreadPool(threads)
+            try {
+                for (address in candidates) {
+                    pool.execute {
+                        if (found.size >= 4) return@execute
+                        val host = address.hostAddress ?: return@execute
+                        val match = probeWeb(host, webPort)
+                        if (match != null) found["$host:$webPort"] = match
+                    }
+                }
+                pool.shutdown()
+                pool.awaitTermination(timeoutMs.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
+            } catch (ignored: Exception) {
+            } finally {
+                pool.shutdownNow()
+            }
+            Log.d(TAG, "TCP 扫描结束：找到 ${found.size} 台（端口 $webPort）")
+            return found.values.toList()
+        }
+
+        /** 问一台主机"你是不是韧传"，是就返回它的名字。 */
+        private fun probeWeb(host: String, webPort: Int, connectTimeoutMs: Int = 400): Found? {
+            var socket: java.net.Socket? = null
+            try {
+                socket = java.net.Socket()
+                socket.connect(InetSocketAddress(host, webPort), connectTimeoutMs)
+                socket.soTimeout = 900
+                // Connection: close 让服务端答完就关；body 仍按 Content-Length 读，
+                // 不靠"读到 EOF"——靠 EOF 会在 keep-alive 上一直等到超时，然后
+                // 连已经收到的内容一起丢掉（第一次跑就是这样，52119 明明活着
+                // 却被判成"没有电脑"）。
+                val request = "GET /api/state HTTP/1.1\r\nHost: $host:$webPort\r\n" +
+                    "Accept: application/json\r\nConnection: close\r\n" +
+                    "User-Agent: ${userAgent()}\r\n\r\n"
+                socket.getOutputStream().write(request.toByteArray(Charsets.UTF_8))
+                socket.getOutputStream().flush()
+
+                val input = socket.getInputStream()
+                val head = StringBuilder()
+                while (!head.endsWith("\r\n\r\n") && head.length < 8192) {
+                    val next = input.read()
+                    if (next < 0) break
+                    head.append(next.toChar())
+                }
+                if (!head.startsWith("HTTP/") || !head.contains(" 200")) return null
+                val length = Regex("(?i)content-length:\\s*(\\d+)")
+                    .find(head)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                if (length <= 0 || length > (1 shl 20)) return null
+                val body = ByteArray(length)
+                var filled = 0
+                while (filled < length) {
+                    val read = input.read(body, filled, length - filled)
+                    if (read <= 0) break
+                    filled += read
+                }
+                val text = String(body, 0, filled, Charsets.UTF_8)
+                if (!text.contains("nameCn")) return null
+                val device = JSONObject(text).optJSONObject("device") ?: return null
+                val name = device.optString("name").ifBlank { host }
+                return Found(
+                    name = name,
+                    host = host,
+                    webPort = webPort,
+                    platform = device.optString("platform", ""),
+                )
+            } catch (ignored: Exception) {
+                return null
+            } finally {
+                try {
+                    socket?.close()
+                } catch (ignored: Exception) {
+                }
+            }
+        }
+
+        /** 一个网卡的 IPv4 信息。 */
+        private data class Subnet(val address: InetAddress, val broadcast: InetAddress?, val prefix: Int)
+
+        /** 读出所有可用网卡的 IPv4 地址与掩码；失败就当作没有。 */
+        private fun subnets(): List<Subnet> {
+            val result = mutableListOf<Subnet>()
+            try {
+                val interfaces = NetworkInterface.getNetworkInterfaces() ?: return result
+                for (nic in Collections.list(interfaces)) {
+                    if (!nic.isUp || nic.isLoopback) continue
+                    for (info in nic.interfaceAddresses) {
+                        val address = info.address
+                        if (address !is Inet4Address) continue
+                        if (address.isLoopbackAddress || address.isLinkLocalAddress) continue
+                        result.add(Subnet(address, info.broadcast, info.networkPrefixLength.toInt()))
+                    }
+                }
+            } catch (ignored: Exception) {
+            }
+            return result
+        }
+
+        /**
+         * 探针要发去的地址：定向广播 + 子网内每一台主机 + 全局广播 + 组播。
+         *
+         * 子网扫描限制在 /24（最多 254 个主机地址）以内：更大的网段逐台扫没有
+         * 意义（几千个包换几秒延迟），而家里的热点、路由器都是 /24。
+         */
+        fun probeTargets(): List<InetAddress> {
+            val targets = LinkedHashSet<InetAddress>()
+            for (subnet in subnets()) {
+                subnet.broadcast?.let { targets.add(it) }
+                if (subnet.prefix >= 24) {
+                    val base = subnet.address.address
+                    // 本机地址也在扫描范围里：这一遍本来就是"子网内每一台"，
+                    // 而且它让"同一台机器上的电脑端"（测试桩、模拟器里的宿主机）
+                    // 也能被发现 —— 少了它，探针就只往外发，本机收不到。
+                    for (last in 1..254) {
+                        val candidate = byteArrayOf(base[0], base[1], base[2], last.toByte())
+                        try {
+                            targets.add(InetAddress.getByAddress(candidate))
+                        } catch (ignored: Exception) {
+                        }
+                    }
+                }
+            }
+            try {
+                targets.add(InetAddress.getByName("255.255.255.255"))
+            } catch (ignored: Exception) {
+            }
+            try {
+                targets.add(InetAddress.getByName(MULTICAST_GROUP))
+            } catch (ignored: Exception) {
+            }
+            return targets.toList()
         }
 
         /** 定期广播自己的存在，电脑端就能在设备列表里看到这台手机。 */

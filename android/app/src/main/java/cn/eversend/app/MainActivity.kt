@@ -4,6 +4,8 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
+import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
@@ -15,15 +17,20 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -33,12 +40,18 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -216,10 +229,60 @@ fun SettingsScreen(store: AppState) {
             OutlinedButton(
                 onClick = {
                     scanning = true
+                    status = "正在搜索电脑…"
                     scope.launch {
+                        // 先试记着的那台（通常是上次用的），它在线就秒连；
+                        // 不行再走完整发现：UDP 探针 → 子网单播 → TCP 扫网页端口。
+                        val remembered = normalizeHost(store.host)
+                        val quick = withContext(Dispatchers.IO) {
+                            if (remembered.isBlank()) {
+                                emptyList()
+                            } else {
+                                try {
+                                    val token = ApiClient.fetchToken("http://$remembered/")
+                                    if (token.isBlank()) {
+                                        emptyList()
+                                    } else {
+                                        val state = ApiClient("http://$remembered/", token).getJson("/api/state")
+                                        val device = state.optJSONObject("device")
+                                        val port = remembered.substringAfterLast(":", ApiClient.DEFAULT_WEB_PORT.toString())
+                                            .toIntOrNull() ?: ApiClient.DEFAULT_WEB_PORT
+                                        listOf(
+                                            ApiClient.Found(
+                                                name = device?.optString("name").orEmpty().ifBlank { remembered },
+                                                host = remembered.substringBeforeLast(":"),
+                                                webPort = port,
+                                                platform = device?.optString("platform").orEmpty(),
+                                            ),
+                                        )
+                                    }
+                                } catch (ignored: Exception) {
+                                    emptyList()
+                                }
+                            }
+                        }
+                        if (quick.isNotEmpty()) {
+                            discovered = quick
+                            scanning = false
+                            host = "${quick[0].host}:${quick[0].webPort}"
+                            status = "上次那台「${quick[0].name}」还在，已经填好，点「连接」即可"
+                            return@launch
+                        }
                         discovered = withContext(Dispatchers.IO) { ApiClient.discover() }
                         scanning = false
-                        if (discovered.isEmpty()) status = "没有搜到电脑（可手输地址，或检查是否同一 Wi-Fi）"
+                        if (discovered.isEmpty()) {
+                            status = "没搜到电脑。逐条查：① 手机和电脑在同一个 Wi-Fi 或热点里；" +
+                                "② 电脑上的韧传开着（电脑上写着「手机访问」的那个地址，手机浏览器能打开就说明通了）；" +
+                                "③ 电脑的防火墙允许 52119/TCP 与 52118/UDP（公司网络常会拦）。" +
+                                "也可以把电脑上显示的地址手输到上面。"
+                        } else {
+                            val first = discovered.first()
+                            host = "${first.host}:${first.webPort}"
+                            store.host = host
+                            status = "搜到 ${discovered.size} 台：" +
+                                discovered.joinToString("、") { it.name } +
+                                "（已填好第一台，点「连接」）"
+                        }
                     }
                 },
                 modifier = Modifier.testTag("btn-scan"),
@@ -442,7 +505,9 @@ fun ChatScreen(store: AppState) {
                 Text(current.title.ifBlank { "会话" }, fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
             }
             LazyColumn(Modifier.weight(1f), state = listState) {
-                items(messages) { message -> Bubble(message) }
+                items(messages) { message ->
+                    Bubble(message, client, onError = { error = it })
+                }
             }
             LaunchedEffect(messages.size) {
                 if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
@@ -583,9 +648,47 @@ fun Composer(
     }
 }
 
+/**
+ * 一条消息。四种附件都要能真的用起来，而不是只显示个文件名：
+ *
+ * * 图片：气泡里直接显示缩略图，点开全屏看大图；
+ * * 视频：气泡里是播放卡片，点开在应用内播放（VideoView 走媒体接口的 URL）；
+ * * 语音：气泡里能直接播放/停止（MediaPlayer 同上）；
+ * * 文件：一键「保存到手机」（写进系统「下载」目录，SAF/MediaStore 都走通）。
+ *
+ * 文字除了长按选择，还给了显式的「复制」按钮 —— 长按能选、但用户不一定知道。
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun Bubble(message: ChatMessage) {
+fun Bubble(message: ChatMessage, client: ApiClient?, onError: (String) -> Unit = {}) {
     val outgoing = message.outgoing
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+    var preview by remember { mutableStateOf(false) }
+    var playing by remember { mutableStateOf(false) }
+    var player by remember { mutableStateOf<MediaPlayer?>(null) }
+    var saving by remember { mutableStateOf(false) }
+    val hasMedia = message.kind != "text" && message.kind != "system"
+
+    DisposableEffect(message.id) {
+        onDispose {
+            try {
+                player?.stop()
+            } catch (ignored: Exception) {
+            }
+            try {
+                player?.release()
+            } catch (ignored: Exception) {
+            }
+            player = null
+        }
+    }
+
+    if (preview) {
+        MediaViewer(message = message, client = client, onClose = { preview = false })
+    }
+
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (outgoing) Arrangement.End else Arrangement.Start,
@@ -601,17 +704,276 @@ fun Bubble(message: ChatMessage) {
         ) {
             Text("${message.senderName.ifBlank { "对方" }} · ${clock(message.ts)}", fontSize = 11.sp)
             when (message.kind) {
-                "text", "system" -> Text(message.text, fontSize = 15.sp)
-                "image" -> Text("🖼 ${message.mediaName}", fontSize = 15.sp)
-                "video" -> Text("🎬 ${message.mediaName}", fontSize = 15.sp)
-                "voice" -> Text(
-                    "🎤 语音 ${message.durationMs / 1000} 秒",
-                    fontSize = 15.sp,
-                )
-                else -> Text("📄 ${message.mediaName}", fontSize = 15.sp)
+                "text", "system" -> SelectionContainer { Text(message.text, fontSize = 15.sp) }
+                "image" -> ImagePreview(message, client, onError) { preview = true }
+                "video" -> MediaCard(
+                    icon = "🎬",
+                    title = message.mediaName.ifBlank { "视频" },
+                    detail = fmtSize(message.mediaSize) + " · 点击播放",
+                    tag = "video-card",
+                ) { preview = true }
+                "voice" -> MediaCard(
+                    icon = if (playing) "⏹" else "🎤",
+                    title = "语音 " + (message.durationMs / 1000) + " 秒",
+                    detail = if (playing) "点击停止" else "点击播放",
+                    tag = "voice-card",
+                ) {
+                    val active = client
+                    if (active == null) {
+                        onError("还没有连上电脑")
+                    } else if (playing) {
+                        try {
+                            player?.stop()
+                        } catch (ignored: Exception) {
+                        }
+                        playing = false
+                    } else {
+                        try {
+                            val media = MediaPlayer()
+                            media.setDataSource(active.mediaUrl(message.id))
+                            media.setOnPreparedListener {
+                                it.start()
+                                playing = true
+                            }
+                            media.setOnCompletionListener { playing = false }
+                            media.setOnErrorListener { _, _, _ ->
+                                playing = false
+                                onError("这段语音播不了")
+                                true
+                            }
+                            media.prepareAsync()
+                            player = media
+                        } catch (problem: Exception) {
+                            onError("语音播放失败：${problem.message}")
+                        }
+                    }
+                }
+                else -> MediaCard(
+                    icon = "📄",
+                    title = message.mediaName.ifBlank { "文件" },
+                    detail = fmtSize(message.mediaSize) + " · 点击保存到手机",
+                    tag = "file-card",
+                ) {
+                    val active = client
+                    if (active == null) {
+                        onError("还没有连上电脑")
+                    } else if (!saving) {
+                        saving = true
+                        scope.launch {
+                            val name = message.mediaName.ifBlank { "eversend-${message.id}" }
+                            val saved = withContext(Dispatchers.IO) {
+                                saveToDownloads(context, name) { sink ->
+                                    active.saveMedia(message.id, sink)
+                                }
+                            }
+                            saving = false
+                            if (saved == null) onError("保存失败（存储权限或空间不足）")
+                            else android.widget.Toast
+                                .makeText(context, "已保存到「下载」：$name", android.widget.Toast.LENGTH_LONG)
+                                .show()
+                        }
+                    }
+                }
+            }
+
+            // 可复制的文字，以及附件的说明文字
+            val caption = message.text
+            if (hasMedia && caption.isNotBlank()) {
+                SelectionContainer { Text(caption, fontSize = 14.sp) }
+            }
+            // 有文字就给「复制」，有附件就给「保存」——图片/视频本身没有文字，
+            // 但「保存到手机」正是它最需要的动作（第一版把整行放在"有文字"的
+            // 条件里，图片气泡上于是既没有复制也没有保存）。
+            val copyable = message.kind == "text" || message.kind == "system" || caption.isNotBlank()
+            if (copyable || hasMedia) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (copyable) {
+                        Text(
+                            "复制",
+                            fontSize = 12.sp,
+                            color = Color(0xFF2F81F7),
+                            modifier = Modifier
+                                .combinedClickable(
+                                    onClick = {
+                                        clipboard.setText(
+                                            AnnotatedString(
+                                                if (message.kind == "text" || message.kind == "system") {
+                                                    message.text
+                                                } else {
+                                                    caption
+                                                },
+                                            ),
+                                        )
+                                        android.widget.Toast
+                                            .makeText(context, "已复制", android.widget.Toast.LENGTH_SHORT)
+                                            .show()
+                                    },
+                                    onLongClick = {},
+                                )
+                                .padding(vertical = 2.dp, horizontal = 2.dp)
+                                .testTag("btn-copy"),
+                        )
+                    }
+                    if (hasMedia) {
+                        Text(
+                            "保存",
+                            fontSize = 12.sp,
+                            color = Color(0xFF2F81F7),
+                            modifier = Modifier
+                                .clickable {
+                                    val active = client
+                                    if (active == null) {
+                                        onError("还没有连上电脑")
+                                    } else {
+                                        scope.launch {
+                                            val name = message.mediaName.ifBlank { "eversend-${message.id}" }
+                                            val saved = withContext(Dispatchers.IO) {
+                                                saveToDownloads(context, name) { sink ->
+                                                    active.saveMedia(message.id, sink)
+                                                }
+                                            }
+                                            if (saved == null) onError("保存失败（存储权限或空间不足）")
+                                            else android.widget.Toast
+                                                .makeText(
+                                                    context,
+                                                    "已保存到「下载」：$name",
+                                                    android.widget.Toast.LENGTH_LONG,
+                                                )
+                                                .show()
+                                        }
+                                    }
+                                }
+                                .padding(vertical = 2.dp, horizontal = 2.dp)
+                                .testTag("btn-save"),
+                        )
+                    }
+                }
             }
             if (outgoing && message.state == "failed") {
                 Text("发送失败（对方不在线）", fontSize = 11.sp, color = Color(0xFFB42318))
+            }
+        }
+    }
+}
+
+/** 图片气泡：真图缩略图，点开全屏。 */
+@Composable
+fun ImagePreview(message: ChatMessage, client: ApiClient?, onError: (String) -> Unit, onOpen: () -> Unit) {
+    var bitmap by remember(message.id) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var failed by remember(message.id) { mutableStateOf(false) }
+    LaunchedEffect(message.id) {
+        val active = client ?: return@LaunchedEffect
+        withContext(Dispatchers.IO) {
+            try {
+                val bytes = active.mediaBytes(message.id)
+                bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                if (bitmap == null) failed = true
+            } catch (problem: Exception) {
+                failed = true
+                onError("图片取不回来：${problem.message}")
+            }
+        }
+    }
+    val image = bitmap
+    when {
+        image != null -> Image(
+            bitmap = image.asImageBitmap(),
+            contentDescription = message.mediaName,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .heightIn(max = 260.dp)
+                .clickable { onOpen() }
+                .testTag("image-preview"),
+        )
+        failed -> Text("🖼 ${message.mediaName}（预览失败，可「保存」后在本机看）", fontSize = 14.sp)
+        else -> Text("🖼 ${message.mediaName} 载入中…", fontSize = 14.sp)
+    }
+}
+
+/** 视频/语音/文件的卡片：图标 + 标题 + 一行说明。 */
+@Composable
+fun MediaCard(icon: String, title: String, detail: String, tag: String, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+            .padding(vertical = 6.dp, horizontal = 4.dp)
+            .testTag(tag),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(icon, fontSize = 26.sp)
+        Column {
+            Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Text(detail, fontSize = 12.sp, color = Color(0xFF5B6470))
+        }
+    }
+}
+
+/**
+ * 全屏看图片 / 播视频。
+ *
+ * 视频用系统自带的 VideoView：它认 URL、走 HTTP Range，和手机页面里的
+ * <video> 是同一条路。不需要 ExoPlayer，也就不需要多一个第三方依赖。
+ */
+@Composable
+fun MediaViewer(message: ChatMessage, client: ApiClient?, onClose: () -> Unit) {
+    val context = LocalContext.current
+    Dialog(onDismissRequest = { onClose() }) {
+        Card(Modifier.fillMaxWidth().padding(8.dp)) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    message.mediaName.ifBlank { "预览" },
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.testTag("viewer-title"),
+                )
+                when (message.kind) {
+                    "image" -> {
+                        var bitmap by remember(message.id) { mutableStateOf<android.graphics.Bitmap?>(null) }
+                        LaunchedEffect(message.id) {
+                            val active = client ?: return@LaunchedEffect
+                            withContext(Dispatchers.IO) {
+                                try {
+                                    val bytes = active.mediaBytes(message.id)
+                                    bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                } catch (ignored: Exception) {
+                                }
+                            }
+                        }
+                        val image = bitmap
+                        if (image != null) {
+                            Image(
+                                bitmap = image.asImageBitmap(),
+                                contentDescription = message.mediaName,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 420.dp)
+                                    .testTag("viewer-image"),
+                            )
+                        } else {
+                            Text("载入中…")
+                        }
+                    }
+                    else -> {
+                        val url = client?.mediaUrl(message.id).orEmpty()
+                        AndroidView(
+                            factory = { ctx ->
+                                android.widget.VideoView(ctx).apply {
+                                    setVideoURI(Uri.parse(url))
+                                    setOnPreparedListener { it.isLooping = false; start() }
+                                    setMediaController(android.widget.MediaController(ctx).also { it.setAnchorView(this) })
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(240.dp)
+                                .testTag("viewer-video"),
+                        )
+                        Text("视频走局域网直连播放，拖动进度条即可跳转。", fontSize = 12.sp, color = Color(0xFF5B6470))
+                    }
+                }
+                Button(onClick = { onClose() }, modifier = Modifier.testTag("viewer-close")) { Text("关闭") }
             }
         }
     }
@@ -715,6 +1077,19 @@ fun clock(seconds: Double): String {
 }
 
 /** 保存下载的附件到公共下载目录，并返回可分享的 URI。 */
+/** 人类可读的大小，气泡里那行说明用。 */
+fun fmtSize(bytes: Long): String {
+    if (bytes <= 0) return ""
+    val units = listOf("B", "KB", "MB", "GB")
+    var value = bytes.toDouble()
+    var unit = 0
+    while (value >= 1024 && unit < units.size - 1) {
+        value /= 1024
+        unit++
+    }
+    return if (unit == 0) "${bytes} B" else String.format(Locale.US, "%.1f %s", value, units[unit])
+}
+
 fun saveToDownloads(context: android.content.Context, name: String, sink: (java.io.OutputStream) -> Unit): Uri? {
     return try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

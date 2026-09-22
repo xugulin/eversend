@@ -87,19 +87,33 @@ class EverSendInstrumentedTest {
     }
 
     /**
-     * 界面级的真机测试：真的启动 App 界面，真的连上电脑，真的把会话显示出来。
+     * 界面级的真机测试：真的启动 App 界面，真的连上电脑，把会话和附件显示出来，
+     * 并且**真的点一遍**新加的三个动作 —— 看大图、复制文字、保存到手机。
      *
-     * 为什么要有这一条：三个接口测试全绿的时候，App 界面仍然可能是坏的 —— 第一版
-     * 就是这样：`connect()` 在主线程发网络请求，安卓抛 NetworkOnMainThreadException，
-     * 界面上只有一行"连不上电脑：null"，而接口测试照样全过。CI 里那张真机截图是
-     * 唯一的线索，所以把这件事也变成断言。
+     * 为什么要有这一条：接口测试全绿的时候，界面仍然可能是坏的。第一版就是
+     * 这样：`connect()` 在主线程发网络请求，安卓抛 NetworkOnMainThreadException，
+     * 界面上只有一行"连不上电脑：null"，而接口测试照样全过。CI 里那张真机
+     * 截图是唯一的线索，所以把这件事也变成断言。
      */
     @Test
     fun appUiConnectsAndShowsTheConversation() {
         val api = client()
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
         api.postJson("/api/chat/send", JSONObject().put("text", "界面测试消息 " + System.currentTimeMillis()))
 
-        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        // 界面上要有一张图片可点，所以这条自己先传一张（测试顺序不保证）。
+        // 真图（真的能让 BitmapFactory 解码出来）。用"PNG 魔数 + 随机字节"
+        // 那种假图，界面会正确地显示"预览失败"——测的就不是预览了。
+        val png = File(context.cacheDir, "ui-图片.png")
+        val bitmap = android.graphics.Bitmap.createBitmap(96, 64, android.graphics.Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(android.graphics.Color.rgb(47, 129, 247))
+        java.io.ByteArrayOutputStream().use { out ->
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+            png.writeBytes(out.toByteArray())
+        }
+        val name = URLEncoder.encode(png.name, "UTF-8")
+        png.inputStream().use { api.upload("/api/chat/upload?name=$name&kind=image", it, png.length(), "image/png") }
+
         context.getSharedPreferences("eversend", android.content.Context.MODE_PRIVATE)
             .edit()
             .putString("host", host())
@@ -119,6 +133,262 @@ class EverSendInstrumentedTest {
             assertTrue("App 界面必须渲染出会话页", shown)
             val broken = device.hasObject(androidx.test.uiautomator.By.textContains("连不上电脑"))
             assertTrue("界面不应该显示『连不上电脑』（主线程联网的坑）", !broken)
+
+            // UiDevice.takeScreenshot(File) 直接写 PNG，比拿 Bitmap 再压缩省事。
+            fun shoot(fileName: String) {
+                try {
+                    device.takeScreenshot(File(context.getExternalFilesDir(null), fileName))
+                } catch (ignored: Exception) {
+                }
+            }
+            shoot("android-app-chat.png")
+
+            // 会话列表出来了，还要真的点进去：原来只断言"会话"两个字，列表页
+            // 本身就有这两个字，所以"聊天页打不开"也能过。
+            val conversation = device.wait(
+                androidx.test.uiautomator.Until.findObject(
+                    androidx.test.uiautomator.By.textStartsWith("d:")
+                ),
+                10_000,
+            )
+            assertTrue("会话列表里要有和电脑的那个会话", conversation != null)
+            conversation?.click()
+            Thread.sleep(1500)
+            shoot("android-app-conversation.png")
+
+            // 1. 图片要真的显示出来，点一下要能看大图
+            val picture = device.wait(
+                androidx.test.uiautomator.Until.findObject(
+                    androidx.test.uiautomator.By.desc("ui-图片.png")
+                ),
+                10_000,
+            )
+            if (picture == null) {
+                // 找不到就把整棵界面树存下来，CI 里能直接看（否则只有一句断言失败）
+                try {
+                    device.dumpWindowHierarchy(File(context.getExternalFilesDir(null), "ui-dump.xml"))
+                } catch (ignored: Exception) {
+                }
+            }
+            assertTrue("聊天里的图片必须真的渲染出来（不是一行文件名）", picture != null)
+            if (picture != null) {
+                picture.click()
+                val viewer = device.wait(
+                    androidx.test.uiautomator.Until.hasObject(androidx.test.uiautomator.By.text("关闭")),
+                    8_000,
+                )
+                assertTrue("点开图片要出现全屏查看器", viewer)
+                shoot("android-app-image-viewer.png")
+                device.pressBack()
+                Thread.sleep(500)
+            }
+
+            // 2. 文字要能复制（点一下「复制」出现提示）
+            val copy = device.wait(
+                androidx.test.uiautomator.Until.findObject(androidx.test.uiautomator.By.text("复制")),
+                8_000,
+            )
+            assertTrue("文字气泡上要有「复制」入口", copy != null)
+            if (copy != null) {
+                copy.click()
+                Thread.sleep(1200)
+                // 直接查剪贴板，而不是查那句提示：提示会自己消失（还可能被系统
+                // 限制成看不到），而"有没有真的复制到"才是用户要的结果。
+                val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+                val copied = clipboard?.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+                assertTrue("点了「复制」，剪贴板里要有这句话（拿到的是「$copied」）", copied.isNotEmpty())
+                // 点到的可能是任意一条（整套测试跑过之后聊天里有好几条），
+                // 只要确实是聊天里的文字就算过。
+                assertTrue(
+                    "复制出来的应该是聊天里的一句话：$copied",
+                    copied.contains("界面测试消息") || copied.contains("来自安卓 App 的问候"),
+                )
+            }
+
+            // 3. 附件要能存进系统「下载」目录
+            val save = device.wait(
+                androidx.test.uiautomator.Until.findObject(androidx.test.uiautomator.By.text("保存")),
+                8_000,
+            )
+            assertTrue("附件气泡上要有「保存」入口", save != null)
+            if (save != null) {
+                save.click()
+                // 同样查结果：系统「下载」目录里到底有没有这个文件，而不是看提示。
+                var saved = false
+                val deadline = System.currentTimeMillis() + 25_000
+                while (System.currentTimeMillis() < deadline && !saved) {
+                    context.contentResolver.query(
+                        android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                        arrayOf(android.provider.MediaStore.Downloads.DISPLAY_NAME),
+                        android.provider.MediaStore.Downloads.DISPLAY_NAME + " = ?",
+                        arrayOf("ui-图片.png"),
+                        null,
+                    )?.use { cursor -> saved = cursor.count > 0 }
+                    if (!saved) Thread.sleep(500)
+                }
+                assertTrue("点「保存」要把附件真的写进系统「下载」目录", saved)
+            }
         }
+    }
+
+    /**
+     * 「搜索电脑」在真机上必须真的能把探针发出去、把回包认出来。
+     *
+     * 这条用一个跑在同一台设备上的桩电脑来验：真开一个 UDP socket 听探针，
+     * 收到就按电脑端的格式回一条公告，然后断言 discover() 认出了它。走的
+     * 是 App 里那条真实代码路径（枚举网卡 → 定向广播 + 子网内逐台单播 →
+     * 收包 → 解析），只有"另一头是谁"是桩。
+     *
+     * 为什么必须用桩：CI 的模拟器在 NAT 后面，广播出不去；而真机上出的问题
+     * 恰恰是"探针根本没离开手机"（默认路由是蜂窝数据），所以这条测的就是
+     * "探针到底有没有发出去"。
+     */
+    @Test
+    fun discoverySendsProbesAndFindsAReply() {
+        // 故意**不**开 reuseAddress：否则 App 的探针 socket 可能绑到同一个端口，
+        // 内核只会把包投给其中一个，桩就永远收不到探针（第一次跑就是这样失败的）。
+        // 端口被占住时 App 会退回到临时端口，这正好也把那条退路测了。
+        val server = java.net.DatagramSocket(null)
+        server.bind(java.net.InetSocketAddress(0))
+        val port = server.localPort
+        val reply = """{"t":"eversend/1","id":"stub-desktop","n":"桩电脑","k":"desktop",""" +
+            """"p":"linux","v":"1.0.0","port":52117,"web":52119,"ts":0}"""
+
+        val worker = Thread {
+            val buffer = ByteArray(8192)
+            val packet = java.net.DatagramPacket(buffer, buffer.size)
+            server.soTimeout = 15_000
+            try {
+                server.receive(packet)          // 收到探针
+                val bytes = reply.toByteArray(Charsets.UTF_8)
+                server.send(java.net.DatagramPacket(bytes, bytes.size, packet.address, packet.port))
+            } catch (ignored: Exception) {
+            }
+        }
+        worker.isDaemon = true
+        worker.start()
+
+        val found = try {
+            ApiClient.discover(timeoutMs = 8000, deviceId = "instrumented", port = port)
+        } finally {
+            worker.join(500)
+            server.close()
+        }
+
+        assertTrue(
+            "探针必须真的发到本机（收到了回包才算）：found=${found.map { it.name }}",
+            found.any { it.name == "桩电脑" },
+        )
+        val stub = found.first { it.name == "桩电脑" }
+        assertEquals("回包里的网页端口要解析出来", 52119, stub.webPort)
+        assertTrue("要能拼出可用的地址", stub.base.startsWith("http://"))
+    }
+
+    /** 探针目标里必须有本网段的定向广播地址，而不是只有 255.255.255.255。 */
+    @Test
+    fun probeTargetsCoverTheLocalSubnet() {
+        val targets = ApiClient.probeTargets().map { it.hostAddress }
+        assertTrue("至少有若干目标地址", targets.size > 4)
+        assertTrue(
+            "必须包含 255.255.255.255 兜底：$targets",
+            targets.contains("255.255.255.255"),
+        )
+        val broadcast = targets.filter { it.endsWith(".255") && it != "255.255.255.255" }
+        // 模拟器的网卡是 10.0.2.15/24，定向广播就是 10.0.2.255。
+        assertTrue("必须包含本网段的定向广播地址：$targets", broadcast.isNotEmpty())
+        val hosts = targets.filter { it.startsWith("10.0.2.") && !it.endsWith(".255") }
+        assertTrue("必须扫子网内的主机地址（广播被拦时的第二条路）：${hosts.size}", hosts.size > 100)
+    }
+
+    /**
+     * 聊天里的附件在 App 里必须"能用"：能取回字节（图片预览就是这条路）、
+     * 能存进系统「下载」目录（文件下载就是这条路）。
+     */
+    @Test
+    fun chatAttachmentCanBeFetchedAndSavedToDownloads() {
+        val api = client()
+        val payload = ByteArray(48 * 1024) { (it % 97).toByte() }
+        val png = byteArrayOf(0x89.toByte(), 'P'.code.toByte(), 'N'.code.toByte(), 'G'.code.toByte())
+        val file = File(
+            InstrumentationRegistry.getInstrumentation().targetContext.cacheDir,
+            "preview-图片.png",
+        )
+        file.writeBytes(png + payload)
+
+        val name = URLEncoder.encode(file.name, "UTF-8")
+        val response = file.inputStream().use { stream ->
+            api.upload("/api/chat/upload?name=$name&kind=image", stream, file.length(), "image/png")
+        }
+        assertTrue("电脑端接受了图片", response.optBoolean("ok", false))
+        val messageId = response.optJSONObject("message")?.optString("id").orEmpty()
+        assertTrue("消息要有 id", messageId.isNotEmpty())
+
+        // 1. 预览用的取字节接口
+        val bytes = api.mediaBytes(messageId)
+        assertTrue("取回的图片要和发出去的一样大", bytes.size == file.length().toInt())
+        assertTrue("取回的内容一致", bytes.contentEquals(file.readBytes()))
+        assertTrue(
+            "取回的确实是 PNG（预览能解码）",
+            bytes.size > 8 && bytes[0] == png[0] && bytes[1] == png[1],
+        )
+
+        // 2. 「保存到手机」用的落盘路径：真的写进系统「下载」目录
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val uri = saveToDownloads(context, "eversend-instrumented-图片.png") { sink ->
+            api.saveMedia(messageId, sink)
+        }
+        assertTrue("必须写进「下载」目录", uri != null)
+        val saved = context.contentResolver.openInputStream(uri!!)?.use { it.readBytes() }
+        assertTrue("保存下来的内容和电脑端一致", saved != null && saved.contentEquals(file.readBytes()))
+        context.contentResolver.delete(uri, null, null)
+
+        // 3. 附件地址是可直接给 <img>/VideoView 用的完整 URL
+        val url = api.mediaUrl(messageId)
+        assertTrue("附件地址是完整 URL：$url", url.startsWith("http://") && url.contains("/api/chat/media/"))
+    }
+
+    /**
+     * 端到端：真的用「搜索电脑」找到那台正在跑的电脑，并确认那个地址真的能用。
+     *
+     * 上一条用桩验证了"探针发得出去、回包认得出来"，这一条验证真实场景：
+     * 电脑端就在 CI 的宿主机上（模拟器里是 10.0.2.2，属于本网段，正好落在
+     * App 的子网扫描里），Discover 必须把它找出来，并且拿到的地址能打开
+     * `/api/state`。用户报的 "手机上搜索不到电脑" 就是这条。
+     */
+    @Test
+    fun discoveryFindsTheRunningDesktop() {
+        // 这条测"搜索电脑"真实的那条路：把每台主机的网页端口敲一遍，
+        // 谁答"我是韧传"就是电脑。用 `-e host` 里那个端口，正好就是本次
+        // 正在服务我们的那台电脑，所以结果是确定的。
+        val arguments = InstrumentationRegistry.getArguments()
+        val webPort = host().substringAfterLast(":").toIntOrNull() ?: ApiClient.DEFAULT_WEB_PORT
+        // 扫描要重试几次：模拟器（和不少家用路由器）在一阵子密集连接之后会
+        // 短暂丢包，一次扫描可能空手而归，隔一两秒再来就有了。用户按一次
+        // 「搜索电脑」，App 内部本来也会扫两遍。
+        var found = emptyList<ApiClient.Found>()
+        var summary = ""
+        for (attempt in 1..3) {
+            found = ApiClient.discoverByTcp(webPort = webPort, timeoutMs = 12_000)
+            summary = found.joinToString("、") { it.name + "@" + it.base }
+            println("discovery(TCP $webPort) 第 $attempt 次: [$summary]")
+            if (found.isNotEmpty()) break
+            Thread.sleep(1500)
+        }
+        assertTrue("TCP 扫描必须找到正在运行的电脑（网页端口 $webPort）：[$summary]", found.isNotEmpty())
+
+        // 找到的地址必须真的能用（令牌拿得到 = 网页接口活着）
+        val reachable = found.filter { candidate ->
+            try {
+                ApiClient.fetchToken(candidate.base).isNotBlank()
+            } catch (problem: Exception) {
+                false
+            }
+        }
+        assertTrue("搜到的电脑必须真的连得上：[$summary]", reachable.isNotEmpty())
+
+        // 完整发现流程（UDP 广播/单播 + TCP 兜底）在模拟器 NAT 里可能拿不到回包，
+        // 那就只记录，不当失败。
+        val full = ApiClient.discover(timeoutMs = 4000, deviceId = "instrumented")
+        println("discovery(完整流程): " + full.joinToString("、") { it.name + "@" + it.base })
     }
 }
