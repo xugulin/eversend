@@ -1126,6 +1126,17 @@ def check_app_registration(ui) -> None:
     except ValueError:
         check("没有设备号就拒绝登记", True)
 
+    # 记住的设备会一直留着，所以它的说明文字必须跟着 describe_agent() 一起更新，
+    # 否则用户看到的永远是上周那套说法（App 一开始被当成"浏览器"）。
+    ui.touch_client("10.9.9.11", "EverSend-Android/1.0 (Android 16)")
+    old = [c for c in ui.known_clients() if c["address"] == "10.9.9.11"][0]
+    with ui._state_lock:
+        ui._known[old["key"]]["label"] = "Android 上的 浏览器"
+    ui.touch_client("10.9.9.11", "EverSend-Android/1.0 (Android 16)")
+    refreshed = [c for c in ui.known_clients() if c["address"] == "10.9.9.11"][0]
+    check("记住的设备说明文字会跟着更新", refreshed["label"] == "安卓 App", refreshed["label"])
+    ui.remove_client(old["key"])
+
 def main() -> int:
     _use_utf8_console()
     print("EverSend web UI self-test")

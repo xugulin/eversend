@@ -644,6 +644,13 @@ class WebUI:
                 remember = True
             elif entry is not None:
                 entry["lastSeen"] = now
+                if label != entry.get("label"):
+                    # describe_agent() learns new clients over time (the app
+                    # used to be filed as "浏览器"), and a remembered device
+                    # keeps its label forever otherwise -- which is how the
+                    # user keeps seeing last week's wording.
+                    entry["label"] = label
+                    remember = True
             known = self._clients.get(key)
             if known is None:
                 self._clients[key] = {
@@ -655,6 +662,7 @@ class WebUI:
                 }
             else:
                 known["lastSeen"] = now
+                known["label"] = describe_agent(agent)
         if remember:
             self._save_known()
 
