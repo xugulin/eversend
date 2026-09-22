@@ -141,16 +141,38 @@ class ChatStore:
         os.makedirs(self.data_dir, exist_ok=True)
         self.path = os.path.join(self.data_dir, "chat.db")
         self._lock = threading.RLock()
+        self._connection: sqlite3.Connection | None = None
+        #: Newest messages kept per conversation; a chat is not an archive.
+        self.limit_messages = int(limit_messages)
+        self._db  # noqa: B018 - opens (and validates) the database now
+
+    # -- connection --------------------------------------------------------
+
+    def _connect(self) -> sqlite3.Connection:
         # check_same_thread=False: the engine writes from transfer threads and
         # the UI reads from the Qt thread; every statement below is short and
         # serialised by _lock, which is what SQLite needs.
-        self._db = sqlite3.connect(self.path, check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
+        db = sqlite3.connect(self.path, check_same_thread=False)
+        db.row_factory = sqlite3.Row
+        db.executescript(_SCHEMA)
+        db.commit()
+        return db
+
+    @property
+    def _db(self) -> sqlite3.Connection:
+        """The live connection, reopened on demand.
+
+        Reopening matters because :meth:`~eversend.core.engine.Engine.stop`
+        closes it: on Windows a file with an open handle cannot be deleted, so a
+        stopped engine that left ``chat.db`` open made ``--cli selftest`` fail
+        to remove its own temporary directory -- a green self-test and a red
+        exit code.  Keeping the handle open *and* being able to close it is what
+        the property buys.
+        """
         with self._lock:
-            self._db.executescript(_SCHEMA)
-            self._db.commit()
-        #: Newest messages kept per conversation; a chat is not an archive.
-        self.limit_messages = int(limit_messages)
+            if self._connection is None:
+                self._connection = self._connect()
+            return self._connection
 
     # -- conversations -----------------------------------------------------
 
@@ -397,11 +419,15 @@ class ChatStore:
         }
 
     def close(self) -> None:
+        """Release the file handle (and allow a later reopen)."""
         with self._lock:
+            if self._connection is None:
+                return
             try:
-                self._db.close()
+                self._connection.close()
             except Exception:  # pragma: no cover - closing must never raise
                 pass
+            self._connection = None
 
 
 __all__ = [

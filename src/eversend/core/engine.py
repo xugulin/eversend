@@ -271,6 +271,13 @@ class Engine:
         self.discovery.stop()
         self.server.stop()
         self.digest_cache.save()
+        # Close the chat database too: on Windows an open handle keeps the file
+        # undeletable, and callers (the packaged --cli selftest, tests, a user
+        # removing the folder) do exactly that.
+        try:
+            self.chat.close()
+        except Exception:
+            pass
         self.events.emit("engine_stopped")
 
     @property
