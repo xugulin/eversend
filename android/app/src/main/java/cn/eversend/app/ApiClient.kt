@@ -43,8 +43,17 @@ class ApiClient(val base: String, val token: String) {
         conn.setRequestProperty("Accept", "application/json")
         conn.setRequestProperty("X-EverSend-Token", token)
         conn.setRequestProperty("User-Agent", userAgent())
+        // 每个请求都报上设备号：电脑端靠它认这台手机，而不是靠来源地址。
+        // 手机换 Wi-Fi、走热点、被 NAT 改写地址时，来源地址是会变的 —— 地址一
+        // 变电脑端就认不出这条记录，于是"刚连上就掉线"。
+        identity?.let { id ->
+            conn.setRequestProperty("X-EverSend-Device", id)
+            name?.let { conn.setRequestProperty("X-EverSend-Name", it) }
+        }
         return conn
     }
+
+
 
     fun getJson(path: String): JSONObject {
         val conn = open(path)
@@ -133,10 +142,16 @@ class ApiClient(val base: String, val token: String) {
     fun mediaUrl(messageId: String): String =
         base.trimEnd('/') + "/api/chat/media/" + java.net.URLEncoder.encode(messageId, "UTF-8")
 
-    /** 把聊天附件读成字节（图片预览用；图片通常几百 KB）。 */
+    /**
+     * 把聊天附件读成字节（图片预览用；图片通常几百 KB）。
+     *
+     * 读超时特意设短（10 秒）：预览卡住时宁可显示"预览失败，可保存后看"，
+     * 也不要让气泡永远停在"载入中…"—— 用户看到的是"图片打不开"。
+     */
     fun mediaBytes(messageId: String, limit: Long = 24L * 1024 * 1024): ByteArray {
         val conn = open("/api/chat/media/" + java.net.URLEncoder.encode(messageId, "UTF-8"))
         try {
+            conn.readTimeout = 10_000
             val declared = conn.contentLengthLong
             if (declared > limit) throw IllegalStateException("图片太大（${declared / 1024} KB），请用「保存到手机」")
             return conn.inputStream.use { it.readBytes() }
@@ -200,6 +215,18 @@ class ApiClient(val base: String, val token: String) {
             } finally {
                 conn.disconnect()
             }
+        }
+
+        /** 这台手机的稳定设备号与名字（界面启动时填一次）。 */
+        @Volatile
+        var identity: String? = null
+
+        @Volatile
+        var name: String? = null
+
+        fun remember(deviceId: String, deviceName: String) {
+            identity = deviceId
+            name = deviceName
         }
 
         /** 广播公告用的端口，和电脑端约定一致。 */
@@ -652,7 +679,10 @@ class ApiClient(val base: String, val token: String) {
             val targets = LinkedHashSet<InetAddress>()
             for (subnet in subnets()) {
                 subnet.broadcast?.let { targets.add(it) }
-                if (subnet.prefix >= 24) {
+                // /24 及更小的网段全扫；更大的（/16 的办公室网、网卡的 /8）
+                // 也扫"自己所在的那个 /24" —— 否则大网段上一个目标地址都没有，
+                // 探针只剩下广播，遇到拦广播的网络就彻底找不到了。
+                run {
                     val base = subnet.address.address
                     // 本机地址也在扫描范围里：这一遍本来就是"子网内每一台"，
                     // 而且它让"同一台机器上的电脑端"（测试桩、模拟器里的宿主机）

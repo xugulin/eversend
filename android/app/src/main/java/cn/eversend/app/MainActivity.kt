@@ -79,12 +79,24 @@ class MainActivity : ComponentActivity() {
         val store = AppState(this)
         // CI 里用 intent extra 注入电脑地址，省去手工扫码/输入。
         intent?.getStringExtra("host")?.let { store.host = it }
+        // 每个请求都会带上它：电脑端靠设备号认这台手机，不用猜来源地址。
+        ApiClient.remember(store.deviceId, store.deviceName)
         setContent { EverSendTheme { Root(store) } }
     }
 }
 
 class AppState(context: android.content.Context) {
     private val prefs = context.getSharedPreferences("eversend", android.content.Context.MODE_PRIVATE)
+
+    init {
+        // 每个 HTTP 请求都要带上设备号（电脑端靠它认这台手机，而不是靠来源
+        // 地址）。放在这里而不是 Activity 里：前台服务和测试走的也是这个类，
+        // 只在 Activity 里记的话，服务发出的请求就没有身份了。
+        ApiClient.remember(
+            prefs.getString("deviceId", null) ?: "",
+            prefs.getString("deviceName", null) ?: "",
+        )
+    }
 
     /** 稳定设备 id：电脑端靠它认出"还是这台手机"，换 Wi-Fi 也不会变成新设备。 */
     val deviceId: String
@@ -194,6 +206,15 @@ fun SettingsScreen(store: AppState) {
     var scanning by remember { mutableStateOf(false) }
     var keepAlive by remember { mutableStateOf(store.keepAlive) }
     val scope = rememberCoroutineScope()
+
+    // 打开设置页就把保活服务拉起来（如果该开而没开）。
+    // 以前只有"手动切换那个勾选框"才会启动服务：带着默认勾选启动 App 时
+    // 服务从来没起来过，界面就一直写着"状态：未连接"——用户的截图正是如此。
+    LaunchedEffect(keepAlive, store.host) {
+        if (keepAlive && normalizeHost(store.host).isNotBlank()) {
+            startLinkService(context, store, true)
+        }
+    }
 
     Column(
         Modifier
@@ -319,9 +340,7 @@ fun SettingsScreen(store: AppState) {
                 onCheckedChange = {
                     keepAlive = it
                     store.keepAlive = it
-                    val serviceIntent = LinkService().startIntent(context, "http://${store.host}/")
-                    if (it) ContextCompat.startForegroundService(context, serviceIntent)
-                    else context.stopService(Intent(context, LinkService::class.java))
+                    startLinkService(context, store, it)
                 },
                 modifier = Modifier.testTag("keepalive-box"),
             )
@@ -342,7 +361,20 @@ fun SettingsScreen(store: AppState) {
                 launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
-        Text("状态：${LinkService.lastState}", fontSize = 13.sp, modifier = Modifier.testTag("link-state"))
+        val seenAgo = if (LinkService.lastSeenAt > 0) {
+            ((System.currentTimeMillis() - LinkService.lastSeenAt) / 1000).coerceAtLeast(0)
+        } else {
+            -1L
+        }
+        Text(
+            "状态：${LinkService.lastState}" +
+                (if (seenAgo >= 0) "　·　最后联系 ${seenAgo} 秒前" else ""),
+            fontSize = 13.sp,
+            modifier = Modifier.testTag("link-state"),
+        )
+        if (LinkService.lastError.isNotBlank()) {
+            Text("最近一次失败：${LinkService.lastError}", fontSize = 12.sp, color = Color(0xFFB42318))
+        }
         if (LinkService.lastMessage.isNotBlank()) {
             Text("最近消息：${LinkService.lastMessage}", fontSize = 13.sp)
         }
@@ -1073,7 +1105,10 @@ fun Bubble(message: ChatMessage, client: ApiClient?, onError: (String) -> Unit =
 fun ImagePreview(message: ChatMessage, client: ApiClient?, onError: (String) -> Unit, onOpen: () -> Unit) {
     var bitmap by remember(message.id) { mutableStateOf<android.graphics.Bitmap?>(null) }
     var failed by remember(message.id) { mutableStateOf(false) }
-    LaunchedEffect(message.id) {
+    // 关键字里带上 client：它一开始可能是 null（聊天页刚进来还没连上），
+    // 只按 message.id 做 key 的话这个协程会直接返回、再也不会重跑 —— 气泡就
+    // 永远停在"载入中…"（真机测试里抓到过这一幕）。
+    LaunchedEffect(message.id, client) {
         val active = client ?: return@LaunchedEffect
         withContext(Dispatchers.IO) {
             try {
@@ -1146,7 +1181,7 @@ fun MediaViewer(message: ChatMessage, client: ApiClient?, onClose: () -> Unit) {
                 when (message.kind) {
                     "image" -> {
                         var bitmap by remember(message.id) { mutableStateOf<android.graphics.Bitmap?>(null) }
-                        LaunchedEffect(message.id) {
+                        LaunchedEffect(message.id, client) {
                             val active = client ?: return@LaunchedEffect
                             withContext(Dispatchers.IO) {
                                 try {
@@ -1534,6 +1569,21 @@ fun SendScreen(store: AppState) {
     }
 }
 
+/** 启动/停止前台保活服务。幂等：重复调用只是把地址刷新一下。 */
+fun startLinkService(context: android.content.Context, store: AppState, enabled: Boolean) {
+    val intent = LinkService().startIntent(context, "http://${normalizeHost(store.host)}/")
+    if (!enabled) {
+        context.stopService(Intent(context, LinkService::class.java))
+        return
+    }
+    if (normalizeHost(store.host).isBlank()) return
+    try {
+        ContextCompat.startForegroundService(context, intent)
+    } catch (problem: Exception) {
+        Log.d("EverSend", "保活服务启动失败: ${problem.message}")
+    }
+}
+
 /** 把一个文件发给一台设备（多选时对每台各来一遍）。 */
 suspend fun uploadToDevice(
     context: android.content.Context,
@@ -1764,23 +1814,66 @@ fun loadDevices(api: ApiClient, store: AppState): List<DeviceRow> {
         else -> platform
     }
 
+    fun factsOf(platform: String, version: String, address: String, webPort: Int = 0): String {
+        val facts = mutableListOf<String>()
+        if (platform.isNotBlank()) facts.add(platformName(platform))
+        if (version.isNotBlank()) facts.add("韧传 $version")
+        if (address.isNotBlank()) {
+            facts.add(if (webPort > 0) "$address:$webPort" else address)
+        }
+        return facts.joinToString(" · ")
+    }
+
+    // 这台手机连着的**就是**一台电脑 —— 它是发送的首要目标。
+    //
+    // 以前这里只看 devices 数组并且跳过 isSelf，于是"自己连的那台电脑"被当成
+    // 本机过滤掉了：App 的设备列表里只有别的手机，用户根本选不到电脑，"传文件"
+    // 自然无从谈起。App 的"本机"是这台手机（按 store.deviceId 判断），不是它连
+    // 的那台电脑。
+    val self = state.optJSONObject("device")
+    val selfId = self?.optString("id").orEmpty()
+    if (selfId.isNotEmpty()) {
+        val webPort = self?.optInt("webPort", 0) ?: 0
+        val addresses = self?.optJSONArray("addresses")
+        val selfAddress = if ((addresses?.length() ?: 0) > 0) addresses?.optString(0).orEmpty() else ""
+        rows.add(
+            DeviceRow(
+                id = selfId,
+                name = self?.optString("name").orEmpty().ifBlank { "电脑" },
+                kind = "电脑",
+                address = if (webPort > 0) "$selfAddress:$webPort" else selfAddress,
+                online = true,
+                facts = factsOf(
+                    self?.optString("platform").orEmpty(),
+                    self?.optString("version").orEmpty(),
+                    selfAddress,
+                    webPort,
+                ),
+            )
+        )
+    }
+
     val devices = state.optJSONArray("devices")
     for (index in 0 until (devices?.length() ?: 0)) {
         val device = devices.optJSONObject(index) ?: continue
-        if (device.optBoolean("isSelf")) continue
-        val facts = mutableListOf<String>()
-        if (device.optString("platform").isNotBlank()) facts.add(platformName(device.optString("platform")))
-        if (device.optString("version").isNotBlank()) facts.add("韧传 " + device.optString("version"))
-        if (device.optString("address").isNotBlank()) facts.add(device.optString("address"))
+        if (device.optString("id") == selfId) continue        // 上面已经加过了
+        if (device.optBoolean("isSelf")) continue             // 电脑端眼里的"本机"
+        val address = device.optString("address")
+        val webPort = device.optInt("webPort", 0)
         rows.add(
             DeviceRow(
                 id = device.optString("id"),
                 name = device.optString("name"),
                 kind = "电脑",
-                address = "${device.optString("address")}:${device.optInt("port")}",
+                address = "$address:${device.optInt("port")}",
                 online = device.optBoolean("online", true),
                 secondsAgo = device.optDouble("secondsAgo", 0.0),
-                facts = facts.joinToString(" · "),
+                facts = factsOf(
+                    device.optString("platform"),
+                    device.optString("version"),
+                    address,
+                    webPort,
+                ),
             )
         )
     }
@@ -1791,10 +1884,6 @@ fun loadDevices(api: ApiClient, store: AppState): List<DeviceRow> {
         val deviceId = client.optString("deviceId")
         if (deviceId == store.deviceId) continue          // 就是本机
         val isApp = client.optString("clientKind") == "app"
-        val facts = mutableListOf<String>()
-        facts.add(if (isApp) "安卓 App" else "网页版")
-        if (client.optString("version").isNotBlank()) facts.add("韧传 " + client.optString("version"))
-        if (client.optString("address").isNotBlank()) facts.add(client.optString("address"))
         rows.add(
             DeviceRow(
                 id = "web:" + client.optString("key"),
@@ -1803,7 +1892,11 @@ fun loadDevices(api: ApiClient, store: AppState): List<DeviceRow> {
                 address = client.optString("address"),
                 online = client.optBoolean("online", false),
                 secondsAgo = client.optDouble("secondsAgo", 0.0),
-                facts = facts.joinToString(" · "),
+                facts = factsOf(
+                    if (isApp) "android" else "browser",
+                    client.optString("version"),
+                    client.optString("address"),
+                ),
             )
         )
     }
@@ -1824,8 +1917,11 @@ fun chatMembersLabel(members: List<DeviceRow>, conversation: Conversation, store
         val facts = member.facts.ifBlank { member.kind }
         parts.add("${member.name}（$facts）")
     }
-    val who = if (conversation.id.startsWith("g:")) "群成员：" else "与 "
-    return who + parts.joinToString("、") + if (conversation.id.startsWith("g:")) "" else " 的对话"
+    return if (conversation.id.startsWith("g:")) {
+        "群成员：" + parts.joinToString("、")
+    } else {
+        "与 " + parts.joinToString("、") + " 的对话"
+    }
 }
 
 /** 群聊可选成员：电脑（协议对端）和已配对的手机（网页版 / 安卓 App）。 */

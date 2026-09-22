@@ -612,8 +612,16 @@ class WebUI:
 
     # -- connected browsers ------------------------------------------------
 
-    def touch_client(self, address: str, agent: str = "") -> None:
-        """Remember that a browser at ``address`` just did something.
+    def touch_client(self, address: str, agent: str = "", device_id: str = "") -> None:
+        """Remember that a client just did something.
+
+        ``device_id`` is what the native app sends on *every* request
+        (``X-EverSend-Device``).  Matching on it instead of the source address is
+        what keeps a phone from "dropping off" the moment its address changes --
+        a phone that roams between Wi-Fi and its own hotspot arrives from a
+        different address, and an address-keyed record then looks offline
+        forever while the app is happily talking to us.
+        
 
         Keyed by address **and** User-Agent.  Address alone is not enough: a
         phone reaching us through a port forward (``adb reverse``, a reverse
@@ -622,9 +630,11 @@ class WebUI:
         how the Android CI check first "saw" a client that was really its own
         probe.  One phone in a normal LAN still gets exactly one entry.
         """
-        if not address:
+        if not address and not device_id:
             return
         now = time.time()
+        if device_id and self._touch_known_device(device_id, address, agent, now):
+            return
         if is_app_agent(agent) and self._touch_known_app(address, agent, now):
             return
         digest = hashlib.sha1((agent or "").encode("utf-8", "replace")).hexdigest()[:8]
@@ -671,6 +681,35 @@ class WebUI:
                 known["label"] = describe_agent(agent)
         if remember:
             self._save_known()
+
+    def _touch_known_device(self, device_id: str, address: str, agent: str, now: float) -> bool:
+        """Keep an app-registered device alive, whichever address it came from."""
+        key = f"android:{device_id}"
+        with self._state_lock:
+            client = self._known.get(key)
+            if client is None:
+                return False
+            client["lastSeen"] = now
+            client.pop("provisional", None)
+            client["talked"] = True
+            if address:
+                client["address"] = address      # 地址变了就跟着变
+            if agent and not client.get("agent"):
+                client["agent"] = agent[:200]
+            live = self._clients.get(key)
+            if live is None:
+                self._clients[key] = {
+                    "address": address,
+                    "agent": agent[:200],
+                    "label": client.get("label") or "安卓 App",
+                    "since": client.get("firstSeen", now),
+                    "lastSeen": now,
+                }
+            else:
+                live["lastSeen"] = now
+                if address:
+                    live["address"] = address
+        return True
 
     def _touch_known_app(self, address: str, agent: str, now: float) -> bool:
         """Keep an app that already introduced itself on its own entry.
@@ -1688,6 +1727,7 @@ class _Handler(BaseHTTPRequestHandler):
         ui.touch_client(
             self.client_address[0] if self.client_address else "",
             self.headers.get("User-Agent", ""),
+            device_id=self.headers.get("X-EverSend-Device", ""),
         )
 
         try:

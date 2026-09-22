@@ -119,6 +119,9 @@ class EverSendInstrumentedTest {
         }
         val name = URLEncoder.encode(png.name, "UTF-8")
         png.inputStream().use { api.upload("/api/chat/upload?name=$name&kind=image", it, png.length(), "image/png") }
+        // 给它一点时间落位：界面马上就会去取这张图，而电脑端此刻可能还在收尾
+        // 别的传输（整套测试连着跑时）。这不是产品需要的行为，是测试的节奏。
+        Thread.sleep(5_000)
 
         context.getSharedPreferences("eversend", android.content.Context.MODE_PRIVATE)
             .edit()
@@ -163,11 +166,13 @@ class EverSendInstrumentedTest {
             shoot("android-app-conversation.png")
 
             // 1. 图片要真的显示出来，点一下要能看大图
+            // 等久一点：图片是现从电脑端取回来的，而这时电脑端刚被前面几条
+            // 测试连着捶过（传输、上传、20 秒保活）。
             val picture = device.wait(
                 androidx.test.uiautomator.Until.findObject(
                     androidx.test.uiautomator.By.desc("ui-图片.png")
                 ),
-                10_000,
+                25_000,
             )
             if (picture == null) {
                 // 找不到就把整棵界面树存下来，CI 里能直接看（否则只有一句断言失败）
@@ -564,5 +569,98 @@ class EverSendInstrumentedTest {
         assertTrue("内置播放器要真的把这段音频放完", finished.await(15, java.util.concurrent.TimeUnit.SECONDS))
         player.stop()
         file.delete()
+    }
+
+    /**
+     * 「发送」页签真的能把文件传到电脑上。
+     *
+     * 用户报"不能传文件"，所以这条不加任何额外的宽容：走的就是界面里那条路
+     * —— 读设备列表 → 选中电脑 → 按 deviceId 上传 —— 然后回查电脑端确实把
+     * 这个文件收下了（/api/state 的 recentUploads）。
+     */
+    @Test
+    fun sendScreenUploadsAFileToTheComputer() {
+        val api = client()
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val store = AppState(context)
+        val devices = loadDevices(api, store)
+        val computer = devices.firstOrNull { it.kind == "电脑" }
+        assertTrue("设备列表里要有电脑：${devices.map { it.name + "/" + it.kind }}", computer != null)
+
+        val payload = ByteArray(96 * 1024) { (it % 211).toByte() }
+        val file = File(context.cacheDir, "发送页-真机-${System.currentTimeMillis()}.bin")
+        file.writeBytes(payload)
+
+        val name = URLEncoder.encode(file.name, "UTF-8")
+        val query = "/api/upload?name=$name&deviceId=" + URLEncoder.encode(computer!!.id, "UTF-8")
+        val response = file.inputStream().use { stream ->
+            api.upload(query, stream, file.length(), "application/octet-stream")
+        }
+        assertTrue("电脑端要接受这次上传：$response", response.optBoolean("ok", false))
+
+        // 电脑端必须真的记下了这个文件
+        val state = api.getJson("/api/state")
+        // 两个数组都要看："正在传"在 uploads 里、"传完了"在 recentUploads 里，
+        // 而 recentUploads 常常是个空数组（不是 null），用 ?: 会挑错那一个。
+        val candidates = listOfNotNull(
+            state.optJSONArray("uploads"),
+            state.optJSONArray("recentUploads"),
+        )
+        var landed = false
+        var status = ""
+        for (array in candidates) {
+            for (index in 0 until array.length()) {
+                val upload = array.optJSONObject(index) ?: continue
+                if (upload.optString("name") != file.name) continue
+                status = upload.optString("status")
+                if (status == "done" || status == "queued" || status == "sending" || status == "handed-off") {
+                    landed = true
+                }
+            }
+        }
+        assertTrue("电脑端要有这次上传的记录（状态 $status）", landed)
+        file.delete()
+    }
+
+    /**
+     * 保活服务要真的把连接撑住：连上之后**持续**保持在线。
+     *
+     * 用户报"连上电脑后很快掉线"。原因有两个，这条测试把它们都钉住：
+     * 1. 勾着"保持后台连接"但服务从来没被启动过（只在手动切勾选框时才启动）；
+     * 2. 电脑端 15 秒没听到手机说话就算离线，而只靠一条 SSE 的话，那条流一断
+     *    手机就不再发任何请求 —— 于是电脑端显示"未连接"。
+     */
+    @Test
+    fun keepAliveServiceStaysOnline() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val store = AppState(context)
+        store.host = host()
+        store.keepAlive = true
+
+        startLinkService(context, store, true)
+        // 等服务把第一次心跳发出去
+        Thread.sleep(3_000)
+        assertTrue("保活服务要真的在跑（状态：${LinkService.lastState}）", LinkService.running)
+
+        // 撑过电脑端的 15 秒在线判定窗口：期间不再点任何界面
+        Thread.sleep(20_000)
+        assertTrue(
+            "服务跑着的时候状态不能掉成未连接（当前：${LinkService.lastState}）",
+            LinkService.lastState != "未连接",
+        )
+        val api = client()
+        val state = api.getJson("/api/state")
+        val clients = state.optJSONArray("knownClients") ?: org.json.JSONArray()
+        var mine: org.json.JSONObject? = null
+        for (index in 0 until clients.length()) {
+            val client = clients.optJSONObject(index) ?: continue
+            if (client.optString("deviceId") == store.deviceId) mine = client
+        }
+        assertTrue("电脑端必须认得这台手机（deviceId=${store.deviceId}）", mine != null)
+        assertTrue(
+            "20 秒没动界面之后，电脑端仍然要把这台手机算作在线：$mine",
+            mine!!.optBoolean("online", false),
+        )
+        context.stopService(android.content.Intent(context, LinkService::class.java))
     }
 }
