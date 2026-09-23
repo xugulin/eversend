@@ -427,6 +427,13 @@ def test_chat_attachment_preview(app, root) -> None:
                 len(pixmaps) >= 2,
                 f"pixmaps={len(pixmaps)}",
             )
+            # 聊天里的文件传输要"长在气泡里"：正在传时显示百分比
+            chat._refresh_media_progress()   # 没有活动传输时不能报错
+            check("没有传输时气泡不显示进度行", all(
+                not getattr(bubble, "_progress_label").isVisible()
+                for bubble, _ in chat._media_bubbles
+                if hasattr(bubble, "_progress_label")
+            ), "有气泡显示了进度")
             check(
                 "视频给出播放入口（内置播放器或系统播放器）",
                 any("播放" in text for text in texts),

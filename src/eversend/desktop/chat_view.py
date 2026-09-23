@@ -53,7 +53,7 @@ from ..core import media, platform_open
 from ..core.chat import MEDIA_KINDS, direct_conversation_id
 from ..core.emoji import EMOJI_GROUPS
 from ..core.engine import Engine
-from ..core.model import human_bytes
+from ..core.model import human_bytes, human_speed
 
 #: The palette itself lives in the core so all three clients offer the same
 #: set (see :mod:`eversend.core.emoji`); this module only draws it.
@@ -188,10 +188,12 @@ class ChatView(QWidget):
         self._conversation = ""
         self._rendered: list[str] = []
         self._busy = False
+        #: (气泡, 消息) —— 每次刷新时把传输进度写进气泡里
+        self._media_bubbles: list[tuple[QWidget, dict[str, Any]]] = []
         self._build()
         self._tick = QTimer(self)
         self._tick.setInterval(1500)
-        self._tick.timeout.connect(self.reload)
+        self._tick.timeout.connect(self._on_tick)
         self._tick.start()
         self.reload()
 
@@ -621,7 +623,69 @@ class ChatView(QWidget):
             parts.append(str(peer.address))
         return " · ".join(parts)
 
+    def _on_tick(self) -> None:
+        """每 1.5 秒：重画列表（未读/置顶会变），并刷新气泡里的传输进度。"""
+        self.reload()
+        self._refresh_media_progress()
+
+    def _refresh_media_progress(self) -> None:
+        """把活动传输的进度写进对应的附件气泡。
+
+        「传输」页和聊天页看的是同一份事实（``engine.active_transfers()``），
+        所以在聊天里发文件时，进度就长在那条消息下面 —— 不用切换页签去猜。
+        """
+        if not self._media_bubbles:
+            return
+        try:
+            active = self.engine.active_transfers()
+        except Exception:
+            return
+        by_name: dict[str, Any] = {}
+        for transfer in active:
+            for item in transfer.items.values():
+                name = os.path.basename(getattr(item.entry, "name", "") or item.path or "")
+                if name:
+                    by_name[name] = (transfer, item)
+        for bubble, message in list(self._media_bubbles):
+            label = getattr(bubble, "_progress_label", None)
+            retry = getattr(bubble, "_retry_button", None)
+            if label is None:
+                continue
+            name = str(message.get("mediaName") or "")
+            found = by_name.get(name)
+            if found is None:
+                label.setVisible(False)
+                if retry is not None:
+                    retry.setVisible(
+                        message.get("direction") == "out" and message.get("state") == "failed"
+                    )
+                continue
+            transfer, item = found
+            total = max(1, int(item.entry.size or 1))
+            done = int(getattr(item, "done_bytes", 0) or 0)
+            percent = min(100.0, 100.0 * done / total)
+            speed = ""
+            try:
+                speed = human_speed(transfer.stats.instant_speed_bps)
+            except Exception:
+                speed = ""
+            label.setText(
+                f"⬆ 传输中 {percent:.0f}%" + (f" · {speed}" if speed else "")
+            )
+            label.setVisible(True)
+            if retry is not None:
+                retry.setVisible(False)
+
+    def _retry_attachment(self, message: dict[str, Any]) -> None:
+        """重发一条发送失败的附件（就地重试，不用重新选文件）。"""
+        source = str(message.get("mediaSource") or "")
+        if not source or not os.path.isfile(source):
+            QMessageBox.information(self, "找不到原文件", "这个文件本机已经没有了，请重新选择。")
+            return
+        self.send_attachment(source)
+
     def _clear_messages(self) -> None:
+        self._media_bubbles = []
         while self.messages_layout.count() > 1:
             item = self.messages_layout.takeAt(0)
             widget = item.widget()
@@ -670,6 +734,20 @@ class ChatView(QWidget):
             note = QLabel("发送中…" if state == "sending" else "发送失败（对方不在线？）")
             note.setObjectName("BubbleState")
             layout.addWidget(note)
+        # 附件：把"文件传输"直接长在气泡里（用户在聊天里发文件，就不该再去
+        # 「传输」页找进度）。有活动传输时显示百分比与速度，失败给「重试」。
+        if kind in MEDIA_KINDS:
+            progress = QLabel("")
+            progress.setObjectName("BubbleState")
+            progress.setVisible(False)
+            layout.addWidget(progress)
+            bubble._progress_label = progress  # noqa: SLF001 - our own widget
+            retry = QPushButton("重试")
+            retry.setVisible(False)
+            retry.clicked.connect(lambda _=False, m=dict(message): self._retry_attachment(m))
+            layout.addWidget(retry)
+            bubble._retry_button = retry  # noqa: SLF001
+            self._media_bubbles.append((bubble, message))
 
         row = QHBoxLayout()
         row.addStretch(1 if outgoing else 0)
