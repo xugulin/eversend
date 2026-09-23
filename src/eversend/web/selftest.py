@@ -1104,6 +1104,21 @@ def check_device_identity_is_stable(ui, base: str) -> None:
     check("换 IP 之后仍然只有一台", len(again) == 1, str(again)[:120])
     check("地址跟着更新", again and again[0]["address"] == "192.168.77.9", str(again)[:120])
 
+    # 历史遗留清理：老版本按"地址+UA"记的那几条（浏览器一升级就多一条），
+    # 在稳定设备号出现、并且它们已不活跃之后应当被收掉。
+    legacy_agent = "Mozilla/5.0 (Linux; Android 16; V2408A) Chrome/146 Mobile Safari/537.36"
+    ui.touch_client("192.168.77.9", legacy_agent)
+    legacy_key = ui.client_key("192.168.77.9", legacy_agent)
+    with ui._state_lock:
+        ui._clients.pop(legacy_key, None)      # 让它变成"不活跃的旧记录"
+    ui.touch_client("192.168.77.9", legacy_agent, device_id=device)
+    remaining = [c for c in ui.known_clients() if c.get("address") == "192.168.77.9"]
+    check(
+        "同一地址上历史遗留的旧记录会被收掉",
+        all("|" not in str(c.get("key")) for c in remaining),
+        str([c.get("key") for c in remaining]),
+    )
+
     # 去掉旧地址那条腿之后，历史会话仍然指向同一个身份
     with ui._state_lock:
         stale = [k for k, c in ui._known.items() if c.get("deviceId") == device and k != key]
@@ -1392,6 +1407,13 @@ def check_app_registration(ui) -> None:
     )
     heard = [c for c in ui.known_clients() if c.get("key") == "android:heard-once"]
     check("只广播过的设备先记下来（也许马上就会说话）", len(heard) == 1, str(heard)[:80])
+    # 同一台手机重装 App 会换设备号：同名、旧的不在线 → 当成同一台收掉
+    ui.register_app("old-install", name="我的手机", address="10.9.9.13", agent=agent)
+    ui.register_app("new-install", name="我的手机", address="10.9.9.13", agent=agent)
+    installs = [c for c in ui.known_clients() if c.get("label") == "我的手机"]
+    check("重装 App 后不会留下两条同名记录", len(installs) == 1, str([c["key"] for c in installs]))
+    ui.remove_client("android:new-install")
+
     ui.register_app("heard-once", name="只广播过一次", address="10.9.9.12", agent=agent)
     with ui._state_lock:
         # 把时间推回到两分钟前：它一直没再出现

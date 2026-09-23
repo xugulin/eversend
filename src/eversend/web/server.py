@@ -756,6 +756,22 @@ class WebUI:
                 live["lastSeen"] = now
                 if address:
                     live["address"] = address
+
+            # 历史遗留：网页版以前的身份是"地址 + User-Agent"，浏览器升级一次
+            # （或者换内核）就多出一条 —— 用户看到"同一个浏览器两台设备"。
+            # 现在它有了稳定设备号，同一地址上那些**不再活跃**的旧记录就是它
+            # 自己，顺手收拾掉；正在用的别的浏览器（活跃中）不动。
+            if address:
+                for other in [
+                    legacy
+                    for legacy, entry in self._known.items()
+                    if legacy != key
+                    and "|" in legacy
+                    and entry.get("address") == address
+                    and legacy not in self._clients
+                ]:
+                    self._known.pop(other, None)
+                    self._clients.pop(other, None)
         return True
 
     def _touch_known_app(self, address: str, agent: str, now: float) -> bool:
@@ -968,6 +984,20 @@ class WebUI:
             entry.pop("provisional", None)
             entry["talked"] = True
             self._known[key] = entry
+            # 同一台手机重装 App 会换设备号（新安装 = 新的 UUID），于是列表里
+            # 出现两条同名记录。同名、且旧的那条**不在线**时，就认定是它自己
+            # 重装过 —— 收掉旧的。两台真机同名又都在线的情况不会被误合并。
+            for stale in [
+                other
+                for other, client in self._known.items()
+                if other.startswith("android:")
+                and other != key
+                and client.get("label") == entry.get("label")
+                and str(client.get("name") or "") == str(entry.get("name") or "")
+                and other not in self._clients
+            ]:
+                self._known.pop(stale, None)
+                self._clients.pop(stale, None)
             # An earlier build of the app did not introduce itself at all, so it
             # entered the registry under the browser key (address + User-Agent)
             # and now shows up as a second, duplicate device next to the real
