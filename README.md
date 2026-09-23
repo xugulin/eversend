@@ -190,6 +190,12 @@ App 真机截图（CI 上真模拟器跑完测试后自动截的，Emoji 由系�
 装法：下载 `EverSend-1.0.0-android.apk` 安装即可（**debug 签名**，自用/测试没问题；
 正式分发请用自己的密钥重新签名）。打开后点「搜索电脑」自动发现，也可以手填地址。
 
+这个 APK 是 **arm64-v8a 单 ABI**（内置 libVLC，含自己的 FFmpeg 解码器，装到手机上
+约 68 MiB；x86_64 那份只给模拟器用）。它由 `android/` 这份源码用
+`gradle :app:assembleDebug` 构建；CI 的 `安卓 App` 任务会用**同一个 commit 构建的
+同配置 APK** 在真机模拟器上跑完 15 项真机测试（见
+[`docs/screenshots/android-instrumented.txt`](docs/screenshots/android-instrumented.txt)）。
+
 **不翻墙也能装**：把 APK 放进韧传目录（或 `data` 目录，名字里带 `eversend` 或 `韧传`
 即可，如 `EverSend-android.apk`），手机打开网页版就会多出一张「装安卓 App」卡片，
 点一下直接从这台电脑下载安装——手机本来就在和它说话，不需要经过互联网。
