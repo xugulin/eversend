@@ -100,9 +100,40 @@
 
   // ------------------------------------------------------------------- api
 
+  // 这台设备的稳定标识：存在 localStorage 里，换 IP、换网络、关掉页面再打开
+  // 都还是它。以前网页版的身份是"地址 + User-Agent"，手机换一次 IP 就变成
+  // 另一台设备，会话也跟着多一条 —— 用户看到的正是"同一台手机冒出来好几台"。
+  var DEVICE_KEY = 'eversend-device-id';
+  var DEVICE_NAME_KEY = 'eversend-device-name';
+  function deviceId() {
+    var existing = localStorage.getItem(DEVICE_KEY);
+    if (existing) return existing;
+    var fresh = (window.crypto && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : ('web-' + Date.now() + '-' + Math.random().toString(16).slice(2));
+    localStorage.setItem(DEVICE_KEY, fresh);
+    return fresh;
+  }
+
+  /** 这台设备叫什么：安卓手机写型号，电脑浏览器写“浏览器”。 */
+  function deviceName() {
+    var existing = localStorage.getItem(DEVICE_NAME_KEY);
+    if (existing) return existing;
+    var ua = navigator.userAgent || '';
+    var guess = /Android/i.test(ua) ? '安卓手机' : (/iPhone|iPad/i.test(ua) ? 'iPhone/iPad' : '电脑浏览器');
+    var match = /Android[^;)]*;\s*([^;)]+?)\s*(?:Build|\))/i.exec(ua);
+    if (match && match[1]) guess = match[1].trim();
+    localStorage.setItem(DEVICE_NAME_KEY, guess);
+    return guess;
+  }
+
+  function deviceHeaders() {
+    return { 'X-EverSend-Device': deviceId(), 'X-EverSend-Name': deviceName() };
+  }
+
   function api(path, options) {
     var opts = options || {};
-    var headers = Object.assign({ Accept: 'application/json' }, opts.headers || {});
+    var headers = Object.assign({ Accept: 'application/json' }, deviceHeaders(), opts.headers || {});
     var body = opts.body;
     if (opts.method === 'POST') headers['X-EverSend-Token'] = TOKEN;
     if (opts.json !== undefined) {
@@ -752,7 +783,10 @@
       '&duration=' + encodeURIComponent(durationMs || 0);
     return fetch(query, {
       method: 'POST',
-      headers: { 'X-EverSend-Token': TOKEN, 'Content-Type': file.type || 'application/octet-stream' },
+      headers: Object.assign(
+        { 'X-EverSend-Token': TOKEN, 'Content-Type': file.type || 'application/octet-stream' },
+        deviceHeaders(),
+      ),
       body: file,
       credentials: 'same-origin'
     }).then(function (response) {
@@ -1326,6 +1360,8 @@
     var request = new XMLHttpRequest();
     request.open('POST', query, true);
     request.setRequestHeader('X-EverSend-Token', TOKEN);
+    request.setRequestHeader('X-EverSend-Device', deviceId());
+    request.setRequestHeader('X-EverSend-Name', deviceName());
     request.setRequestHeader('Content-Type', 'application/octet-stream');
     request.upload.onprogress = function (progressEvent) {
       if (!progressEvent.lengthComputable) return;

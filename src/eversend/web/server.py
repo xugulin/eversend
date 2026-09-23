@@ -633,8 +633,13 @@ class WebUI:
         if not address and not device_id:
             return
         now = time.time()
-        if device_id and self._touch_known_device(device_id, address, agent, now):
-            return
+        if device_id:
+            # 原生 App 用 android:<id>（/api/hello 登记过），网页版用 web:<id>：
+            # 两者都是"设备号"，跟地址无关 —— 换 Wi-Fi、换 IP 都还是同一台。
+            if self._touch_known_device(device_id, address, agent, now):
+                return
+            if self._touch_web_device(device_id, address, agent, now):
+                return
         if is_app_agent(agent) and self._touch_known_app(address, agent, now):
             return
         digest = hashlib.sha1((agent or "").encode("utf-8", "replace")).hexdigest()[:8]
@@ -702,6 +707,48 @@ class WebUI:
                     "address": address,
                     "agent": agent[:200],
                     "label": client.get("label") or "安卓 App",
+                    "since": client.get("firstSeen", now),
+                    "lastSeen": now,
+                }
+            else:
+                live["lastSeen"] = now
+                if address:
+                    live["address"] = address
+        return True
+
+    def _touch_web_device(self, device_id: str, address: str, agent: str, now: float) -> bool:
+        """A browser that identifies itself with a stable id.
+
+        The page generates one UUID once (localStorage) and sends it on every
+        request, so a phone that roams between networks stays *one* device here
+        -- and therefore keeps *one* conversation -- instead of turning into a
+        new client every time its address changes.
+        """
+        key = f"web:{device_id}"
+        with self._state_lock:
+            client = self._known.get(key)
+            if client is None:
+                client = {
+                    "key": key,
+                    "address": address,
+                    "agent": agent[:200],
+                    "label": describe_agent(agent),
+                    "firstSeen": now,
+                    "deviceId": device_id,
+                    "kind": "browser",
+                }
+                self._known[key] = client
+            client["lastSeen"] = now
+            client.pop("provisional", None)
+            client["talked"] = True
+            if address:
+                client["address"] = address
+            live = self._clients.get(key)
+            if live is None:
+                self._clients[key] = {
+                    "address": address,
+                    "agent": agent[:200],
+                    "label": client.get("label") or describe_agent(agent),
                     "since": client.get("firstSeen", now),
                     "lastSeen": now,
                 }
@@ -2466,7 +2513,14 @@ class _Handler(BaseHTTPRequestHandler):
         keeps pointing at the same member.
         """
         address = self.client_address[0] if self.client_address else ""
-        key = ui.client_key(address, self.headers.get("User-Agent", ""))
+        agent = self.headers.get("User-Agent", "")
+        device_id = self.headers.get("X-EverSend-Device", "").strip()
+        if device_id:
+            # 稳定身份：换网络、换 IP 都还是这台设备，会话不会分身。
+            # （原生 App 走 /api/hello 登记成 android:<id>，网页版这里就是
+            #   web:<id>，两边各自稳定。）
+            return "web:" + device_id
+        key = ui.client_key(address, agent)
         return "web:" + key
 
     def _self_client_key(self, ui) -> str:

@@ -1080,6 +1080,37 @@ def check_emoji_api(base: str) -> None:
     )
 
 
+def check_device_identity_is_stable(ui, base: str) -> None:
+    """Same phone, new address: still *one* device, still one conversation.
+
+    The page used to be keyed by address + User-Agent, so a phone that changed
+    networks became a second device and its chat a second conversation.  Now the
+    page carries a device id of its own; this checks the registry follows the id
+    and not the address.
+    """
+    print("\n[设备唯一性] 换地址不换身份")
+    agent = "Mozilla/5.0 (Linux; Android 16; V2408A) AppleWebKit/537.36 Chrome/146 Mobile Safari/537.36"
+    device = "selftest-device-0001"
+    ui.touch_client("10.9.9.50", agent, device_id=device)
+    first = [c for c in ui.known_clients() if c.get("deviceId") == device]
+    check("带设备号的浏览器被登记", len(first) == 1, str(first)[:100])
+    key = first[0]["key"] if first else ""
+    check("键是设备号而不是地址", key == "web:" + device, key)
+
+    # 换一个网段、换一个 User-Agent：还是同一台设备
+    ui.touch_client("192.168.77.9", "Mozilla/5.0 (Linux; Android 16; V2408A) Chrome/147 Mobile Safari/537.36",
+                    device_id=device)
+    again = [c for c in ui.known_clients() if c.get("deviceId") == device]
+    check("换 IP 之后仍然只有一台", len(again) == 1, str(again)[:120])
+    check("地址跟着更新", again and again[0]["address"] == "192.168.77.9", str(again)[:120])
+
+    # 去掉旧地址那条腿之后，历史会话仍然指向同一个身份
+    with ui._state_lock:
+        stale = [k for k, c in ui._known.items() if c.get("deviceId") == device and k != key]
+    check("没有为同一台设备再建一条记录", not stale, str(stale))
+    ui.remove_client(key)
+
+
 def check_discovery_reply(engine: Engine) -> None:
     """A phone that asks "who is there?" must be answered immediately.
 
@@ -1434,6 +1465,7 @@ def main() -> int:
         check_apk_download(base, ui, engine_a, root)
         check_discovery_reply(engine_a)
         check_emoji_api(base)
+        check_device_identity_is_stable(ui, base)
         check_mdns_answer(engine_a)
         check_media_source_stays_local(ui, base, engine_a, root)
 
