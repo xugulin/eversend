@@ -5,43 +5,50 @@
  * CDNs -- the phone may have no internet at all, only the LAN.
  */
 
+/* 设计语言跟 harness 的 Web 界面一致（--dsh-boot-* / --dsw-alias-*）：
+ * 近黑画布、发丝级描边、近白文字，强调色是单色（不是另一个色相）。
+ * 深色是默认；在「设置」里点一下会写 html[data-theme="light"] 切成浅色。 */
 :root {
-  --bg: #f4f6f8;
-  --surface: #ffffff;
-  --surface-2: #eef2f6;
-  --text: #16202c;
-  --muted: #64748b;
-  --line: #dbe3ea;
-  --accent: #0f766e;
-  --accent-text: #ffffff;
-  --danger: #b42318;
-  --danger-soft: #fee4e2;
-  --ok: #15803d;
-  --warn: #b45309;
+  color-scheme: dark;
+  --bg: #151517;
+  --surface: #1b1b1e;
+  --surface-2: #232327;
+  --text: #f9fafb;
+  --muted: #adb2b8;
+  --line: #2f2f34;
+  --accent: #f9fafb;
+  --accent-text: #0f1115;
+  --danger: #ff7b72;
+  --danger-soft: #3a1d1d;
+  --on-danger: #151517;
+  --ok: #3fb950;
+  --success: #3fb950;
+  --warn: #d29922;
   --radius: 14px;
-  --shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 8px 24px -18px rgba(15, 23, 42, .35);
+  --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 12px 28px -22px rgba(0, 0, 0, .9);
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0b1220;
-    --surface: #141c2b;
-    --surface-2: #1d2739;
-    --text: #e7edf5;
-    --muted: #93a3b8;
-    --line: #26324a;
-    --accent: #2dd4bf;
-    --accent-text: #05221f;
-    --danger: #fda4a2;
-    --danger-soft: #3a1d1d;
-    --ok: #4ade80;
-    --warn: #fbbf24;
-    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 12px 28px -20px rgba(0, 0, 0, .9);
-  }
+html[data-theme="light"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f5f6f7;
+  --text: #0f1115;
+  --muted: #81858c;
+  --line: #e3e5e8;
+  --accent: #0f1115;
+  --accent-text: #f9fafb;
+  --danger: #b42318;
+  --danger-soft: #fee4e2;
+  --on-danger: #ffffff;
+  --ok: #15803d;
+  --success: #15803d;
+  --warn: #b45309;
+  --shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 8px 24px -18px rgba(15, 23, 42, .35);
 }
 
 * { box-sizing: border-box; }
@@ -112,6 +119,46 @@ body {
   letter-spacing: .4px;
 }
 
+.topbar-right { display: flex; align-items: center; gap: 8px; }
+
+.seg {
+  display: grid;
+  grid-auto-flow: column;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.seg button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.seg button.is-active { background: var(--surface); color: var(--text); }
+
+.theme-toggle {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  padding: 7px 9px;
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.theme-toggle:hover { background: var(--surface-2); }
+
 .conn {
   display: inline-flex;
   align-items: center;
@@ -136,7 +183,9 @@ body {
 
 .tabs {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  /* 有几个页签就平分几列：写死 3 列时第 4 个（设置）会单独掉到第二行。 */
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
   gap: 4px;
   padding: 4px;
   background: var(--surface-2);
@@ -171,7 +220,7 @@ body {
   padding: 0 5px;
   border-radius: 9px;
   background: var(--danger);
-  color: #fff;
+  color: var(--on-danger);
   font-size: 11px;
   line-height: 18px;
 }
@@ -251,12 +300,14 @@ body {
   font-size: 11px;
   font-weight: 600;
   padding: 1px 6px;
+  border: 1px solid var(--line);
   border-radius: 6px;
-  background: var(--surface-2);
+  background: transparent;
   color: var(--muted);
+  white-space: nowrap;
 }
 
-.tag.is-trusted { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.tag.is-trusted { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
 /* 表情面板：分组 + 网格，整体可上下滑动（.emoji-pad 自己滚） */
 .emoji-pad { max-height: 44vh; overflow-y: auto; overscroll-behavior: contain; }
 .emoji-title { font-size: 12px; color: var(--muted); margin: 8px 2px 4px; }
@@ -267,10 +318,10 @@ body {
 }
 .emoji-grid button:hover { background: var(--surface-2); }
 
-.tag.is-online { background: color-mix(in srgb, var(--success, #1a7f37) 18%, transparent); color: #1a7f37; }
-.tag.is-offline { background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--muted); }
-.tag.is-app { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
-.tag.is-web { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
+.tag.is-online { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+.tag.is-offline { color: var(--muted); }
+.tag.is-app { color: var(--text); border-color: color-mix(in srgb, var(--text) 40%, var(--line)); }
+.tag.is-web { color: var(--muted); }
 .device.is-peer { opacity: .92; cursor: default; }
 .device.is-peer .addr { font-size: 11px; color: var(--muted); }
 .device .facts, .peer .facts { display: block; font-size: 11px; margin-top: 2px; }
@@ -280,7 +331,7 @@ body {
 .peer .meta { display: flex; flex-direction: column; gap: 2px; }
 .peer .name { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
-.tag.is-self { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.tag.is-self { color: var(--text); border-color: color-mix(in srgb, var(--text) 40%, var(--line)); }
 
 .empty { text-align: center; padding: 18px 8px; }
 .empty-title { margin: 0; font-weight: 600; }
@@ -464,7 +515,7 @@ button { font: inherit; cursor: pointer; }
   height: auto;
   padding: 10px;
   border-radius: 14px;
-  background: #fff;
+  background: #fff; /* 二维码必须白底黑点，扫码才准 */
   border: 1px solid var(--line);
 }
 

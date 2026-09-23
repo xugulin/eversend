@@ -10,6 +10,7 @@ import time
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QGuiApplication
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -444,6 +445,32 @@ class MainWindow(QMainWindow):
         form2.addRow(self.resume_box)
 
         layout.addWidget(behaviour)
+
+        # -- appearance -----------------------------------------------------
+        # 默认深色（跟 harness 的 Web 界面同一套配色）。有人就喜欢浅色，
+        # 或者显示器在太阳底下，所以给一个开关，选择会存进 settings.json。
+        look = QFrame()
+        look.setObjectName("Card")
+        form0 = QFormLayout(look)
+        form0.setContentsMargins(16, 14, 16, 14)
+        form0.setSpacing(10)
+        form0.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItem("深色（默认）", "dark")
+        self.theme_combo.addItem("浅色", "light")
+        self.theme_combo.setCurrentIndex(0 if theme.is_dark() else 1)
+        self.theme_combo.currentIndexChanged.connect(self._apply_theme_choice)
+        form0.addRow(form_label("主题"), self.theme_combo)
+
+        look_hint = QLabel(
+            "深色是默认主题，和网页版、手机 App 是同一套配色。切换后立刻生效，"
+            "并记进设置里，下次启动还是这个。"
+        )
+        look_hint.setObjectName("Subtitle")
+        look_hint.setWordWrap(True)
+        form0.addRow(look_hint)
+        layout.addWidget(look)
 
         # -- browser ui -----------------------------------------------------
         web = QFrame()
@@ -1211,6 +1238,21 @@ class MainWindow(QMainWindow):
                 alternatives = []
         QrDialog(url, self, clients=providers, alternatives=alternatives).exec()
 
+    def _apply_theme_choice(self) -> None:
+        """Switch between the dark and light palette without a restart."""
+        choice = str(self.theme_combo.currentData() or "dark")
+        os.environ["EVERSEND_THEME"] = choice
+        app = QApplication.instance()
+        if app is not None:
+            dark = theme.is_dark()
+            app.setStyleSheet(theme.stylesheet(dark))
+            app.setWindowIcon(theme.app_icon(128, dark))
+        # 样式表换掉之后，自己画的那些控件不会自动重绘。
+        for widget in self.findChildren(QWidget):
+            widget.update()
+        self.status_left.setText("主题已切换为" + ("深色" if choice == "dark" else "浅色"))
+        self._save_settings(silent=True)
+
     def _save_settings(self, silent: bool = False) -> None:
         config = self.engine.config
         name = self.name_edit.text().strip()
@@ -1228,6 +1270,7 @@ class MainWindow(QMainWindow):
         config.auto_accept_trusted = self.auto_trust_box.isChecked()
         config.auto_accept_all = self.auto_all_box.isChecked()
         config.resume = self.resume_box.isChecked()
+        theme_choice = str(self.theme_combo.currentData() or "dark")
 
         if self.settings_path:
             try:
@@ -1240,6 +1283,7 @@ class MainWindow(QMainWindow):
                     "autoAcceptAll": config.auto_accept_all,
                     "resume": config.resume,
                     "encrypt": config.encrypt,
+                    "theme": theme_choice,
                 }
                 tmp = self.settings_path + ".tmp"
                 with open(tmp, "w", encoding="utf-8") as fh:
@@ -1299,6 +1343,11 @@ def apply_settings(config: EngineConfig, settings: dict) -> None:
         config.resume = bool(settings["resume"])
     if "encrypt" in settings:
         config.encrypt = bool(settings["encrypt"])
+    # 主题偏好不是引擎配置，而是整个进程的界面选择：把它塞进环境变量，
+    # theme.is_dark() 一读就知道（显式设了 EVERSEND_THEME 的人仍然优先）。
+    choice = str(settings.get("theme") or "").strip().lower()
+    if choice in ("dark", "light"):
+        os.environ.setdefault("EVERSEND_THEME", choice)
 
 
 __all__ = ["MainWindow", "apply_settings", "load_settings"]

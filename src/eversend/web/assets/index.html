@@ -5,9 +5,18 @@
 <!-- viewport-fit=cover + env(safe-area-inset-*) in the CSS keep the layout
      clear of the notch and the home indicator on modern phones. -->
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#0f766e" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0b1220" media="(prefers-color-scheme: dark)">
+<!-- 深色是默认（跟 harness 的 Web 界面同一套 token）；设置页里可以切浅色。 -->
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#151517">
+<script>
+  /* 在样式生效前定好主题，避免先闪一下浅色。 */
+  try {
+    if (localStorage.getItem('eversend-theme') === 'light') {
+      document.documentElement.setAttribute('data-theme', 'light');
+      document.querySelector('meta[name="theme-color"]').setAttribute('content', '#ffffff');
+    }
+  } catch (e) {}
+</script>
 <meta name="description" content="韧传 EverSend 手机网页版：在同一局域网内收发文件，无需安装任何应用。">
 <meta name="robots" content="noindex, nofollow">
 <!-- The CSRF token for this server run.  Every POST echoes it back in the
@@ -28,8 +37,11 @@
       <span class="logo" aria-hidden="true">⚡</span>
       <h1>韧传<small>EverSend</small></h1>
     </div>
-    <div class="conn" id="conn" role="status" aria-live="off">
-      <span class="dot" aria-hidden="true"></span><span id="conn-text">连接中…</span>
+    <div class="topbar-right">
+      <div class="conn" id="conn" role="status" aria-live="off">
+        <span class="dot" aria-hidden="true"></span><span id="conn-text">连接中…</span>
+      </div>
+      <button class="theme-toggle" id="btn-theme" type="button" title="切换深色/浅色">🌙</button>
     </div>
   </header>
 
@@ -191,6 +203,14 @@
         </label>
         <p class="hint" id="keepalive-state"></p>
         <button class="ghost block" id="btn-disconnect" type="button">断开与电脑的连接</button>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>外观</h2><span class="muted">深色是默认</span></div>
+        <div class="seg" id="theme-seg" role="group" aria-label="主题">
+          <button type="button" data-theme-value="dark" class="is-active">深色</button>
+          <button type="button" data-theme-value="light">浅色</button>
+        </div>
+        <p class="hint">深色跟电脑端一致；在太阳底下看不清时可以切浅色，选择会记住。</p>
       </div>
       <div class="card">
         <div class="card-head"><h2>关于</h2></div>

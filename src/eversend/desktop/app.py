@@ -105,6 +105,10 @@ def run_gui(argv: Sequence[str] | None = None) -> int:
         print(f"无法加载 PySide6：{exc}", file=sys.stderr)
         return 3
 
+    # 先读设置再建 QApplication：主题偏好（深色/浅色）决定用哪套样式表，
+    # 建完窗口再换会先按另一套颜色画一遍。
+    config = build_config()
+
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv[:1])
     app.setApplicationName(APP_NAME)
@@ -117,7 +121,6 @@ def run_gui(argv: Sequence[str] | None = None) -> int:
     app.setStyleSheet(theme.stylesheet(dark))
     app.setWindowIcon(theme.app_icon(128, dark))
 
-    config = build_config()
     engine = Engine(config)
 
     from .main_window import MainWindow

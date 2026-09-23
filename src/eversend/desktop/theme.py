@@ -7,51 +7,165 @@ hard-coded per widget.
 
 from __future__ import annotations
 
+import os
+import tempfile
+
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication
 
-#: Brand accent.  A calm blue that reads well on both light and dark surfaces.
-ACCENT = "#2f81f7"
-ACCENT_DIM = "#1f6feb"
+#: 设计语言取自 harness 的 Web 界面（--dsh-boot-* / --dsw-alias-*）：
+#: 近黑画布 + 发丝级描边 + 近白文字，强调色是**单色**（不是另一个色相）。
+#: 深色下「强调」是一块近白实心（配深色字），浅色下整块反过来 —— 这也是
+#: harness 的做法：浅色的 brand 色就是近黑。
+ACCENT = "#f9fafb"
+ACCENT_DIM = "#cfd3d6"
 SUCCESS = "#3fb950"
 WARNING = "#d29922"
 DANGER = "#f85149"
 
 
 def is_dark() -> bool:
-    """Whether the platform is using a dark colour scheme."""
-    app = QApplication.instance()
-    if app is None:
-        return True
-    window = app.palette().window().color()
-    # Perceived luminance; the 128 midpoint matches what most desktops use.
-    luminance = 0.299 * window.red() + 0.587 * window.green() + 0.114 * window.blue()
-    return luminance < 128
+    """Dark by default, like the harness web UI.
+
+    The palette below follows the DSH web client's tokens (``--dsh-boot-*`` /
+    ``--dsw-alias-*``): a near-black canvas, hairline borders, near-white text
+    and a **monochrome** accent — no second hue competing with the content.
+    Set ``EVERSEND_THEME=light`` (or ``=dark``) to force one.
+    """
+    forced = os.environ.get("EVERSEND_THEME", "").strip().lower()
+    if forced in ("dark", "light"):
+        return forced == "dark"
+    return True
+
+
+# --------------------------------------------------------------------------
+# 运行时画出来的小图标
+#
+# 复选框的勾、下拉箭头这些小东西，Qt 只有在你自己给 image: 的时候才画得
+# 好看；不给的话样式表一接管，它们就退回样式引擎，深浅两套里总有一套难看。
+# 与其往仓库里塞 png，不如按当前配色现画一张 —— 这个项目连应用图标都是
+# 运行时画的（见 app_icon）。
+# --------------------------------------------------------------------------
+
+_assets_cache: dict[str, str] = {}
+
+
+def _render_png(name: str, size: tuple[int, int], paint) -> str:
+    """Paint one small PNG into a cache directory and return its path.
+
+    Returns "" when there is no QGuiApplication yet (import time), which makes
+    the stylesheet fall back to the style engine's own indicators.
+    """
+    key = f"{name}-{size[0]}x{size[1]}"
+    cached = _assets_cache.get(key)
+    if cached:
+        return cached
+    try:
+        from PySide6.QtGui import QImage
+
+        if QApplication.instance() is None:
+            return ""
+        image = QImage(size[0], size[1], QImage.Format_ARGB32)
+        image.fill(Qt.transparent)
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        paint(painter, size)
+        painter.end()
+        folder = os.path.join(tempfile.gettempdir(), "eversend-theme")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, key + ".png")
+        if not image.save(path):
+            return ""
+        _assets_cache[key] = path.replace(os.sep, "/")
+        return _assets_cache[key]
+    except Exception:  # pragma: no cover - painting is best effort
+        return ""
+
+
+def _check_icon(colour: str) -> str:
+    def paint(painter, size) -> None:
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QPen
+
+        pen = QPen(QColor(colour))
+        pen.setWidthF(1.8)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        w, h = size
+        painter.drawPolyline(
+            [
+                QPointF(w * 0.20, h * 0.52),
+                QPointF(w * 0.42, h * 0.74),
+                QPointF(w * 0.80, h * 0.28),
+            ]
+        )
+
+    return _render_png(f"check-{colour.lstrip('#')}", (12, 12), paint)
+
+
+def _chevron_icon(colour: str, up: bool) -> str:
+    def paint(painter, size) -> None:
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QPen
+
+        pen = QPen(QColor(colour))
+        pen.setWidthF(1.6)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        w, h = size
+        tips = (0.3, 0.7) if up else (0.7, 0.3)
+        painter.drawPolyline(
+            [
+                QPointF(w * 0.15, h * tips[0]),
+                QPointF(w * 0.5, h * tips[1]),
+                QPointF(w * 0.85, h * tips[0]),
+            ]
+        )
+
+    return _render_png(f"chevron-{'up' if up else 'down'}-{colour.lstrip('#')}", (10, 10), paint)
 
 
 def stylesheet(dark: bool) -> str:
     """The application stylesheet for the given scheme."""
     if dark:
-        bg = "#0d1117"
-        surface = "#161b22"
-        surface_alt = "#1c2129"
-        border = "#30363d"
-        text = "#e6edf3"
-        text_dim = "#8b949e"
-        hover = "#21262d"
-        bubble_out = "#173a5e"
-        bubble_out_line = "#1f5c92"
+        # harness 深色：画布 #151517，层次依次 +2~4 个亮度点，描边是白色 12%
+        bg = "#151517"
+        surface = "#1b1b1e"
+        surface_alt = "#232327"
+        border = "#2f2f34"
+        text = "#f9fafb"
+        text_dim = "#adb2b8"
+        hover = "#26262b"
+        bubble_out = "#2e2e35"
+        bubble_out_line = "#43434c"
+        sel = "rgba(255, 255, 255, 0.08)"
+        accent = ACCENT
+        accent_dim = ACCENT_DIM
+        accent_fg = "#0f1115"
     else:
-        bg = "#f6f8fa"
+        # harness 浅色：白底 + 近黑文字 + 黑色 10% 描边
+        bg = "#ffffff"
         surface = "#ffffff"
-        surface_alt = "#f0f3f6"
-        border = "#d0d7de"
-        text = "#1f2328"
-        text_dim = "#59636e"
-        hover = "#eaeef2"
-        bubble_out = "#d8ebff"
-        bubble_out_line = "#a9cdf3"
+        surface_alt = "#f5f6f7"
+        border = "#e3e5e8"
+        text = "#0f1115"
+        text_dim = "#81858c"
+        hover = "#f0f1f3"
+        bubble_out = "#eceef1"
+        bubble_out_line = "#dcdfe3"
+        sel = "rgba(15, 17, 21, 0.06)"
+        # 浅色下强调色反过来用近黑，否则白底 + 近白按钮 = 字看不见。
+        accent = "#0f1115"
+        accent_dim = "#2b2e33"
+        accent_fg = "#f9fafb"
+
+    check = _check_icon(accent_fg)
+    chevron = _chevron_icon(text_dim, up=False)
+    chevron_up = _chevron_icon(text_dim, up=True)
+    chevron_down = chevron
 
     return f"""
     QWidget {{
@@ -60,6 +174,11 @@ def stylesheet(dark: bool) -> str:
         font-size: 13px;
     }}
     QMainWindow, QDialog {{ background: {bg}; }}
+
+    /* QWidget 那条规则会把画布底色画到每个子控件上，于是卡片里的标签会自己
+       刷出一块比卡片更暗的方块。文字控件一律透明，需要底色的（头像、徽标）
+       在下面单独给。 */
+    QLabel, QCheckBox, QRadioButton, QAbstractButton#Ghost {{ background: transparent; }}
 
     QFrame#Card {{
         background: {surface};
@@ -72,7 +191,7 @@ def stylesheet(dark: bool) -> str:
         border-radius: 10px;
     }}
     QFrame#DropZone[active="true"] {{
-        border: 2px dashed {ACCENT};
+        border: 2px dashed {accent};
         background: {hover};
     }}
 
@@ -91,13 +210,14 @@ def stylesheet(dark: bool) -> str:
     QPushButton:hover {{ background: {hover}; }}
     QPushButton:pressed {{ background: {border}; }}
     QPushButton:disabled {{ color: {text_dim}; background: {surface_alt}; }}
+    /* 主按钮沿用 harness 的「近白实心块 + 深色字」，而不是另一个色相的蓝。 */
     QPushButton#Primary {{
-        background: {ACCENT};
-        border: 1px solid {ACCENT_DIM};
-        color: #ffffff;
+        background: {accent};
+        border: 1px solid {accent};
+        color: {accent_fg};
         font-weight: 600;
     }}
-    QPushButton#Primary:hover {{ background: {ACCENT_DIM}; }}
+    QPushButton#Primary:hover {{ background: {accent_dim}; border-color: {accent_dim}; }}
     QPushButton#Primary:disabled {{ background: {border}; border-color: {border}; color: {text_dim}; }}
     QPushButton#Danger {{ background: {DANGER}; border-color: {DANGER}; color: #ffffff; font-weight: 600; }}
 
@@ -106,10 +226,32 @@ def stylesheet(dark: bool) -> str:
         border: 1px solid {border};
         border-radius: 7px;
         padding: 6px 9px;
-        selection-background-color: {ACCENT};
+        selection-background-color: {accent};
+        selection-color: {accent_fg};
     }}
-    QLineEdit:focus, QSpinBox:focus, QComboBox:focus {{ border: 1px solid {ACCENT}; }}
-    QComboBox::drop-down {{ border: none; width: 20px; }}
+    QLineEdit:focus, QSpinBox:focus, QComboBox:focus {{ border: 1px solid {accent_dim}; }}
+    QComboBox::drop-down {{ border: none; width: 22px; }}
+    QComboBox::down-arrow {{ image: url("{chevron}"); width: 10px; height: 10px; }}
+    QSpinBox::up-button, QSpinBox::down-button {{ width: 18px; background: transparent; border: none; }}
+    QSpinBox::up-button {{ subcontrol-origin: border; subcontrol-position: top right; }}
+    QSpinBox::down-button {{ subcontrol-origin: border; subcontrol-position: bottom right; }}
+    QSpinBox::up-arrow {{ image: url("{chevron_up}"); width: 10px; height: 10px; }}
+    QSpinBox::down-arrow {{ image: url("{chevron_down}"); width: 10px; height: 10px; }}
+    QCheckBox::indicator {{
+        width: 15px; height: 15px;
+        border: 1px solid {border};
+        border-radius: 4px;
+        background: {surface_alt};
+    }}
+    QCheckBox::indicator:hover {{ border-color: {text_dim}; }}
+    QCheckBox::indicator:checked {{
+        background: {accent};
+        border-color: {accent};
+        image: url("{check}");
+    }}
+    QCheckBox::indicator:disabled {{ background: {bg}; border-color: {border}; }}
+    QRadioButton::indicator {{ width: 14px; height: 14px; border: 1px solid {border}; border-radius: 7px; }}
+    QRadioButton::indicator:checked {{ background: {accent}; border-color: {accent}; }}
 
     QTabWidget::pane {{ border: 1px solid {border}; border-radius: 10px; background: {surface}; top: -1px; }}
     QTabBar::tab {{
@@ -139,9 +281,10 @@ def stylesheet(dark: bool) -> str:
         border-radius: 8px;
         margin: 2px 0;
     }}
+    QListWidget#DeviceTable::item:hover {{ background: {hover}; }}
     QListWidget#DeviceTable::item:selected {{
-        background: {ACCENT};
-        border-color: {ACCENT};
+        background: {sel};
+        border-color: {accent_dim};
     }}
     /* 聊天气泡：自己发的靠右、用品牌色底；别人发的靠左、用中性底。
        objectName 早就在 chat_view 里设了（BubbleIn/BubbleOut），但样式表里
@@ -173,16 +316,18 @@ def stylesheet(dark: bool) -> str:
     QLabel#ConvPreview {{ color: {text_dim}; font-size: 12px; }}
     QLabel#ConvTime {{ color: {text_dim}; font-size: 11px; }}
     QLabel#ConvBadge {{
-        background: #d1242f; color: #ffffff; border-radius: 9px;
+        background: {DANGER}; color: #ffffff; border-radius: 9px;
         font-size: 11px; font-weight: 600; min-width: 18px; max-height: 18px;
     }}
     QListWidget#ConvList {{ background: transparent; border: 0; }}
     QListWidget#ConvList::item {{ border-radius: 8px; }}
+    QListWidget#ConvList::item:hover {{ background: {hover}; }}
+    QListWidget#ConvList::item:selected {{ background: {sel}; }}
 
     QFrame#DeviceCard {{
         background: {surface_alt};
         border: 1px solid {border};
-        border-radius: 8px;
+        border-radius: 10px;
     }}
     QLabel#DeviceGlyph {{ font-size: 34px; }}
     QLabel#DeviceName {{ font-size: 15px; font-weight: 600; color: {text}; }}
@@ -195,15 +340,15 @@ def stylesheet(dark: bool) -> str:
         color: {text_dim};
     }}
     QLabel#DeviceStatus[state="online"] {{ color: {SUCCESS}; border-color: {SUCCESS}; }}
-    QLabel#DeviceStatus[state="offline"] {{ color: {WARNING}; border-color: {WARNING}; }}
+    QLabel#DeviceStatus[state="offline"] {{ color: {text_dim}; border-color: {border}; }}
 
     QTableWidget, QListWidget, QTreeWidget {{
         background: {surface};
         border: 1px solid {border};
         border-radius: 8px;
         gridline-color: {border};
-        selection-background-color: {ACCENT};
-        selection-color: #ffffff;
+        selection-background-color: {sel};
+        selection-color: {text};
         outline: none;
     }}
     QHeaderView::section {{
@@ -223,7 +368,7 @@ def stylesheet(dark: bool) -> str:
         text-align: center;
         font-size: 11px;
     }}
-    QProgressBar::chunk {{ background: {ACCENT}; border-radius: 5px; }}
+    QProgressBar::chunk {{ background: {accent}; border-radius: 5px; }}
 
     QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
     QScrollBar::handle:vertical {{ background: {border}; border-radius: 5px; min-height: 30px; }}
@@ -232,7 +377,12 @@ def stylesheet(dark: bool) -> str:
     QScrollBar:horizontal {{ background: transparent; height: 10px; }}
     QScrollBar::handle:horizontal {{ background: {border}; border-radius: 5px; min-width: 30px; }}
 
-    QStatusBar {{ background: {surface}; border-top: 1px solid {border}; color: {text_dim}; }}
+    QStatusBar {{ background: {bg}; border-top: 1px solid {border}; color: {text_dim}; }}
+    QMenuBar {{ background: {bg}; }}
+    QMenuBar::item:selected {{ background: {hover}; }}
+    QMenu {{ background: {surface}; border: 1px solid {border}; padding: 4px; }}
+    QMenu::item:selected {{ background: {sel}; }}
+    QSplitter::handle {{ background: {border}; }}
     QToolTip {{ background: {surface}; color: {text}; border: 1px solid {border}; padding: 4px; }}
     QCheckBox {{ spacing: 7px; }}
     QGroupBox {{
@@ -272,20 +422,21 @@ def app_icon(size: int = 128, dark: bool = True) -> QIcon:
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing, True)
 
-    painter.setBrush(QColor(ACCENT if dark else ACCENT_DIM))
+    # 深色下是「近白方块 + 深色箭头」，浅色下反过来 —— 跟 harness 的单色标识一致。
+    plate = QColor(ACCENT if dark else "#0f1115")
+    glyph = QColor("#0f1115" if dark else "#f9fafb")
+    painter.setBrush(plate)
     painter.setPen(Qt.NoPen)
-    radius = size * 0.22
+    radius = size * 0.24
     painter.drawRoundedRect(QRectF(0, 0, size, size), radius, radius)
 
     # Two arrows passing each other: "sent" and "received".
-    pen_width = max(2.0, size * 0.075)
-    painter.setPen(QColor("#ffffff"))
+    painter.setPen(glyph)
     font = QFont()
     font.setPointSizeF(size * 0.44)
     font.setBold(True)
     painter.setFont(font)
     painter.drawText(pixmap.rect(), Qt.AlignCenter, "⇅")
-    _ = pen_width
     painter.end()
     return QIcon(pixmap)
 

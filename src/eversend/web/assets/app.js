@@ -127,8 +127,16 @@
     return guess;
   }
 
+  // HTTP 头部只收 ISO-8859-1：设备名里有「电脑浏览器」「安卓手机」这种中文
+  // 时，fetch() 会直接抛 "String contains non ISO-8859-1 code point" ——
+  // 一个头部就等于整页报废（页面上只剩「无法连接服务器」）。所以名字按
+  // URL 编码后再放进去，纯 ASCII 的名字编码后跟原样一样，不影响老客户端。
+  function encodeHeader(value) {
+    try { return encodeURIComponent(value); } catch (error) { return 'browser'; }
+  }
+
   function deviceHeaders() {
-    return { 'X-EverSend-Device': deviceId(), 'X-EverSend-Name': deviceName() };
+    return { 'X-EverSend-Device': deviceId(), 'X-EverSend-Name': encodeHeader(deviceName()) };
   }
 
   function api(path, options) {
@@ -1356,7 +1364,7 @@
     request.open('POST', query, true);
     request.setRequestHeader('X-EverSend-Token', TOKEN);
     request.setRequestHeader('X-EverSend-Device', deviceId());
-    request.setRequestHeader('X-EverSend-Name', deviceName());
+    request.setRequestHeader('X-EverSend-Name', encodeHeader(deviceName()));
     request.setRequestHeader('Content-Type', 'application/octet-stream');
     request.upload.onprogress = function (progressEvent) {
       if (!progressEvent.lengthComputable) return;
@@ -1569,12 +1577,70 @@
         }
       });
     }
+    bindTheme();
     var disconnectButton = $('#btn-disconnect');
     if (disconnectButton) {
       disconnectButton.addEventListener('click', function () {
         if (disconnected) { reconnect(); disconnectButton.textContent = '断开与电脑的连接'; return; }
         disconnect();
         disconnectButton.textContent = '重新连接';
+      });
+    }
+  }
+
+  // ----------------------------------------------------------------- 主题
+  //
+  // 深色是默认（跟 harness 的 Web 界面同一套 token）。选了浅色就写进
+  // localStorage，下次打开时 <head> 里的那几行会在样式生效前先定好，
+  // 不会先闪一下浅色再变深。
+
+  var THEME_KEY = 'eversend-theme';
+
+  function currentTheme() {
+    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  }
+
+  function applyTheme(mode) {
+    if (mode === 'light') {
+      document.documentElement.setAttribute('data-theme', 'light');
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+    }
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', mode === 'light' ? '#ffffff' : '#151517');
+    var button = $('#btn-theme');
+    if (button) {
+      button.textContent = mode === 'light' ? '☀️' : '🌙';
+      button.title = mode === 'light' ? '切换成深色' : '切换成浅色';
+    }
+    var seg = $('#theme-seg');
+    if (seg) {
+      Array.prototype.forEach.call(seg.querySelectorAll('button'), function (item) {
+        item.classList.toggle('is-active', item.getAttribute('data-theme-value') === mode);
+      });
+    }
+  }
+
+  function setTheme(mode, remember) {
+    applyTheme(mode);
+    if (remember === false) return;
+    try { localStorage.setItem(THEME_KEY, mode); } catch (error) { /* 无痕模式 */ }
+  }
+
+  function bindTheme() {
+    applyTheme(currentTheme());
+    var button = $('#btn-theme');
+    if (button) {
+      button.addEventListener('click', function () {
+        setTheme(currentTheme() === 'light' ? 'dark' : 'light');
+      });
+    }
+    var seg = $('#theme-seg');
+    if (seg) {
+      Array.prototype.forEach.call(seg.querySelectorAll('button'), function (item) {
+        item.addEventListener('click', function () {
+          setTheme(item.getAttribute('data-theme-value') === 'light' ? 'light' : 'dark');
+        });
       });
     }
   }

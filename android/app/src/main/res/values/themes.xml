@@ -1,7 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 深色是默认主题，跟电脑端/网页版一致（harness 的 Web 界面那套 token）。
+     这里只负责窗口本身：画布色、状态栏/导航栏，别让系统先画一块白底再等
+     Compose 覆盖上来（那样冷启动会闪一下白屏）。 -->
 <resources>
-    <style name="Theme.EverSend" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:statusBarColor">#F6F8FA</item>
+    <style name="Theme.EverSend" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#151517</item>
+        <item name="android:colorBackground">#151517</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#151517</item>
+        <item name="android:navigationBarColor">#1B1B1E</item>
+        <item name="android:windowLightNavigationBar">false</item>
     </style>
 </resources>

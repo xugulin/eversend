@@ -310,10 +310,33 @@ def check_http_surface(base: str, token: str, ui=None) -> None:
     defined = re.findall(r"^\s*function\s+([A-Za-z_$][\w$]*)\s*\(", script, re.M)
     duplicates = sorted({name for name in defined if defined.count(name) > 1})
     check("the page script has no duplicate function definitions", not duplicates, str(duplicates))
+    # HTTP 头部只收 ISO-8859-1。设备名是「电脑浏览器」「安卓手机」这种中文时，
+    # fetch() 会直接抛 "String contains non ISO-8859-1 code point" —— 一行头部
+    # 就让整页报废（用户看到的只有「无法连接服务器」）。这个 bug 在 Python 测试
+    # 里完全看不见：它发生在浏览器里。所以这里盯住"名字先编码再进头部"。
+    name_headers = re.findall(r"X-EverSend-Name'\s*,\s*([^)]*)\)", script)
+    check(
+        "网页版把设备名编码后才放进请求头（头部只收 ISO-8859-1）",
+        bool(name_headers) and all("encodeHeader(" in item for item in name_headers),
+        str(name_headers),
+    )
     check("the phone page shows what the computer sent it", "电脑发来的文件" in html)
     check("the phone page calls the computer's folder the computer's", "电脑上的文件" in html)
     check("the CSRF token is embedded in the page", token in html)
     check("the page is never cached (it carries a token)", "no-store" in headers.get("Cache-Control", ""))
+
+    # 手机上报的名字是 URL 编码过的（中文名），服务端不能因此报错。
+    status, headers, body = http(
+        base + "/api/state",
+        headers={
+            # 用一个自己的 User-Agent：下面的「断开连接」用例按 UA 找自己那条
+            # 记录，多出一个 urllib 记录会让它误判。
+            "User-Agent": "EverSend-Selftest-Zh/1.0",
+            "X-EverSend-Device": "web:selftest-zh",
+            "X-EverSend-Name": "%E7%94%B5%E8%84%91",
+        },
+    )
+    check("带百分号编码的设备名不会让接口出错", status == 200, f"{status} {body[:80]!r}")
 
     status, headers, body = http(base + "/assets/app.js")
     check("/assets/app.js is served as JavaScript", status == 200 and "javascript" in headers.get("Content-Type", ""))

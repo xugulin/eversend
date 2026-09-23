@@ -147,11 +147,14 @@ def main() -> int:
     row.set_status("传输中")
     window._add_history("IMG_0001.jpg", str(folder / "IMG_0001.jpg"), "demo")
 
+    # 文件名必须对得上真正截到的那一页：之前 04-settings.png 拍的是「聊天」页，
+    # README 里就挂着一张标着「设置」的聊天截图。
     shots: list[tuple[str, int]] = [
         ("01-send.png", 0),
         ("02-transfers.png", 2),
         ("03-receive.png", 1),
-        ("04-settings.png", 3),
+        ("04-settings.png", 4),
+        ("06-chat.png", 3),
     ]
     taken = {"n": 0}
 

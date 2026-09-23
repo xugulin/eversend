@@ -135,16 +135,12 @@ class AppState(context: android.content.Context) {
 }
 
 @Composable
-fun EverSendTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = lightColorScheme(primary = Color(0xFF2F81F7))) { content() }
-}
-
-@Composable
 fun Root(store: AppState) {
     var tab by remember { mutableStateOf(0) }
     Scaffold(
+        containerColor = Es.Bg,
         bottomBar = {
-            NavigationBar {
+            NavigationBar(containerColor = Es.Surface, contentColor = Es.Text) {
                 NavigationBarItem(
                     selected = tab == 0,
                     onClick = { tab = 0 },
@@ -378,7 +374,7 @@ fun SettingsScreen(store: AppState) {
             modifier = Modifier.testTag("link-state"),
         )
         if (LinkService.lastError.isNotBlank()) {
-            Text("最近一次失败：${LinkService.lastError}", fontSize = 12.sp, color = Color(0xFFB42318))
+            Text("最近一次失败：${LinkService.lastError}", fontSize = 12.sp, color = Es.Danger)
         }
         if (LinkService.lastMessage.isNotBlank()) {
             Text("最近消息：${LinkService.lastMessage}", fontSize = 13.sp)
@@ -573,7 +569,7 @@ fun ChatScreen(store: AppState) {
                 placeholder = { Text("群名称（可留空）") },
                 modifier = Modifier.fillMaxWidth().testTag("group-title"),
             )
-            Text("选成员（可以多选）", fontSize = 13.sp, color = Color(0xFF5B6470))
+            Text("选成员（可以多选）", fontSize = 13.sp, color = Es.Muted)
             LazyColumn(Modifier.weight(1f)) {
                 items(members) { member ->
                     val picked = chosen.contains(member.id)
@@ -593,7 +589,7 @@ fun ChatScreen(store: AppState) {
                             )
                             Text("${member.kind} · ${statusText(member)}", fontSize = 12.sp)
                             if (member.facts.isNotBlank()) {
-                                Text(member.facts, fontSize = 11.sp, color = Color(0xFF8B949E))
+                                Text(member.facts, fontSize = 11.sp, color = Es.Dim)
                             }
                         }
                     }
@@ -720,7 +716,7 @@ fun ChatScreen(store: AppState) {
                     Text(
                         chatMembersLabel(members, current, store),
                         fontSize = 11.sp,
-                        color = Color(0xFF8B949E),
+                        color = Es.Dim,
                         modifier = Modifier.testTag("chat-members"),
                     )
                 }
@@ -793,7 +789,7 @@ fun Composer(
     // 以前"正在录音…"是借 onError 显示的，而且录完就不再更新，于是用户看到的
     // 永远是"正在录音"（语音其实发了，界面却像卡住了）。
     if (voiceStatus.isNotBlank()) {
-        Text(voiceStatus, fontSize = 12.sp, color = Color(0xFF5B6470), modifier = Modifier.testTag("voice-status"))
+        Text(voiceStatus, fontSize = 12.sp, color = Es.Muted, modifier = Modifier.testTag("voice-status"))
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = { showEmoji = !showEmoji }, modifier = Modifier.testTag("btn-emoji")) {
@@ -949,7 +945,7 @@ fun Bubble(message: ChatMessage, client: ApiClient?, onError: (String) -> Unit =
             Modifier
                 .widthIn(max = 300.dp)
                 .background(
-                    if (outgoing) Color(0xFFDCEBFF) else Color(0xFFF0F2F5),
+                    if (outgoing) Es.BubbleOut else Es.BubbleIn,
                     RoundedCornerShape(12.dp),
                 )
                 .padding(10.dp),
@@ -1040,7 +1036,7 @@ fun Bubble(message: ChatMessage, client: ApiClient?, onError: (String) -> Unit =
                         Text(
                             "复制",
                             fontSize = 12.sp,
-                            color = Color(0xFF2F81F7),
+                            color = Es.Accent,
                             modifier = Modifier
                                 .combinedClickable(
                                     onClick = {
@@ -1067,7 +1063,7 @@ fun Bubble(message: ChatMessage, client: ApiClient?, onError: (String) -> Unit =
                         Text(
                             "保存",
                             fontSize = 12.sp,
-                            color = Color(0xFF2F81F7),
+                            color = Es.Accent,
                             modifier = Modifier
                                 .clickable {
                                     val active = client
@@ -1099,7 +1095,7 @@ fun Bubble(message: ChatMessage, client: ApiClient?, onError: (String) -> Unit =
                 }
             }
             if (outgoing && message.state == "failed") {
-                Text("发送失败（对方不在线）", fontSize = 11.sp, color = Color(0xFFB42318))
+                Text("发送失败（对方不在线）", fontSize = 11.sp, color = Es.Danger)
             }
         }
     }
@@ -1157,7 +1153,7 @@ fun MediaCard(icon: String, title: String, detail: String, tag: String, onClick:
         Text(icon, fontSize = 26.sp)
         Column {
             Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-            Text(detail, fontSize = 12.sp, color = Color(0xFF5B6470))
+            Text(detail, fontSize = 12.sp, color = Es.Muted)
         }
     }
 }
@@ -1234,7 +1230,7 @@ fun MediaViewer(message: ChatMessage, client: ApiClient?, onClose: () -> Unit) {
                         Text(
                             "内置播放器（libVLC，自带 FFmpeg 解码），局域网直连播放。",
                             fontSize = 12.sp,
-                            color = Color(0xFF5B6470),
+                            color = Es.Muted,
                         )
                     }
                 }
@@ -1284,7 +1280,7 @@ fun EmojiPad(client: ApiClient?, onPick: (String) -> Unit) {
     }
 
     if (loading) {
-        Text("表情加载中…", fontSize = 12.sp, color = Color(0xFF5B6470))
+        Text("表情加载中…", fontSize = 12.sp, color = Es.Muted)
         return
     }
     // 整个面板自己滚：往下滑就是更多表情（用户要的"上下滑动加载更多"）。
@@ -1299,7 +1295,7 @@ fun EmojiPad(client: ApiClient?, onPick: (String) -> Unit) {
                 Text(
                     "$title（${emoji.size}）",
                     fontSize = 12.sp,
-                    color = Color(0xFF5B6470),
+                    color = Es.Muted,
                     modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
                 )
             }
@@ -1494,7 +1490,7 @@ fun SendScreen(store: AppState) {
             Text(
                 if (targets.isEmpty()) "可多选" else "已选 ${targets.size} 台",
                 fontSize = 12.sp,
-                color = Color(0xFF5B6470),
+                color = Es.Muted,
                 modifier = Modifier.testTag("target-count"),
             )
         }
@@ -1522,13 +1518,13 @@ fun SendScreen(store: AppState) {
                             Text(
                                 (if (selected) "☑ " else "☐ ") + statusText(device),
                                 fontSize = 12.sp,
-                                color = if (device.online) Color(0xFF1A7F37) else Color(0xFF8B949E),
+                                color = if (device.online) Es.Ok else Es.Dim,
                                 modifier = Modifier.testTag("status-${device.name}"),
                             )
                         }
                         Text("${device.kind} · ${device.address}", fontSize = 12.sp)
                         if (device.facts.isNotBlank()) {
-                            Text(device.facts, fontSize = 11.sp, color = Color(0xFF8B949E))
+                            Text(device.facts, fontSize = 11.sp, color = Es.Dim)
                         }
                     }
                 }

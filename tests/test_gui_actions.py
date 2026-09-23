@@ -600,6 +600,55 @@ def make_png(width: int, height: int) -> bytes:
     return bytes(data)
 
 
+def test_theme_follows_the_harness_style(app, root) -> None:
+    """默认深色，并且在设置里能切成浅色（不用重启）。"""
+    print("\n[7] 外观：默认深色 + 设置里能切浅色")
+    import json
+    import os as os_module
+
+    from eversend.desktop import theme
+
+    saved = os_module.environ.pop("EVERSEND_THEME", None)
+    try:
+        # 深色是默认：没有环境变量、也没有存过的偏好时就是深色。
+        theme_forced = os_module.environ.get("EVERSEND_THEME")
+        check("没有额外设置时默认深色", saved is not None or theme_forced is None or
+              theme_forced == "dark", f"EVERSEND_THEME={theme_forced!r}")
+        sheet = theme.stylesheet(True)
+        check("深色画布用的是 harness 的 #151517", "#151517" in sheet)
+        check("深色强调色是单色（近白），不是另一个色相", "#f9fafb" in sheet and "#2f81f7" not in sheet.lower())
+        check("浅色那套也换成了 harness 的白底近黑字", "#ffffff" in theme.stylesheet(False))
+
+        desktop = Desktop(str(root), app)
+        try:
+            window = desktop.window
+            combo = window.theme_combo
+            check("设置页里有主题开关", combo.count() == 2)
+            check("开关默认停在深色", combo.currentData() == "dark")
+
+            # 切到浅色：样式表要真的换掉，而且写进 settings.json。
+            combo.setCurrentIndex(1)
+            desktop.pump(0.3)
+            check("切浅色后 is_dark() 变 false", theme.is_dark() is False)
+            check("切浅色后样式表换成白底", "#ffffff" in app.styleSheet())
+            check("状态栏告诉你换好了", "浅色" in window.status_left.text())
+
+            path = Path(window.settings_path)
+            check("主题存进了设置文件", path.exists() and
+                  json.loads(path.read_text(encoding="utf-8")).get("theme") == "light")
+
+            # 切回深色，别把环境留给后面的用例。
+            combo.setCurrentIndex(0)
+            desktop.pump(0.3)
+            check("切回深色", theme.is_dark() is True and "#151517" in app.styleSheet())
+        finally:
+            os_module.environ.pop("EVERSEND_THEME", None)
+            app.setStyleSheet(theme.stylesheet(theme.is_dark()))
+    finally:
+        if saved is not None:
+            os_module.environ["EVERSEND_THEME"] = saved
+
+
 def main() -> int:
     use_utf8_console()
     # Force the platform rather than inheriting one (a Wayland session exports
@@ -626,6 +675,7 @@ def main() -> int:
             test_chat_attachment_preview,
             test_multi_device_send,
             test_conversation_list_reads_like_a_chat_app,
+            test_theme_follows_the_harness_style,
         ):
             try:
                 test(app, root / test.__name__)
