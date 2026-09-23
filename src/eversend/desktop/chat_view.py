@@ -689,8 +689,15 @@ class ChatView(QWidget):
         while self.messages_layout.count() > 1:
             item = self.messages_layout.takeAt(0)
             widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+            if widget is None:
+                continue
+            # deleteLater() 只是把删除排进队列：在事件循环真的处理它之前，
+            # 控件依然是 messages_host 的子控件，依然按上一次的几何画在原地 ——
+            # 换会话时用户看到的就是"上一段对话的气泡还留在画布上"，而且因为
+            # 已经脱离布局，它们会被拉成一个个空框。所以先摘干净再排队删除。
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
 
     def _add_system(self, text: str) -> None:
         label = QLabel(text)

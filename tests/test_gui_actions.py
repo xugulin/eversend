@@ -490,6 +490,8 @@ def test_conversation_list_reads_like_a_chat_app(app, root) -> None:
     print("\n[6] 会话列表：名字 + 头像 + 最后一条（不是 d:xxx）")
     import time as time_module
 
+    from PySide6.QtWidgets import QFrame
+
     from eversend.core.chat import direct_conversation_id, new_group_id
 
     if True:
@@ -548,6 +550,32 @@ def test_conversation_list_reads_like_a_chat_app(app, root) -> None:
             muted_rows = [p for n, p, _ in rows() if p.startswith("🔕")]
             check("免打扰的会话标出 🔕", bool(muted_rows), str(rows())[:120])
             # 打开群聊时标题栏用同一个名字
+            chat._select_conversation(group)
+            desktop.pump(0.4)
+            # 换会话要真的把上一段对话从画布上清掉。deleteLater() 只是排队，
+            # 不 hide + 摘父控件的话，旧气泡会留在原处被拉成空框（截图里那几根
+            # 竖条就是这么来的）。
+            def bubbles():
+                return [
+                    w
+                    for w in chat.messages_host.findChildren(QFrame)
+                    if w.objectName() in ("BubbleIn", "BubbleOut")
+                ]
+
+            expected = len(engine.chat.messages(group, limit=200))
+            check(
+                "切到群聊后画布上只剩这个会话的气泡",
+                len(bubbles()) == expected,
+                f"{len(bubbles())} 个气泡 / 会话里有 {expected} 条",
+            )
+            chat._select_conversation(direct)
+            desktop.pump(0.4)
+            expected = len(engine.chat.messages(direct, limit=200))
+            check(
+                "切回一对一也只剩它自己的气泡",
+                len(bubbles()) == expected,
+                f"{len(bubbles())} 个气泡 / 会话里有 {expected} 条",
+            )
             chat._select_conversation(group)
             desktop.pump(0.4)
             # 顺便截一张图存档（docs 里要用）
