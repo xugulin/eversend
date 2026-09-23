@@ -18,6 +18,7 @@ Design notes
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -25,7 +26,7 @@ import threading
 import time
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
@@ -109,6 +110,72 @@ class EmojiPicker(QDialog):
         layout.addWidget(buttons)
 
 
+class ConversationRow(QWidget):
+    """One conversation, drawn like a chat app draws them.
+
+    Layout: avatar on the left, then two lines — name (+ time on the right) and
+    preview (+ unread badge).  The old list was plain text ("d:8765…｜一对一"),
+    which told the user nothing; this is the shape everyone already knows.
+    """
+
+    def __init__(
+        self,
+        *,
+        icon: str,
+        title: str,
+        preview: str,
+        when: str,
+        unread: int,
+        muted: bool = False,
+        pinned: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("ConvRow")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(10)
+
+        avatar = QLabel(icon)
+        avatar.setObjectName("ConvAvatar")
+        avatar.setFixedSize(38, 38)
+        avatar.setAlignment(Qt.AlignCenter)
+        self.avatar = avatar
+        layout.addWidget(avatar)
+
+        body = QVBoxLayout()
+        body.setSpacing(2)
+        top = QHBoxLayout()
+        top.setSpacing(6)
+        self.name = QLabel(("📌 " if pinned else "") + title)
+        self.name.setObjectName("ConvName")
+        top.addWidget(self.name, 1)
+        self.when = QLabel(when)
+        self.when.setObjectName("ConvTime")
+        top.addWidget(self.when)
+        body.addLayout(top)
+
+        bottom = QHBoxLayout()
+        bottom.setSpacing(6)
+        self.preview = QLabel(("🔕 " if muted else "") + preview)
+        self.preview.setObjectName("ConvPreview")
+        bottom.addWidget(self.preview, 1)
+        self.badge = QLabel(f"{unread}" if unread else "")
+        self.badge.setObjectName("ConvBadge")
+        self.badge.setVisible(bool(unread))
+        self.badge.setAlignment(Qt.AlignCenter)
+        bottom.addWidget(self.badge)
+        body.addLayout(bottom)
+        layout.addLayout(body, 1)
+
+    def set_selected(self, selected: bool) -> None:
+        """QListWidget paints behind item widgets, so do it here."""
+        self.setStyleSheet(
+            "QWidget#ConvRow { background: " + ("#2f81f7" if selected else "transparent") + "; border-radius: 8px; }"
+            "QLabel { background: transparent; }"
+        )
+
+
 class ChatView(QWidget):
     """The whole 聊天 tab."""
 
@@ -145,6 +212,8 @@ class ChatView(QWidget):
         self.conv_list.setObjectName("ConvList")
         self.conv_list.setWordWrap(True)
         self.conv_list.currentRowChanged.connect(self._on_conversation_changed)
+        self.conv_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.conv_list.customContextMenuRequested.connect(self._conversation_menu)
         left.addWidget(self.conv_list, 1)
 
         buttons = QHBoxLayout()
@@ -231,6 +300,12 @@ class ChatView(QWidget):
 
     def _reload_conversations(self) -> None:
         conversations = self.conversations()
+        # 列表现在是"每行一个控件"（头像 + 名字 + 未读），改文字那条快路径
+        # 既刷新不了控件、也不会重排置顶 —— 所以只要用的是控件就整表重建。
+        # 会话数量本来就只有几十条，重建的开销可以忽略。
+        if self.conv_list.count() and self.conv_list.itemWidget(self.conv_list.item(0)) is not None:
+            self._fill_conversations(conversations)
+            return
         if self.conv_list.count() != len(conversations):
             self._fill_conversations(conversations)
             return
@@ -244,15 +319,141 @@ class ChatView(QWidget):
     def _fill_conversations(self, conversations: list[dict[str, Any]]) -> None:
         self.conv_list.blockSignals(True)
         self.conv_list.clear()
-        for conversation in conversations:
-            item = QListWidgetItem(self._conversation_label(conversation))
-            item.setData(Qt.UserRole, conversation["id"])
-            # The raw id stays in the tooltip: useful when debugging a pairing
-            # problem, meaningless (and off-putting) in the list itself.
-            item.setToolTip(f"{conversation['id']}\n{self._conversation_people(conversation)}")
+        # 置顶的排前面，其余按最后活动时间（QQ 就是这么排的）。
+        ordered = sorted(
+            conversations,
+            key=lambda c: (
+                0 if self._prefs_pinned(c) else 1,
+                -float(c.get("updated") or 0),
+            ),
+        )
+        for conversation in ordered:
+            conv_id = str(conversation["id"])
+            unread = int(conversation.get("unread") or 0)
+            is_group = conversation.get("kind") == "group" or conv_id.startswith("g:")
+            row = ConversationRow(
+                icon="👥" if is_group else "💬",
+                title=self._conversation_title(conversation),
+                preview=self._conversation_preview(conversation),
+                when=self._conversation_time(conversation),
+                unread=unread,
+                muted=self._prefs_muted(conv_id),
+                pinned=self._prefs_pinned(conversation),
+            )
+            item = QListWidgetItem()
+            item.setData(Qt.UserRole, conv_id)
+            item.setSizeHint(row.sizeHint())
+            item.setToolTip(f"{conv_id}\n{self._conversation_people(conversation)}")
             self.conv_list.addItem(item)
+            self.conv_list.setItemWidget(item, row)
         self.conv_list.blockSignals(False)
         self._select_conversation(self._conversation or self._first_id())
+        self._paint_selection()
+
+    # -- 会话偏好：置顶 / 免打扰（像聊天软件那样右键设置） ------------------
+
+    @property
+    def _prefs_path(self) -> str:
+        return os.path.join(self.engine.config.data_dir, "chat_ui.json")
+
+    def _prefs(self) -> dict[str, list[str]]:
+        if not hasattr(self, "_prefs_cache"):
+            try:
+                with open(self._prefs_path, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                self._prefs_cache = {
+                    "pinned": [str(x) for x in data.get("pinned", [])],
+                    "muted": [str(x) for x in data.get("muted", [])],
+                }
+            except (OSError, ValueError):
+                self._prefs_cache = {"pinned": [], "muted": []}
+        return self._prefs_cache
+
+    def _save_prefs(self) -> None:
+        try:
+            with open(self._prefs_path, "w", encoding="utf-8") as fh:
+                json.dump(self._prefs(), fh, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+
+    def _prefs_pinned(self, conversation: dict[str, Any]) -> bool:
+        conv_id = str(conversation.get("id") or "")
+        # 手机那边的会话 id 里带着对方地址，所以置顶既可以按 id 记，也可以按人名记。
+        return conv_id in self._prefs()["pinned"] or (
+            "pin:" + self._conversation_title(conversation)
+        ) in self._prefs()["pinned"]
+
+    def _prefs_muted(self, conv_id: str) -> bool:
+        return conv_id in self._prefs()["muted"]
+
+    def _toggle_pref(self, kind: str, conversation: dict[str, Any]) -> None:
+        """置顶/免打扰按会话 id 记（稳），同时记一条 "pin:名字"，这样同名会话
+        在重装/换 id 之后也还能认出用户的意图。"""
+        conv_id = str(conversation.get("id") or "")
+        keys = [conv_id]
+        if kind == "pinned":
+            keys.append("pin:" + self._conversation_title(conversation))
+        bucket = self._prefs()[kind]
+        if any(key in bucket for key in keys):
+            for key in keys:
+                if key in bucket:
+                    bucket.remove(key)
+        else:
+            bucket.extend(keys)
+        self._save_prefs()
+        self.reload()
+
+    @Slot(QPoint)
+    def _conversation_menu(self, position) -> None:
+        item = self.conv_list.itemAt(position)
+        if item is None:
+            return
+        conversation = next(
+            (c for c in self.conversations() if str(c.get("id")) == str(item.data(Qt.UserRole))),
+            None,
+        )
+        if conversation is None:
+            return
+        conv_id = str(conversation.get("id") or "")
+        menu = QMenu(self)
+        pinned = self._prefs_pinned(conversation)
+        pinned_action = menu.addAction("取消置顶" if pinned else "置顶会话")
+        muted = self._prefs_muted(conv_id)
+        muted_action = menu.addAction("取消免打扰" if muted else "消息免打扰")
+        menu.addSeparator()
+        read_action = menu.addAction("标记为已读")
+        chosen = menu.exec(self.conv_list.mapToGlobal(position))
+        if chosen is pinned_action:
+            self._toggle_pref("pinned", conversation)
+        elif chosen is muted_action:
+            self._toggle_pref("muted", conversation)
+        elif chosen is read_action:
+            try:
+                self.engine.chat.mark_read(conv_id)
+            except Exception:
+                pass
+            self.reload()
+
+    def _conversation_preview(self, conversation: dict[str, Any]) -> str:
+        last = str(conversation.get("lastText") or "").strip() or "还没有消息"
+        if len(last) > 24:
+            last = last[:24] + "…"
+        return last
+
+    def _conversation_time(self, conversation: dict[str, Any]) -> str:
+        """When it last moved, written the way a chat app writes it."""
+        stamp = float(conversation.get("updated") or 0)
+        if stamp <= 0:
+            return ""
+        when = time.localtime(stamp)
+        today = time.localtime()
+        if (when.tm_year, when.tm_yday) == (today.tm_year, today.tm_yday):
+            return time.strftime("%H:%M", when)
+        if (today.tm_yday - when.tm_yday) == 1 and when.tm_year == today.tm_year:
+            return "昨天"
+        if abs(time.time() - stamp) < 7 * 86400:
+            return "周" + "一二三四五六日"[when.tm_wday]
+        return time.strftime("%m-%d", when)
 
     #: 消息种类 -> 会话列表里的前缀，像聊天软件那样一眼看出"最后一条是什么"。
     PREVIEW_ICONS = {
@@ -317,6 +518,14 @@ class ChatView(QWidget):
             if self.conv_list.item(row).data(Qt.UserRole) == conv_id:
                 self.conv_list.setCurrentRow(row)
                 return
+
+    def _paint_selection(self) -> None:
+        """给每一行画上"选中/未选中"的背景（item widget 会盖住列表自己的高亮）。"""
+        for index in range(self.conv_list.count()):
+            item = self.conv_list.item(index)
+            widget = self.conv_list.itemWidget(item)
+            if widget is not None:
+                widget.set_selected(index == self.conv_list.currentRow())
 
     def _on_conversation_changed(self, row: int) -> None:
         if row < 0:

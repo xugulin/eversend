@@ -504,16 +504,54 @@ def test_conversation_list_reads_like_a_chat_app(app, root) -> None:
             ]
             chat.reload()
             desktop.pump(0.6)
-            items = [chat.conv_list.item(i).text() for i in range(chat.conv_list.count())]
-            joined = "\n".join(items)
+            # 列表用的是 item widget（像 QQ 那样左边头像、右边两行），所以读控件
+            # 而不是读 item.text() —— 后者现在是空的。
+            def rows():
+                out = []
+                for i in range(chat.conv_list.count()):
+                    widget = chat.conv_list.itemWidget(chat.conv_list.item(i))
+                    if widget is not None:
+                        out.append((widget.name.text(), widget.preview.text(), widget.avatar.text()))
+                return out
+
+            items = rows()
+            joined = "\n".join(f"{n} / {p}" for n, p, _ in items)
             check("列表里不再出现会话 id", "d:" not in joined and "g:" not in joined, joined[:120])
-            check("一对一显示对方的名字", any("我的手机" in line for line in items), joined[:120])
-            check("群聊有 👥 标记", any("👥" in line for line in items), joined[:120])
-            check("没起名的群显示人数", any("群聊（2 人）" in line for line in items), joined[:120])
-            check("图片消息在预览里标出[图片]", any("[图片]" in line for line in items), joined[:120])
+            check("一对一显示对方的名字", any("我的手机" in n for n, _, _ in items), joined[:120])
+            check("群聊有 👥 头像", any("👥" == icon for _, _, icon in items), joined[:120])
+            check("没起名的群显示人数", any("群聊（2 人）" in n for n, _, _ in items), joined[:120])
+            check("图片消息在预览里标出[图片]", any("[图片]" in p for _, p, _ in items), joined[:120])
+            # isVisible() 要求整条父链都可见，而测试停在"发送"页；用 isHidden()
+            # 才是在问"这个徽标自己有没有被藏起来"。
+            check("未读有小红点", any(
+                not chat.conv_list.itemWidget(chat.conv_list.item(i)).badge.isHidden()
+                for i in range(chat.conv_list.count())
+            ), "没有未读徽标")
+
+            # 置顶：排到最前面，名字前有 📌
+            chat._toggle_pref("pinned", next(c for c in chat.conversations() if c["id"] == group))
+            desktop.pump(0.4)
+            first = chat.conv_list.itemWidget(chat.conv_list.item(0))
+            check("置顶后排在最前面并标 📌", first is not None and first.name.text().startswith("📌"), first.name.text())
+            chat._toggle_pref("pinned", next(c for c in chat.conversations() if c["id"] == group))
+            desktop.pump(0.3)
+            # 免打扰：预览前有 🔕
+            chat._toggle_pref("muted", next(c for c in chat.conversations() if c["id"] == direct))
+            desktop.pump(0.4)
+            muted_rows = [p for n, p, _ in rows() if p.startswith("🔕")]
+            check("免打扰的会话标出 🔕", bool(muted_rows), str(rows())[:120])
             # 打开群聊时标题栏用同一个名字
             chat._select_conversation(group)
             desktop.pump(0.4)
+            # 顺便截一张图存档（docs 里要用）
+            try:
+                desktop.window.tabs.setCurrentIndex(3)
+                desktop.pump(0.3)
+                shots = Path(__file__).resolve().parent / "screenshots"
+                shots.mkdir(exist_ok=True)
+                desktop.window.grab().save(str(shots / "conversation-list.png"))
+            except Exception:
+                pass
             check("标题栏和列表用同一个名字", chat.header.text() == "群聊（2 人）", chat.header.text())
         finally:
             desktop.close()

@@ -161,6 +161,24 @@ def stylesheet(dark: bool) -> str:
     QLabel#BubbleState {{ color: {text_dim}; font-size: 11px; }}
     QLabel#BubbleImage {{ border-radius: 8px; }}
 
+    /* 会话列表：头像块 + 两行文字 + 未读小红点（QQ 那种排布） */
+    QWidget#ConvRow {{ background: transparent; }}
+    QLabel#ConvAvatar {{
+        background: {surface_alt};
+        border: 1px solid {border};
+        border-radius: 10px;
+        font-size: 20px;
+    }}
+    QLabel#ConvName {{ font-size: 14px; font-weight: 600; color: {text}; }}
+    QLabel#ConvPreview {{ color: {text_dim}; font-size: 12px; }}
+    QLabel#ConvTime {{ color: {text_dim}; font-size: 11px; }}
+    QLabel#ConvBadge {{
+        background: #d1242f; color: #ffffff; border-radius: 9px;
+        font-size: 11px; font-weight: 600; min-width: 18px; max-height: 18px;
+    }}
+    QListWidget#ConvList {{ background: transparent; border: 0; }}
+    QListWidget#ConvList::item {{ border-radius: 8px; }}
+
     QFrame#DeviceCard {{
         background: {surface_alt};
         border: 1px solid {border};
