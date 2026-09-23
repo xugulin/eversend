@@ -788,6 +788,8 @@ data class ChatMessage(
 data class Conversation(
     val id: String,
     val title: String,
+    /// 服务端算好的显示名（对方设备名 / 群名），列表和标题栏都优先用它。
+    val displayTitle: String,
     val kind: String,
     val lastText: String,
     val unread: Int,
@@ -811,6 +813,7 @@ fun JSONObject.toMessage(): ChatMessage = ChatMessage(
 fun JSONObject.toConversation(): Conversation = Conversation(
     id = optString("id"),
     title = optString("title"),
+    displayTitle = optString("displayTitle"),
     kind = optString("kind", "direct"),
     lastText = optString("lastText"),
     unread = optInt("unread", 0),

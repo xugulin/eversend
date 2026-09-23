@@ -35,7 +35,11 @@ if __package__ in (None, ""):  # allow "python3 src/eversend/web/selftest.py"
     if str(_SRC) not in sys.path:
         sys.path.insert(0, str(_SRC))
 
-from eversend.core.chat import direct_conversation_id  # noqa: E402
+from eversend.core.chat import (  # noqa: E402
+    conversation_title,
+    direct_conversation_id,
+    new_group_id,
+)
 from eversend.core.engine import Engine, EngineConfig  # noqa: E402
 from eversend.web import create_web_ui  # noqa: E402
 from eversend.web import qr  # noqa: E402
@@ -635,6 +639,7 @@ def check_share_handoff(ui, base: str, root: Path) -> None:
         check("and it is really gone", not any(
             c.get("key") == entry["key"] for c in ui.known_clients()))
 
+    check_conversation_names(ui, base)
     check_app_registration(ui)
 
     # The phone's 「断开连接」 button: the desktop must stop showing it at once.
@@ -1407,6 +1412,71 @@ def check_apk_download(base: str, ui, engine: Engine, root: Path) -> None:
         installer.unlink(missing_ok=True)
         ui._apk_checked = 0.0  # noqa: SLF001
     check("删掉之后又变回不可用", not json.loads(http(base + "/api/state")[2].decode("utf-8"))["app"]["apk"].get("available"))
+
+
+def check_conversation_names(ui, base: str) -> None:
+    """会话列表要给人看的名字，而不是数据库主键。
+
+    安卓 App 的会话列表是直接读 ``/api/state`` 里的 ``chat.conversations`` 的，
+    而库里存的只有会话 id（``d:c96ec2dd94``）。名字必须由服务端算好 —— 三个
+    客户端各算一遍，就一定会有一处忘了算：CI 截图里 App 的列表上就写着
+    "d:c96ec2dd94"。
+
+    而且要看**谁在看**：电脑看一对一，对方是手机；手机看同一个会话，对方
+    是电脑。两边都按电脑的视角算，手机上那条会话就写着手机自己的名字。
+    """
+    print("\n[会话名字] 三个客户端拿到的都是人能读的名字，而且视角正确")
+    engine = ui.engine
+    agent = "EverSend-Android/1.0 (Android 16)"
+    entry = ui.register_app("name-probe", name="我的手机", version="1.0.0", address="10.8.8.8", agent=agent)
+    key = str(entry.get("key") or "")
+    conv_id = direct_conversation_id(engine.info.device_id, key)
+    engine.chat.upsert_conversation(conv_id, kind="direct", members=[engine.info.device_id, key])
+    engine.chat.add_message(conv_id, sender=key, sender_name="我的手机", text="你好", direction="in")
+
+    # 手机的身份（请求头里带自己的设备号）就是 App 读列表时的那条路。
+    phone = {"X-EverSend-Device": "name-probe", "User-Agent": agent}
+    body = json.loads(http(base + "/api/state", headers=phone)[2].decode("utf-8"))
+    items = (body.get("chat") or {}).get("conversations") or []
+    mine = next((item for item in items if item.get("id") == conv_id), None)
+    check("会话在列表里", mine is not None, str(items)[:120])
+    title = str((mine or {}).get("displayTitle") or "")
+    check("手机上看到的是电脑的名字", title == engine.info.name, f"{title!r} / {engine.info.name!r}")
+    check("不是手机自己的名字（那等于照镜子）", title != "我的手机", title)
+    check("会话 id 不再被当成名字用", not title.startswith("d:"), title)
+    check(
+        "成员也是名字（系统 · 版本 · IP）",
+        engine.info.name in str((mine or {}).get("displayPeople") or ""),
+        str((mine or {}).get("displayPeople")),
+    )
+
+    body = json.loads(http(base + f"/api/chat?conv={conv_id}", headers=phone)[2].decode("utf-8"))
+    items = body.get("conversations") or []
+    mine = next((item for item in items if item.get("id") == conv_id), None)
+    check("/api/chat 也带同一个名字", str((mine or {}).get("displayTitle") or "") == engine.info.name)
+
+    group = new_group_id()
+    engine.chat.upsert_conversation(group, kind="group", title="", members=[engine.info.device_id, key])
+    body = json.loads(http(base + "/api/state", headers=phone)[2].decode("utf-8"))
+    items = (body.get("chat") or {}).get("conversations") or []
+    mine = next((item for item in items if item.get("id") == group), None)
+    check("没起名的群写人数", str((mine or {}).get("displayTitle") or "") == "群聊（2 人）",
+          str((mine or {}).get("displayTitle")))
+
+    # 对方的记录已经没了（重装、清理过配对列表）：宁可写"未知设备"，也不要
+    # 甩一串 id 前缀（用户看到 "web:127.0." 只会更糊涂）。这条直接问那个
+    # 共用函数 —— 上面几条已经证明接口走的就是它。
+    unknown_member = "web:127.0.0.1|gone"
+    unknown_title = conversation_title(
+        {"id": "d:x", "kind": "direct", "members": [engine.info.device_id, unknown_member]},
+        {engine.info.device_id: f"{engine.info.name}（本机）"},
+        engine.info.device_id,
+    )
+    check("查不到名字时不拿 id 前缀充数", unknown_title == "未知设备", unknown_title)
+
+    for conv in (conv_id, group):
+        engine.chat.remove_conversation(conv)
+    ui.remove_client(key)
 
 
 def check_app_registration(ui) -> None:

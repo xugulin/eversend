@@ -638,7 +638,12 @@
         class: 'conv-item' + (active ? ' is-active' : ''),
         onclick: function () { openConversation(conv.id); }
       },
-        h('span', { class: 'conv-title', text: conv.title || conv.id.slice(0, 12) }),
+        // displayTitle 是服务端算好的名字（对方设备名 / 群名）；以前退回会话
+        // id，手机上看到的就是一串 "d:c96ec2dd94"。
+        h('span', {
+          class: 'conv-title',
+          text: conv.displayTitle || conv.title || conv.id.slice(0, 12)
+        }),
         conv.unread ? h('span', { class: 'badge', text: String(conv.unread) }) : null,
         h('span', { class: 'conv-last muted', text: (conv.kind === 'group' ? '群 · ' : '') + (conv.lastText || '') })
       ));
@@ -649,8 +654,8 @@
     if (!store.conversationId) return;
     var current = conversations.find(function (c) { return c.id === store.conversationId; }) || {};
     $('#chat-title').textContent = (current.id || '').indexOf('g:') === 0
-      ? ('👥 ' + (current.title || '群聊'))
-      : (current.title || '会话');
+      ? ('👥 ' + (current.displayTitle || current.title || '群聊'))
+      : (current.displayTitle || current.title || '会话');
     // 规范显示成员：名字（系统 · 韧传 版本 · IP），和设备列表用同一套字段。
     var members = (current.members || []).map(function (id) {
       if (id === (store.chat.selfId || '')) return '我';

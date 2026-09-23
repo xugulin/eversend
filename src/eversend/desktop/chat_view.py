@@ -50,7 +50,13 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import media, platform_open
-from ..core.chat import MEDIA_KINDS, direct_conversation_id
+from ..core.chat import (
+    MEDIA_KINDS,
+    client_aliases,
+    conversation_people,
+    conversation_title,
+    direct_conversation_id,
+)
 from ..core.emoji import EMOJI_GROUPS
 from ..core.engine import Engine
 from ..core.model import human_bytes, human_speed
@@ -465,35 +471,27 @@ class ChatView(QWidget):
         "file": "[文件]",
     }
 
+    def _member_labels(self, conversation: dict[str, Any]) -> dict[str, str]:
+        """成员 id → 名字（系统 · 版本 · IP）；名字怎么算只有一份实现。"""
+        members = [str(m) for m in (conversation.get("members") or []) if str(m)]
+        return {member: self._member_label(member) for member in members}
+
     def _conversation_people(self, conversation: dict[str, Any]) -> str:
         """Who is in this conversation, as names (never raw ids)."""
-        members = [str(m) for m in (conversation.get("members") or [])]
-        mine = self.engine.info.device_id
-        others = [self._member_label(m) for m in members if m != mine]
-        return "、".join(others) if others else "只有本机"
+        return conversation_people(
+            conversation, self._member_labels(conversation), self.engine.info.device_id
+        )
 
     def _conversation_title(self, conversation: dict[str, Any]) -> str:
         """A conversation as a human reads it: 对方的名字 / 群名。
 
         以前列表里直接写会话 id（``d:8765510e214069``）—— 那是数据库主键，
-        不是给人看的。一对一显示对方的设备名，群聊显示群名（没起名就写人数），
-        名字实在拿不到（对方从没连过、记录也没了）才退回一句"未知设备"。
+        不是给人看的。规则本身在 ``core.chat.conversation_title`` 里，手机 App
+        和网页版显示的是同一个名字（服务端 /api/chat 也用这个函数）。
         """
-        if conversation.get("kind") == "group" or str(conversation.get("id", "")).startswith("g:"):
-            title = str(conversation.get("title") or "").strip()
-            if title:
-                return title
-            count = len([m for m in (conversation.get("members") or []) if str(m)]) or 1
-            return f"群聊（{count} 人）"
-        members = [str(m) for m in (conversation.get("members") or [])]
-        mine = self.engine.info.device_id
-        others = [m for m in members if m != mine]
-        if not others:
-            # A 1:1 with a phone whose record is gone, or with ourselves.
-            return "（只有自己）" if not members else (self.engine.info.name if not others else "未知设备")
-        name = self._member_label(others[0])
-        # ``_member_label`` adds the specs in brackets; the list wants the name.
-        return name.split("（")[0] or "未知设备"
+        return conversation_title(
+            conversation, self._member_labels(conversation), self.engine.info.device_id
+        )
 
     def _conversation_label(self, conversation: dict[str, Any]) -> str:
         unread = int(conversation.get("unread") or 0)
@@ -595,9 +593,10 @@ class ChatView(QWidget):
         already on hand -- the peer list, or the paired-client list for phones.
         """
         if member.startswith("web:"):
-            key = member[4:]
             for client in getattr(self, "_clients_provider", lambda: [])() or []:
-                if client.get("key") == key:
+                # 成员 id 与注册表键不一定同一个写法（App 是 android:<id>，
+                # 消息头里却是 web:<id>），所以按别名表匹配。
+                if member in client_aliases(client):
                     is_app = str(client.get("kind") or "") == "app"
                     parts = ["安卓 App" if is_app else "网页版"]
                     if client.get("version"):

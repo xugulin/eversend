@@ -47,7 +47,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, ClassVar, Iterable, Iterator
 
 from ..core.constants import APP_NAME, APP_NAME_CN, APP_VERSION, DEFAULT_WEB_PORT
-from ..core.chat import direct_conversation_id, media_relpath
+from ..core.chat import (
+    client_aliases,
+    conversation_people,
+    conversation_title,
+    direct_conversation_id,
+    media_relpath,
+)
 from ..core.engine import Engine, build_file_entries, free_space
 from ..core.model import DeviceInfo, Peer, new_transfer_id, sanitize_component, unique_path
 from . import qr
@@ -1853,6 +1859,12 @@ class _Handler(BaseHTTPRequestHandler):
             # ``state()`` is also used by the desktop, which has no HTTP client
             # identity; only here do we know which phone is asking.
             state["chat"]["selfId"] = self._self_client_id(ui)
+            # 会话列表要有"人能读"的名字：手机 App 就是从这里读列表的，
+            # 以前它只能退回会话 id（"d:c96ec2dd94"）。
+            state["chat"]["conversations"] = [
+                dict(item, **self._conversation_labels(ui, item, state["chat"]["selfId"]))
+                for item in state["chat"]["conversations"]
+            ]
             # A file addressed to one phone must not show up on another's page.
             state["shares"] = ui.shares(for_key=self._self_client_key(ui))
             self._send_json(HTTPStatus.OK, state)
@@ -2595,6 +2607,56 @@ class _Handler(BaseHTTPRequestHandler):
             },
         )
 
+    def _member_label_map(self, ui) -> dict[str, str]:
+        """成员 id → 「名字（系统 · 韧传 版本 · IP）」。
+
+        手机（``web:<key>``）在已配对列表里，电脑在对端列表里，本机用本机名。
+        这段以前只有电脑端自己算，于是手机 App 的会话列表里显示的是一串
+        ``d:c96ec2dd94`` —— 数据库主键。现在三个客户端都从服务端拿结果。
+        """
+        engine = ui.engine
+        labels: dict[str, str] = {}
+        for client in ui.known_clients():
+            if not client.get("key"):
+                continue
+            is_app = str(client.get("kind") or "") == "app"
+            parts = ["安卓 App" if is_app else "网页版"]
+            if client.get("version"):
+                parts.append(f"韧传 {client['version']}")
+            if client.get("address"):
+                parts.append(str(client["address"]))
+            label = f"{client.get('label') or '手机'}（{' · '.join(parts)}）"
+            # 会话里的成员 id 可能是 android:<id>、web:<id> 或 地址|UA摘要，
+            # 都指同一台手机 —— 见 core.chat.client_aliases 的注释。
+            for alias in client_aliases(client):
+                labels[alias] = label
+        for peer in engine.devices():
+            info = peer.info
+            parts = [str(info.platform or "未知系统")]
+            if info.version:
+                parts.append(f"韧传 {info.version}")
+            if peer.address:
+                parts.append(str(peer.address))
+            labels[info.device_id] = f"{info.name}（{' · '.join(parts)}）"
+        labels[engine.info.device_id] = f"{engine.info.name}（本机）"
+        return labels
+
+    def _conversation_labels(
+        self, ui, conversation: dict[str, Any], viewer: str = ""
+    ) -> dict[str, str]:
+        """会话列表要显示的两个字段（名字、成员），都由服务端算好。
+
+        ``viewer`` 是"谁在看这个列表"：电脑端看一对一，看到的是对方（手机）
+        的名字；手机看同一个会话，该看到的是电脑的名字。以前两边都按电脑的
+        视角算，于是手机上那条会话写着手机自己的名字。
+        """
+        labels = self._member_label_map(ui)
+        self_id = viewer or ui.engine.info.device_id
+        return {
+            "displayTitle": conversation_title(conversation, labels, self_id),
+            "displayPeople": conversation_people(conversation, labels, self_id),
+        }
+
     def _send_chat(self, query: dict[str, list[str]]) -> None:
         """``GET /api/chat``: conversations plus one conversation's messages."""
         ui = self.server_ui
@@ -2607,7 +2669,11 @@ class _Handler(BaseHTTPRequestHandler):
         before_raw = (query.get("before") or [""])[0]
         before = float(before_raw) if before_raw else None
 
-        conversations = store.conversations()
+        viewer = self._self_client_id(ui)
+        conversations = [
+            dict(item, **self._conversation_labels(ui, item, viewer))
+            for item in store.conversations()
+        ]
         if not conv_id and conversations:
             conv_id = conversations[0]["id"]
         messages = store.messages(conv_id, limit=limit, before=before) if conv_id else []

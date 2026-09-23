@@ -448,9 +448,77 @@ class ChatStore:
             self._connection = None
 
 
+def client_aliases(client: dict[str, Any]) -> set[str]:
+    """All the ids one connected client can appear as inside a conversation.
+
+    手机的 id 有三副面孔：App 用 ``/api/hello`` 登记成 ``android:<deviceId>``，
+    发消息时请求头里带的是 ``web:<deviceId>``，而老版本（只被当成浏览器）的
+    记录键是 ``地址|UA摘要``。会话里存的成员 id 是当时那个，光按注册表键去
+    查名字就会查不到 —— 用户看到的就是"某某的会话标题是一串 d:xxx"。
+    这里把几种写法都列出来，谁查都能查到。
+    """
+    out: set[str] = set()
+    for value in (client.get("key"), client.get("deviceId")):
+        text = str(value or "").strip()
+        if not text:
+            continue
+        out.add(text)
+        bare = text.split(":", 1)[1] if text.startswith(("web:", "android:")) else text
+        if bare:
+            out.update({bare, f"web:{bare}", f"android:{bare}"})
+    return out
+
+
+def conversation_title(
+    conversation: dict[str, Any], labels: dict[str, str] | None = None, self_id: str = ""
+) -> str:
+    """A conversation as a human reads it: 对方的名字 / 群名。
+
+    会话 id 是数据库主键（``d:8765510e214069``），不是给人看的东西。三个客户端
+    （电脑端、网页版、安卓 App）都要显示同一个名字，所以这段判断只写一份：
+    ``labels`` 是"成员 id → 名字（系统 · 版本 · IP）"，谁手上有设备信息谁去填。
+
+    一对一显示对方的名字，群聊显示群名（没起名就写人数），名字实在拿不到
+    （对方从没连过、记录也没了）才退回一句"未知设备"。
+    """
+    known = labels or {}
+
+    def label(member: str) -> str:
+        # 列表里只要名字，标签里那串「（系统 · 版本 · IP）」是给详情用的。
+        # 查不到就说"未知设备"：把 id 前几位摆出来（``web:127.0.``）比空着更
+        # 让人看不懂，用户要的是名字。
+        return str(known.get(member) or "").split("（")[0] or "未知设备"
+
+    members = [str(m) for m in (conversation.get("members") or []) if str(m)]
+    conv_id = str(conversation.get("id") or "")
+    if conversation.get("kind") == "group" or conv_id.startswith("g:"):
+        title = str(conversation.get("title") or "").strip()
+        if title:
+            return title
+        return f"群聊（{len(members) or 1} 人）"
+    others = [m for m in members if m != self_id]
+    if not others:
+        # 只有自己，或者成员的记录已经没了。
+        return label(self_id) if members else "（只有自己）"
+    return label(others[0]) or "未知设备"
+
+
+def conversation_people(
+    conversation: dict[str, Any], labels: dict[str, str] | None = None, self_id: str = ""
+) -> str:
+    """Who is in this conversation, as names (never raw ids)."""
+    known = labels or {}
+    members = [str(m) for m in (conversation.get("members") or []) if str(m)]
+    others = [known.get(m) or "未知设备" for m in members if m != self_id]
+    return "、".join(others) if others else "只有本机"
+
+
 __all__ = [
     "ChatStore",
+    "client_aliases",
     "conversation_dirname",
+    "conversation_people",
+    "conversation_title",
     "KINDS",
     "MEDIA_DIRNAME",
     "MEDIA_KINDS",

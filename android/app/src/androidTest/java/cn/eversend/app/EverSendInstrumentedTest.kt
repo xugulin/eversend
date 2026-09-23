@@ -4,6 +4,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -38,6 +39,33 @@ class EverSendInstrumentedTest {
         val device = state.optJSONObject("device")
         assertTrue("电脑端必须返回设备信息", device != null && device!!.optString("name").isNotEmpty())
         assertTrue("电脑端必须带聊天接口", state.optJSONObject("chat") != null)
+    }
+
+    /**
+     * 会话列表要给人看的名字，而不是数据库主键。
+     *
+     * App 的列表是直接渲染 ``/api/state`` 里的会话的，而库里只存了会话 id。
+     * 名字必须由服务端算好（displayTitle）—— 之前没人算，用户在手机上看
+     * 到的就是一行 "d:c96ec2dd94"。
+     */
+    @Test
+    fun conversationListShowsReadableNames() {
+        val api = client()
+        // 先保证库里至少有一个会话，否则这个断言会空转。
+        api.postJson(
+            "/api/chat/send",
+            JSONObject().put("text", "会话名字自检 ${System.currentTimeMillis()}"),
+        )
+        val conversations = api.getJson("/api/state")
+            .optJSONObject("chat")?.optJSONArray("conversations")
+        assertTrue("必须能读到会话列表", conversations != null && conversations!!.length() > 0)
+        for (index in 0 until conversations!!.length()) {
+            val conversation = conversations.optJSONObject(index) ?: continue
+            val id = conversation.optString("id")
+            val title = conversation.optString("displayTitle")
+            assertTrue("会话 $id 要有可读的名字", title.isNotBlank())
+            assertNotEquals("会话名字不能就是会话 id（$title）", id, title)
+        }
     }
 
     @Test
@@ -156,13 +184,20 @@ class EverSendInstrumentedTest {
 
             // 会话列表出来了，还要真的点进去：原来只断言"会话"两个字，列表页
             // 本身就有这两个字，所以"聊天页打不开"也能过。
+            //
+            // 找的是**电脑的设备名**，不是会话 id：列表以前显示 "d:c96ec2dd94"
+            // 这种数据库主键，这条测试当时按 "d:" 去找 —— 等于把 bug 写成了
+            // 预期。名字由服务端算好（displayTitle）。
+            val desktopName = api.getJson("/api/state")
+                .optJSONObject("device")?.optString("name").orEmpty()
+            assertTrue("电脑端必须报出自己的名字", desktopName.isNotBlank())
             val conversation = device.wait(
                 androidx.test.uiautomator.Until.findObject(
-                    androidx.test.uiautomator.By.textStartsWith("d:")
+                    androidx.test.uiautomator.By.textStartsWith(desktopName)
                 ),
-                10_000,
+                15_000,
             )
-            assertTrue("会话列表里要有和电脑的那个会话", conversation != null)
+            assertTrue("会话列表里要有和电脑的那个会话（$desktopName）", conversation != null)
             conversation?.click()
             Thread.sleep(1500)
             shoot("android-app-conversation.png")

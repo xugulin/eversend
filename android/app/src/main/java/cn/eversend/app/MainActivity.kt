@@ -659,8 +659,12 @@ fun ChatScreen(store: AppState) {
                     ) {
                         Column(Modifier.padding(12.dp)) {
                             Text(
+                                // 服务端算好的名字（对方设备名 / 群名）。以前这里
+                                // 退回会话 id，用户看到的就是 "d:c96ec2dd94"。
                                 (if (conversation.id.startsWith("g:")) "👥 " else "")
-                                    + conversation.title.ifBlank { conversation.id.take(12) },
+                                    + conversation.displayTitle.ifBlank {
+                                        conversation.title.ifBlank { conversation.id.take(12) }
+                                    },
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(conversation.lastText, fontSize = 12.sp)
@@ -708,7 +712,9 @@ fun ChatScreen(store: AppState) {
                 Column {
                     Text(
                         (if (current.id.startsWith("g:")) "👥 " else "")
-                            + current.title.ifBlank { "会话" },
+                            + current.displayTitle.ifBlank {
+                                current.title.ifBlank { "会话" }
+                            },
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 18.sp,
                     )
