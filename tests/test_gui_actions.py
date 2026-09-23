@@ -478,6 +478,47 @@ def walk_buttons(dialog):
     return [w for w in walk_widgets(dialog) if isinstance(w, QPushButton)]
 
 
+def test_conversation_list_reads_like_a_chat_app(app, root) -> None:
+    """会话列表要像聊天软件：显示对方的名字，而不是数据库主键。"""
+    print("\n[6] 会话列表：名字 + 头像 + 最后一条（不是 d:xxx）")
+    import time as time_module
+
+    from eversend.core.chat import direct_conversation_id, new_group_id
+
+    if True:
+        desktop = Desktop(str(root), app)
+        try:
+            chat = desktop.window.chat_view
+            engine = desktop.engine
+            direct = direct_conversation_id(engine.info.device_id, "web:peer-key")
+            engine.chat.upsert_conversation(direct, kind="direct", members=[engine.info.device_id, "web:peer-key"])
+            engine.chat.add_message(direct, sender="web:peer-key", sender_name="我的手机", kind="image",
+                                    text="", media_name="a.png", direction="in")
+            group = new_group_id()
+            engine.chat.upsert_conversation(group, kind="group", title="", members=[engine.info.device_id, "web:peer-key"])
+            engine.chat.add_message(group, sender=engine.info.device_id, sender_name="我", text="大家好", direction="out")
+
+            # 手机客户端的名字来自"已配对"那张表；喂一条进去，走的才是真实路径。
+            chat._clients_provider = lambda: [
+                {"key": "peer-key", "label": "我的手机", "kind": "app", "address": "10.0.0.5", "version": "1.0.0"}
+            ]
+            chat.reload()
+            desktop.pump(0.6)
+            items = [chat.conv_list.item(i).text() for i in range(chat.conv_list.count())]
+            joined = "\n".join(items)
+            check("列表里不再出现会话 id", "d:" not in joined and "g:" not in joined, joined[:120])
+            check("一对一显示对方的名字", any("我的手机" in line for line in items), joined[:120])
+            check("群聊有 👥 标记", any("👥" in line for line in items), joined[:120])
+            check("没起名的群显示人数", any("群聊（2 人）" in line for line in items), joined[:120])
+            check("图片消息在预览里标出[图片]", any("[图片]" in line for line in items), joined[:120])
+            # 打开群聊时标题栏用同一个名字
+            chat._select_conversation(group)
+            desktop.pump(0.4)
+            check("标题栏和列表用同一个名字", chat.header.text() == "群聊（2 人）", chat.header.text())
+        finally:
+            desktop.close()
+
+
 def make_video(path: Path, seconds: float = 1.0) -> bool:
     """A real MP4 via ffmpeg, when the machine has one.  False = skipped."""
     import shutil
@@ -539,6 +580,7 @@ def main() -> int:
             test_cancel_after_finish,
             test_chat_attachment_preview,
             test_multi_device_send,
+            test_conversation_list_reads_like_a_chat_app,
         ):
             try:
                 test(app, root / test.__name__)

@@ -247,18 +247,63 @@ class ChatView(QWidget):
         for conversation in conversations:
             item = QListWidgetItem(self._conversation_label(conversation))
             item.setData(Qt.UserRole, conversation["id"])
+            # The raw id stays in the tooltip: useful when debugging a pairing
+            # problem, meaningless (and off-putting) in the list itself.
+            item.setToolTip(f"{conversation['id']}\n{self._conversation_people(conversation)}")
             self.conv_list.addItem(item)
         self.conv_list.blockSignals(False)
         self._select_conversation(self._conversation or self._first_id())
 
-    @staticmethod
-    def _conversation_label(conversation: dict[str, Any]) -> str:
-        badge = "  🔴%d" % conversation["unread"] if conversation.get("unread") else ""
-        kind = "群" if conversation.get("kind") == "group" else "一对一"
-        last = str(conversation.get("lastText") or "")
-        if len(last) > 28:
-            last = last[:28] + "…"
-        return f"{conversation.get('title') or conversation['id'][:12]}｜{kind}{badge}\n{last}"
+    #: 消息种类 -> 会话列表里的前缀，像聊天软件那样一眼看出"最后一条是什么"。
+    PREVIEW_ICONS = {
+        "image": "[图片]",
+        "video": "[视频]",
+        "voice": "[语音]",
+        "file": "[文件]",
+    }
+
+    def _conversation_people(self, conversation: dict[str, Any]) -> str:
+        """Who is in this conversation, as names (never raw ids)."""
+        members = [str(m) for m in (conversation.get("members") or [])]
+        mine = self.engine.info.device_id
+        others = [self._member_label(m) for m in members if m != mine]
+        return "、".join(others) if others else "只有本机"
+
+    def _conversation_title(self, conversation: dict[str, Any]) -> str:
+        """A conversation as a human reads it: 对方的名字 / 群名。
+
+        以前列表里直接写会话 id（``d:8765510e214069``）—— 那是数据库主键，
+        不是给人看的。一对一显示对方的设备名，群聊显示群名（没起名就写人数），
+        名字实在拿不到（对方从没连过、记录也没了）才退回一句"未知设备"。
+        """
+        if conversation.get("kind") == "group" or str(conversation.get("id", "")).startswith("g:"):
+            title = str(conversation.get("title") or "").strip()
+            if title:
+                return title
+            count = len([m for m in (conversation.get("members") or []) if str(m)]) or 1
+            return f"群聊（{count} 人）"
+        members = [str(m) for m in (conversation.get("members") or [])]
+        mine = self.engine.info.device_id
+        others = [m for m in members if m != mine]
+        if not others:
+            # A 1:1 with a phone whose record is gone, or with ourselves.
+            return "（只有自己）" if not members else (self.engine.info.name if not others else "未知设备")
+        name = self._member_label(others[0])
+        # ``_member_label`` adds the specs in brackets; the list wants the name.
+        return name.split("（")[0] or "未知设备"
+
+    def _conversation_label(self, conversation: dict[str, Any]) -> str:
+        unread = int(conversation.get("unread") or 0)
+        badge = f"  🔴{unread}" if unread else ""
+        is_group = conversation.get("kind") == "group" or str(conversation.get("id", "")).startswith("g:")
+        icon = "👥" if is_group else "💬"
+        title = self._conversation_title(conversation)
+        last = str(conversation.get("lastText") or "").strip()
+        if not last:
+            last = "还没有消息"
+        if len(last) > 26:
+            last = last[:26] + "…"
+        return f"{icon} {title}{badge}\n{last}"
 
     def _first_id(self) -> str:
         conversations = self.conversations()
@@ -304,6 +349,11 @@ class ChatView(QWidget):
             + f"成员：{self.engine.info.name}（本机）"
             + ("、" + "、".join(others) if others else "")
         )
+        # 列表和标题栏用同一个名字，避免"列表里叫 A、点进去叫 d:xxx"。
+        try:
+            self.header.setText(self._conversation_title(conversation))
+        except Exception:
+            pass
         messages = self.engine.chat.messages(self._conversation, limit=200)
         if [m["id"] for m in messages] == self._rendered:
             return
