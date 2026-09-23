@@ -209,7 +209,7 @@ class MainWindow(QMainWindow):
         left = QVBoxLayout()
         left.setSpacing(8)
         title_row = QHBoxLayout()
-        devices_title = QLabel("选择接收设备")
+        devices_title = QLabel("设备列表")
         devices_title.setObjectName("Title")
         title_row.addWidget(devices_title)
         title_row.addStretch(1)

@@ -49,7 +49,7 @@
     <section class="view" id="view-send" role="tabpanel" aria-label="发送">
       <div class="card">
         <div class="card-head">
-          <h2>目标设备</h2>
+          <h2>设备列表</h2>
           <button class="ghost" id="btn-refresh-devices" type="button">刷新</button>
         </div>
         <div class="device-list" id="device-list"></div>
@@ -78,11 +78,6 @@
                  placeholder="对方设置了 PIN 才需要填写">
         </label>
         <button class="primary block" id="btn-send" type="button" disabled>发送</button>
-      </div>
-
-      <div class="card">
-        <div class="card-head"><h2>局域网里的手机</h2><span class="muted">已连接 / 未连接</span></div>
-        <div id="phone-peers"></div>
       </div>
 
       <div class="card" id="upload-card" hidden>

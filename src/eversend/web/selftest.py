@@ -1324,6 +1324,10 @@ def check_apk_download(base: str, ui, engine: Engine, root: Path) -> None:
     check("没有安装包时状态里说不可用", not state["app"]["apk"].get("available"), str(state["app"]["apk"]))
     check("没有安装包时 /apk 回 404", http(base + "/apk")[0] == 404)
     check("页面里那一块默认是隐藏的", 'id="app-card" hidden' in _asset_text(ui, "index.html"))
+    # 设备列表：电脑和手机在同一个列表里，标题统一叫「设备列表」
+    html = _asset_text(ui, "index.html")
+    check("网页版有「设备列表」卡片", "<h2>设备列表</h2>" in html, html[:0])
+    check("不再有单独的「局域网里的手机」卡片", "phone-peers" not in html)
 
     data_dir = Path(engine.config.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)

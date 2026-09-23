@@ -331,26 +331,22 @@
     });
   }
 
-  /** 记住的手机（本机除外）：谁还连着、谁断开了，一眼看得出来。 */
-  function renderPhonePeers() {
-    var box = $('#phone-peers');
-    if (!box) return;
-    var phones = (store.knownClients || []).filter(function (c) { return c && c.deviceId !== store.selfId; });
-    var signature = phones.map(function (c) {
-      return c.key + '|' + c.label + '|' + c.online + '|' + Math.round(c.secondsAgo || 0);
-    }).join(',');
-    if (!changed('phonePeers', signature)) return;
-    clear(box);
-    box.hidden = phones.length === 0;
+  /** 手机行：并进同一个「设备列表」，只是它不可点（文件由电脑转交）。
+   *
+   *  以前手机单独占一张卡片，用户得在两个地方找设备；现在一处看全 ——
+   *  谁在线、是安卓 App 还是网页版、地址是多少，一眼扫完。
+   */
+  function appendPhoneRows(list, phones) {
     phones.forEach(function (client) {
       var isApp = client.clientKind === 'app';
-      box.appendChild(h('div', { class: 'peer' },
+      list.appendChild(h('div', { class: 'device is-peer' },
         h('span', { class: 'icon', text: isApp ? '📱' : '🌐' }),
         h('span', { class: 'meta' },
           h('span', { class: 'name' }, h('span', { text: client.label || '手机' }),
             h('span', { class: 'tag ' + (isApp ? 'is-app' : 'is-web'), text: isApp ? '安卓 App' : '网页版' }),
             statusChip(client.online, client.secondsAgo, client.isLocal)),
-          h('span', { class: 'facts muted', text: (client.address || '') + (client.version ? ' · 韧传 ' + client.version : '') })
+          h('span', { class: 'addr', text: client.address || '未知地址' }),
+          h('span', { class: 'facts muted', text: client.version ? ('韧传 ' + client.version) : '' })
         )
       ));
     });
@@ -1057,7 +1053,6 @@
     renderOffers();
     renderFiles();
     renderShares();
-    renderPhonePeers();
     renderSelf();
     renderApk();
     updateSendButton();

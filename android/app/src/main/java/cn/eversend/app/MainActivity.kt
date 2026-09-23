@@ -1490,7 +1490,7 @@ fun SendScreen(store: AppState) {
 
     Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("选择接收设备", fontWeight = FontWeight.SemiBold, fontSize = 18.sp, modifier = Modifier.weight(1f))
+            Text("设备列表", fontWeight = FontWeight.SemiBold, fontSize = 18.sp, modifier = Modifier.weight(1f))
             Text(
                 if (targets.isEmpty()) "可多选" else "已选 ${targets.size} 台",
                 fontSize = 12.sp,

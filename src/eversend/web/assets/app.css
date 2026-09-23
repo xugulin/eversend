@@ -271,6 +271,8 @@ body {
 .tag.is-offline { background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--muted); }
 .tag.is-app { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
 .tag.is-web { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
+.device.is-peer { opacity: .92; cursor: default; }
+.device.is-peer .addr { font-size: 11px; color: var(--muted); }
 .device .facts, .peer .facts { display: block; font-size: 11px; margin-top: 2px; }
 .peer { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--line); }
 .peer:first-child { border-top: 0; }
