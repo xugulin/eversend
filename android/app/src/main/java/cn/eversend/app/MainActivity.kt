@@ -883,8 +883,11 @@ fun Composer(
             value = draft,
             onValueChange = { draft = it },
             modifier = Modifier.weight(1f).testTag("chat-input"),
-            placeholder = { Text("说点什么…") },
-            maxLines = 3,
+            placeholder = { Text("说点什么…", maxLines = 1) },
+            // 输入框窄的时候（小屏手机 + 三个按钮挤在一行），占位文字会折成
+            // 两行「说点什 / 么…」，看着像坏掉了。单行显示，长文本自己横滚。
+            singleLine = true,
+            maxLines = 1,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(onSend = {
                 if (draft.isNotBlank()) {

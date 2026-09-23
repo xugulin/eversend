@@ -1,8 +1,8 @@
 
-cn.eversend.app.EverSendInstrumentedTest:..............
+cn.eversend.app.EverSendInstrumentedTest:...............
 
-Time: 69.956
+Time: 72.782
 
-OK (14 tests)
+OK (15 tests)
 
 
