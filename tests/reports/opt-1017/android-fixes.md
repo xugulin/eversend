@@ -114,3 +114,89 @@ logcat 应出现 `发送失败（准备换令牌）: Broken pipe` 后自动恢�
 > 与历史经验的关系：`android-fixes.md` §1 的 P0-A（令牌刷新的**线程**问题）修的是
 > `NetworkOnMainThreadException`；本次修的是**触发判定**与**令牌生命周期**问题 ——
 > 两者叠加才是"A7 非中断 + 慢启动"全绿，而"电脑端重启后立刻发大文件"这个场景之前仍会红。
+
+---
+
+## 5. v5 追加修复（Round 2：PG-1/PG-2 根因、PG-5、重启后 UI 自愈、下载重试策略）
+
+真机探针 after-v3 证据（`gui-probe-shots/after-v3/0006.png`、`0011.png`）复现：
+50.7% 时气泡仍「接收中…」、批量条目仍「共 100.0 MiB，正在排队」、完成 4.5s 后仍「点击保存到手机」、
+会话标题露 `00254c…`。
+
+### 5.1 PG-1/PG-2 根因（不是 Compose 观察问题，是下载走了旁路）
+
+真机用例 A2 的流程是：桌面点「发送」→ 手机出现卡片 → **点卡片上的「保存」**。而「保存」按钮
+（`MainActivity.kt:4081` 附近）走的是 **`saveToDownloads { active.saveMedia/download }` 直接下载旁路**：
+- 不创建 `FetchTask` → `ui.fetches` 天然是空的 → 气泡 `fetch==null`、批量条目 `activeFetches` 为空，
+  于是永远显示「接收中…」「正在排队」；
+- 完成后也没有 FetchState.Done，气泡状态映射拿不到「已保存」。
+（自动下载（Root 轮询 `fetcher.offer`）理论上也会建任务，但探针在卡片出现后立刻点了「保存」，
+ 直接旁路先拿到连接；且它在界面上不产生任何进度事实。）
+
+**v5 修法**：`保存` 按钮对**分享条目（`/api/share/<id>`）统一走 FetchManager**：
+`FetchManager.get(context).fetchNow(active, shareId, name, size)`（MainActivity.kt:4158 附近）。
+- 进度条/速度/ETA/「已保存」与自动下载是**同一份事实**（400ms 刷新，`Fetch.kt` run() 内 `now-lastReport>=400`）；
+- `inFlight` 去重，和自动下载不会重复抢同一个分享；
+- 聊天附件（`/api/chat/media`）不属于分享条目，保留原来的直接保存路径。
+
+**留下的诊断日志**（下次真机探针 logcat 可 grep，确认自动下载路径是否也在跑）：
+`EverSend: 分享自动下载：pending=N auto=true tasks=M`（MainActivity.kt:503）。
+
+### 5.2 PG-5 会话标题不再露内部设备 id
+
+真机标题「与 设备 00254c… 的对话」来自两处：
+1. `humanDeviceName()` 对不可读名字返回 `设备 <id 前6位>`（MainActivity.kt:7949）→ 改成返回「一台设备」，**任何情况不出现 id 片段**；
+2. `chatMembersLabel()` 兜底直接写原始 id（MainActivity.kt:7898 附近）→ 改成按 deviceId 反查：
+   members/identityAliases 命中 → 用名字；是本机（deviceId 相等）→ 「我的手机」；对端是电脑 → 「电脑」；否则「一台设备」。
+`readableTitle()` 同步加 `mineId` 参数（deviceId 相等 → 「本机」），两处调用已传入 `store.deviceId`。
+
+### 5.3 P1 电脑端重启后 UI 状态自愈
+
+现象（00:36 真机）：后台心跳已恢复、电脑端看到手机在线，但主页仍挂「发送失败：Failed to connect…」，
+点「和电脑聊天」无反应 —— 因为 `ui.client` 还拿着**旧令牌**的 ApiClient。
+
+v5 三处修：
+1. `LinkService`: 新增 `reconnectGeneration`（后台连接"从坏到好"时 +1，LinkService.kt:69/447）；
+2. `MainActivity.Root`: 观察这个代数，**一变就清 `ui.error`、`ui.client=null`、`linkHost`**，
+   下一轮轮询用新令牌重连并刷新设备列表/选中态（MainActivity.kt:396-410）；
+3. 轮询循环：快照**连续 2 轮失败** → 丢弃旧 client 重连（MainActivity.kt:511-516）；
+   「和电脑聊天」按钮失败时也自动 `ui.client=null` → `connectSession` 重连 → 重试一次（MainActivity.kt:1719 附近）。
+
+### 5.4 P1 下载重试策略（android-fixes §2.2 自己提的待修）
+
+- `MAX_DOWNLOAD_ATTEMPTS` 4→**6**（Fetch.kt:100）；
+- 退避 0.5/1/2/4/8/8s（原 0.5/1/2/4s 封顶，总窗口 ~3.9s 扛不住真实断网）；
+- 失败**保留 `.part`**（仅用户「取消」才删，Fetch.kt:337-360）：下次自动 offer / 点「重试」时
+  run() 从 .part 长度续传，不再从 0 重下；
+- 失败文案带下一步与已保留字节数：「…（已保留 X MiB 断点：网络恢复后点「重试」会从断点续传）」；
+- `cleanupStalePending()` 顺带清理 >1 天的陈旧 `.part`（Fetch.kt:145-155）。
+
+**v5 验收判据（Lead 探针）**
+1. A2 传输中截图：气泡/卡片出现「接收中 50% · 50.0 MiB / 100.0 MiB · X MiB/s · 剩余 …」，
+   批量条目「正在接收 · …」而不是「正在排队」（±3% 与 PC 真值一致）；
+2. 完成后 2s 内：卡片「✅ 已保存到手机」、按钮变「已保存」（不可点）；
+3. 会话标题无任何 16+ 位 hex id；
+4. 重启电脑端后：主页错误自动消失、点「和电脑聊天」能建会话/发消息；
+5. 断网 3–10s 恢复：下载自动续传完成且 sha256 一致；logcat 出现 `下载中断（第 N 次，已落 X/Y）`
+   且 X 不回落，最终 `已保存到手机`。
+
+
+## 6. Lead 补充补丁（v6–v8，收尾轮）
+
+在 android-device v5 完成后，真机探针发现 PG-2/PG-1 仍未达成，Lead 继续定位并补了两处**跨端**修复
+（只改 `src/eversend/web/server.py` 与 `android/**` 的消息映射，不动 UI 布局）：
+
+1. **`/api/chat` 下发 `shareId`**（`web/server.py` 新增 `_message_for_phone()`）：消息给手机时不带
+   `mediaSource` 路径，但额外带上服务端 `find_share_for_message()` 算出的不透明分享 id —— 手机点「保存」
+   才有 `shareId` 进入 FetchManager（PG-1/PG-2 的数据链路前提）。
+   证据：`tests/test_share_persistence.py §5`；真实桌面路径已 curl 验证 `/api/chat` 返回 shareId。
+2. **App 侧两处消息映射都解析 `shareId`**：`ApiClient.toMessage()` 与 `MainActivity.messageFrom()`
+   都加 `mediaShareId`（主聊天路径实际走 `messageFrom`，只改一处会漏）；气泡的 `shareId` 改为
+   `target.shareKey ?: message.mediaShareId`，保存统一走 `FetchManager.fetchNow`。
+3. **P0 回归修复（v8）**：`connectSession()` 命中 `store.client` 缓存时未把 `ui.client` 补回来 →
+   心跳/快照正常但聊天页所有操作报「还没连上电脑，先连上再发」（真机 A7 卡死根因）。修复后 v8 全量
+   真机 6/6 PASS。
+
+**残留（后续轮次）**：A2 传输中真机帧仍无实时百分比，logcat `分享自动下载：pending=1 auto=true tasks=0`
+说明此刻自动下载/保存路径仍未创建 FetchTask；下一步在真机上加日志打 `shareId` 与 `fetcher.tasks`
+的即时值，确认是"shareId 为空"还是"offer/start 被 inFlight 拦住"。

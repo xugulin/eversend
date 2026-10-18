@@ -58,12 +58,17 @@ def adb(serial: str, *args: str, binary: bool = False):
 
 
 def free_ports() -> bool:
+    """默认三端口是否空闲。必须带 SO_REUSEADDR：刚跑完一次真机/网页用例后
+    52117/52119 可能残留 TIME_WAIT，裸 bind 会假报"被占用"（服务端本身
+    allow_reuse_address=True，探测口径要一致）。
+    """
     import socket
 
     for port, kind in ((52117, socket.SOCK_STREAM), (52119, socket.SOCK_STREAM),
                        (52118, socket.SOCK_DGRAM)):
         sock = socket.socket(socket.AF_INET, kind)
         try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.bind(("0.0.0.0", port))
         except OSError:
             return False

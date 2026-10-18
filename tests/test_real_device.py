@@ -303,17 +303,21 @@ def qt_app():
 
 
 def ports_free() -> dict[str, bool]:
-    """Which of the three fixed ports are already taken (someone else's instance)."""
+    """Which of the three fixed ports are already taken (someone else's instance).
+
+    必须带 ``SO_REUSEADDR``：上一次真机用例退出后，52117/52119 上可能残留
+    TIME_WAIT 连接；不带 reuse 的裸 ``bind`` 会报 EADDRINUSE，于是"端口被占用"
+    假红（实测：刚跑完 web/真机用例后立刻起下一次实例必现）。服务端本身就是
+    ``allow_reuse_address=True``，这里的探测口径必须一致。
+    """
     state: dict[str, bool] = {}
     for label, port, kind in (("tcp", PC_TCP_PORT, socket.SOCK_STREAM),
                               ("web", PC_WEB_PORT, socket.SOCK_STREAM),
                               ("discovery", PC_DISCOVERY_PORT, socket.SOCK_DGRAM)):
         sock = socket.socket(socket.AF_INET, kind)
         try:
-            if kind == socket.SOCK_STREAM:
-                sock.bind(("0.0.0.0", port))
-            else:
-                sock.bind(("0.0.0.0", port))
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("0.0.0.0", port))
             state[label] = True
         except OSError:
             state[label] = False

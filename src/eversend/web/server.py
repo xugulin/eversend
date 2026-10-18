@@ -620,9 +620,12 @@ class WebUI:
         #: Files the desktop handed to the browser, by share id.  A browser has
         #: no receiving service, so "send to phone" cannot be a push: the
         #: desktop publishes the file and the phone picks it up with one tap.
-        #: Only paths that came from *this* process are ever served, so the
-        #: network can never ask for an arbitrary file.
+        #: 分享列表会落盘（``shares.json``）：opt-1017 真机实测"电脑端重启后手机
+        #: 下载到一半的分享 404"——手机想用 Range 续传，服务端却已经不认这个 id 了。
+        #: 持久化后重启/崩溃都能接着取；加载时只保留文件仍然存在的条目。
         self._shares: dict[str, dict[str, Any]] = {}
+        self._shares_path = os.path.join(engine.config.data_dir, "shares.json")
+        self._load_shares()
         self._workers: set[threading.Thread] = set()
         self._upload_lock = threading.Lock()
         #: 可续传上传（opt-1017）：uploadId -> 该 id 的写锁，防止同一 id 并发写串。
@@ -1170,6 +1173,8 @@ class WebUI:
                 size=size,
                 total=len(added),
             )
+        if added:
+            self._save_shares()
         return added
 
     def shares(self, for_key: str = "") -> list[dict[str, Any]]:
@@ -1283,6 +1288,7 @@ class WebUI:
             self.engine.events.emit(
                 "share_taken", share_id=str(share_id), name=name, size=size
             )
+            self._save_shares()
 
     def note_share_progress(self, share_id: str, sent_bytes: int) -> None:
         """手机正在取这个文件，已经发出去多少字节。
@@ -1297,6 +1303,69 @@ class WebUI:
     def clear_shares(self) -> None:
         with self._state_lock:
             self._shares.clear()
+        self._save_shares()
+
+    # -- 分享列表持久化（opt-1017） ----------------------------------------
+    #
+    # 为什么必须落盘：手机下载大文件走 HTTP Range 续传，电脑端进程重启后
+    # 分享表原来在内存里 → 手机带着 Range 回来续传，服务端回 404「这个文件已经
+    # 不在分享列表里了」，用户看到的是"传到一半白传"。落盘后重启/崩溃都能接着取。
+    #
+    # 安全边界：文件路径只存在本机 data 目录（与 web_clients.json 同级），网络
+    # 侧永远只见不透明 id；加载时再校验一次"文件仍然存在"，不存在的条目直接丢弃。
+
+    def _load_shares(self) -> None:
+        try:
+            with open(self._shares_path, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return
+        loaded: dict[str, dict[str, Any]] = {}
+        entries = data.get("shares") if isinstance(data, dict) else None
+        for entry in entries or []:
+            if not isinstance(entry, dict):
+                continue
+            share_id = str(entry.get("id") or "")
+            path = str(entry.get("path") or "")
+            if not share_id or not path or not os.path.isfile(path):
+                continue
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            loaded[share_id] = {
+                "id": share_id,
+                "name": str(entry.get("name") or os.path.basename(path)),
+                "size": size,
+                "path": path,
+                "added": float(entry.get("added") or 0.0),
+                "downloaded": bool(entry.get("downloaded")),
+                # 续传进度由下一次 Range 请求重新上报；这里清零，免得界面上
+                # 显示一个"已经下载了 80%"却还要重新取的历史数字。
+                "sentBytes": 0,
+            }
+            if entry.get("forKey"):
+                loaded[share_id]["forKey"] = str(entry["forKey"])
+        if not loaded:
+            return
+        with self._state_lock:
+            # 内存里可能已经有本次进程新发的（一般不会，构造期还没开始服务）。
+            for share_id, entry in loaded.items():
+                self._shares.setdefault(share_id, entry)
+        log.info("从 %s 恢复了 %d 条分享（电脑端重启后仍可续传）", self._shares_path, len(loaded))
+
+    def _save_shares(self) -> None:
+        """原子落盘（tmp+rename）；只读介质/磁盘错误不能影响服务。"""
+        try:
+            with self._state_lock:
+                entries = [dict(entry) for entry in self._shares.values()]
+            payload = {"shares": entries}
+            tmp = self._shares_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+            os.replace(tmp, self._shares_path)
+        except (OSError, ValueError, TypeError):
+            log.debug("share list could not be persisted", exc_info=True)
 
     @staticmethod
     def client_key(address: str, agent: str = "") -> str:
@@ -3879,12 +3948,32 @@ class _Handler(BaseHTTPRequestHandler):
                 # ``mediaSource`` is where *this* computer keeps the file it
                 # sent; a phone has no use for it and it describes the desktop's
                 # folder layout, so it stays on the desktop side.
+                #
+                # 但手机需要知道"这条消息对应的分享条目 id"：手机 App 点气泡上的
+                # 「保存」时要走 **FetchManager 下载队列**（才有进度/速度/ETA/
+                # 「已保存」状态，PG-1/PG-2 的根因）；它没法从被抹掉的 mediaSource
+                # 反推。这里把服务端已经算好的分享 id 作为不透明字段下发（id 本来
+                # 就是手机下载时用的，不泄露任何路径）。
                 "messages": [
-                    {k: v for k, v in message.items() if k != "mediaSource"}
-                    for message in messages
+                    self._message_for_phone(ui, message) for message in messages
                 ],
             },
         )
+
+    def _message_for_phone(self, ui, message: dict[str, Any]) -> dict[str, Any]:
+        """一条发给手机 App 的聊天消息：抹掉本机路径，补上分享条目 id。
+
+        手机点气泡上的「保存」时必须知道"这条消息对应哪条分享"，才能走统一的
+        下载队列（FetchManager）拿到进度/速度/ETA/「已保存」；而分享 id 是服务端
+        发布文件时生成的，手机侧无法自行推导。分享 id 本来就在手机下载 URL 里出现，
+        下发它不泄露本机路径（``mediaSource`` 仍然不出去）。
+        """
+        payload = {key: value for key, value in message.items() if key != "mediaSource"}
+        if payload.get("mediaName"):
+            share_id = ui.find_share_for_message(message)
+            if share_id:
+                payload["shareId"] = share_id
+        return payload
 
     def _chat_message_payload(self, ui) -> tuple[str, str]:
         """``(conversation id, who is sending)`` for a chat POST."""

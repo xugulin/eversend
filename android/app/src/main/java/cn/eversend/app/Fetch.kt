@@ -97,7 +97,7 @@ class FetchManager private constructor(private val appContext: Context) {
         const val CHANNEL_FILES = "eversend-files"
 
         /** 下载断线后的最大尝试次数（续传，不从头再来）。 */
-        private const val MAX_DOWNLOAD_ATTEMPTS = 4
+        private const val MAX_DOWNLOAD_ATTEMPTS = 6
 
         @Volatile
         private var shared: FetchManager? = null
@@ -141,6 +141,19 @@ class FetchManager private constructor(private val appContext: Context) {
         try {
             val removed = cleanupPendingDownloads(appContext)
             if (removed > 0) Log.d(TAG, "清理了 $removed 条陈旧 pending 残留")
+        } catch (ignored: Exception) {
+        }
+        // 陈旧断点文件（>1 天）也清掉：失败保留了 .part 供续传，但用户可能永远不再点
+        // 「重试」——不能让 cache 无限长胖。1 天是"这次会话/今天还会重试"的宽限。
+        try {
+            val cache = appContext.cacheDir
+            cache?.listFiles()?.forEach { file ->
+                if (file.name.endsWith(".part") &&
+                    now - file.lastModified() > 24L * 60 * 60 * 1000
+                ) {
+                    if (file.delete()) Log.d(TAG, "清理陈旧断点文件: ${file.name}")
+                }
+            }
         } catch (ignored: Exception) {
         }
     }
@@ -296,7 +309,7 @@ class FetchManager private constructor(private val appContext: Context) {
                             error = "连接中断，正在从断点续传…（第 $attempts 次）",
                         )
                     }
-                    Thread.sleep(500L * (1 shl (attempts - 1).coerceAtMost(3)))
+                    Thread.sleep((500L * (1L shl (attempts - 1).coerceAtMost(4))).coerceAtMost(8_000L))
                     continue
                 }
                 break
@@ -317,16 +330,31 @@ class FetchManager private constructor(private val appContext: Context) {
                 }
             }
         } catch (problem: Exception) {
-            // 半截文件不能留在「下载」里（MediaStore 里那条是 pending 状态）：
-            // 用户看到"有个文件但是打不开"比看到"下载失败"更糟。
-            try {
-                partial.delete()
-            } catch (ignored: Exception) {
-            }
+            // 失败时**保留 .part**（除非用户主动取消）：
+            // ① 下一次自动 offer / 用户点「重试」时 run() 会从 .part 长度续传，不用从头再来；
+            // ② .part 在 App cache 里，不会产生 A6.3 的 MediaStore pending 残留；
+            // ③ 启动时清 >1 天的陈旧 .part（cleanupStalePending 里做）。
             Log.d(TAG, "下载失败 ${task.name}: ${problem.message}")
             inFlight.remove(task.shareId)
-            val reason = if (cancelled.contains(task.shareId)) "已取消" else reasonOf(problem)
-            update(task.shareId) { it.copy(state = FetchState.Failed, error = reason) }
+            val cancelledByUser = cancelled.contains(task.shareId)
+            val kept = if (partial.exists()) partial.length() else 0L
+            if (cancelledByUser) {
+                try {
+                    partial.delete()
+                } catch (ignored: Exception) {
+                }
+            }
+            val reason = if (cancelledByUser) {
+                "已取消"
+            } else {
+                val base = reasonOf(problem)
+                if (kept > 0L) {
+                    "$base（已保留 ${fmtSize(kept)} 断点：网络恢复后点「重试」会从断点续传）"
+                } else {
+                    "$base（网络恢复后点「重试」）"
+                }
+            }
+            update(task.shareId) { it.copy(state = FetchState.Failed, error = reason, got = kept) }
             cleanupStalePending()
             return
         }

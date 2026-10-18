@@ -1031,6 +1031,14 @@ data class ChatMessage(
     val ts: Double,
     val outgoing: Boolean,
     val state: String,
+    /**
+     * 电脑为这条文件消息发布的分享条目 id（服务端 `/api/chat` 的 `shareId`）。
+     *
+     * 手机点「保存」时要走 FetchManager 下载队列（进度/速度/ETA/已保存态），
+     * 而队列按分享 id 记账；消息没带这个字段时只能退回旧的直连下载旁路，
+     * 于是气泡永远显示「接收中… / 点击保存到手机」（真机 PG-1/PG-2 根因）。
+     */
+    val mediaShareId: String = "",
 )
 
 data class Conversation(
@@ -1056,6 +1064,7 @@ fun JSONObject.toMessage(): ChatMessage = ChatMessage(
     ts = optDouble("ts", 0.0),
     outgoing = optString("direction") == "out",
     state = optString("state", "sent"),
+    mediaShareId = optString("shareId"),
 )
 
 fun JSONObject.toConversation(): Conversation = Conversation(

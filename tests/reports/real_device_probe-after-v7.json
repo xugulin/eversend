@@ -1,0 +1,213 @@
+{
+  "label": "probe-after-v7",
+  "when": "2026-10-18 01:26:50",
+  "repo": {
+    "when": "2026-10-18 01:26:50",
+    "loadavg": [
+      3.58,
+      3.16,
+      4.05
+    ],
+    "cpu_count": 16,
+    "head": "b2ee4ac",
+    "dirty_count": 24,
+    "dirty": [
+      "android/app/src/main/java/cn/eversend/app/ApiClient.kt",
+      "android/app/src/main/java/cn/eversend/app/Fetch.kt",
+      "android/app/src/main/java/cn/eversend/app/LinkService.kt",
+      "android/app/src/main/java/cn/eversend/app/MainActivity.kt",
+      "src/eversend/web/server.py",
+      "tests/reports/opt-1017/android-fixes.md",
+      "tests/reports/opt-1017/gui-probe-after-v5.json",
+      "tests/reports/opt-1017/gui-probe-after-v5.md",
+      "tests/reports/opt-1017/gui-probe-after-v6.json",
+      "tests/reports/opt-1017/gui-probe-after-v6.md",
+      "tests/reports/opt-1017/gui-probe-shots/after-v5/",
+      "tests/reports/opt-1017/gui-probe-shots/after-v6/",
+      "tests/reports/opt-1017/gui-probe-shots/after-v7/",
+      "tests/reports/opt-1017/resume-probe-shots/v4-desktop.png",
+      "tests/reports/opt-1017/resume-probe-shots/v4-phone.png",
+      "tests/reports/opt-1017/resume-probe-v4.json",
+      "tests/reports/opt-1017/resume-probe-v4.md",
+      "tests/reports/real_device_probe-after-v5.json",
+      "tests/reports/real_device_probe-after-v5.md",
+      "tests/reports/real_device_probe-after-v6.json",
+      "tests/reports/real_device_probe-after-v6.md",
+      "tests/test_real_device.py",
+      "tests/test_share_persistence.py",
+      "tools/realdevice_probe.py"
+    ],
+    "mtimes": {
+      "android/app/src/main/java/cn/eversend/app/ApiClient.kt": 1792257681.0,
+      "android/app/src/main/java/cn/eversend/app/Fetch.kt": 1792257271.2,
+      "android/app/src/main/java/cn/eversend/app/LinkService.kt": 1792257322.1,
+      "android/app/src/main/java/cn/eversend/app/MainActivity.kt": 1792257938.8,
+      "src/eversend/web/server.py": 1792257671.5,
+      "tests/reports/opt-1017/android-fixes.md": 1792257420.2,
+      "tests/reports/opt-1017/gui-probe-after-v5.json": 1792257552.2,
+      "tests/reports/opt-1017/gui-probe-after-v5.md": 1792257552.2,
+      "tests/reports/opt-1017/gui-probe-after-v6.json": 1792257852.5,
+      "tests/reports/opt-1017/gui-probe-after-v6.md": 1792257852.5,
+      "tests/reports/opt-1017/resume-probe-shots/v4-desktop.png": 1792257410.2,
+      "tests/reports/opt-1017/resume-probe-shots/v4-phone.png": 1792257410.5,
+      "tests/reports/opt-1017/resume-probe-v4.json": 1792257410.5,
+      "tests/reports/opt-1017/resume-probe-v4.md": 1792257410.5,
+      "tests/reports/real_device_probe-after-v5.json": 1792257551.9,
+      "tests/reports/real_device_probe-after-v5.md": 1792257551.9,
+      "tests/reports/real_device_probe-after-v6.json": 1792257851.0,
+      "tests/reports/real_device_probe-after-v6.md": 1792257851.0,
+      "tests/test_real_device.py": 1792257361.9,
+      "tests/test_share_persistence.py": 1792257705.5,
+      "tools/realdevice_probe.py": 1792257467.7
+    },
+    "note": "仓库处于写入中"
+  },
+  "adb_serial": "2430d3c",
+  "phone_online": true,
+  "summary": {
+    "A2": "PASS"
+  },
+  "results": [
+    {
+      "id": "A2",
+      "title": "电脑发中等文件（约 100 MB）→ 手机磁盘 + sha256",
+      "status": "PASS",
+      "error": "",
+      "subs": [
+        {
+          "name": "A2.phone",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "MI 9 id=web:97150a87-cc0b-4b7f-ba86-9ddf3be7d2d1 online=True"
+        },
+        {
+          "name": "A2.file",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "A2-中文件-104857600.bin 100.0 MiB sha256=53006a84214a65f6…"
+        },
+        {
+          "name": "A2.a 发送前手机磁盘上没有这个文件",
+          "ok": true,
+          "expected": "不在",
+          "actual": "False",
+          "note": ""
+        },
+        {
+          "name": "A2.b 文件进了待发列表",
+          "ok": true,
+          "expected": "含 '/home/xgl/qa-real/files/A2-中文件-104857600.bin'",
+          "actual": "['/home/xgl/qa-real/files/A2-中文件-104857600.bin']",
+          "note": ""
+        },
+        {
+          "name": "A2.c 已点「发送」",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "01:27:39"
+        },
+        {
+          "name": "A2.d 文件走的是**文件通道**（服务端已发布该文件）",
+          "ok": true,
+          "expected": "web UI 的分享表里出现这个文件名",
+          "actual": "shares=['A2-中文件-104857600.bin', 'A2-中文件-104857600.bin', 'A2-中文件-104857600.bin']",
+          "note": "责任人 phone-transfer：点「发送」走了聊天通道时，这里会是空的"
+        },
+        {
+          "name": "A2.e 活动传输",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "0 个"
+        },
+        {
+          "name": "A2.f0 点发送之后、手机取走之前的状态",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "['sending']（conv=d:00254c4971c16f15c4bcd7982900f3cb|web:97150a87-cc0b-4b7f-ba86-9ddf3be7d2d1）"
+        },
+        {
+          "name": "A2.f 手机取走之前，记录状态不是 sent",
+          "ok": true,
+          "expected": "sending/queued/waiting…（手机取走后才允许 sent）",
+          "actual": "states=['sending']",
+          "note": "责任人 net-discovery：真实取走前写 sent 就是「界面说谎」的根"
+        },
+        {
+          "name": "A2.g 手机页面上出现了这个卡片",
+          "ok": true,
+          "expected": "",
+          "actual": "A2-中文件-104857600.bin",
+          "note": ""
+        },
+        {
+          "name": "A2.h 点了手机上的",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "'保存' @ (194, 1311)"
+        },
+        {
+          "name": "A2.d2 服务端记录到手机真的取走了字节（sentBytes > 0）",
+          "ok": true,
+          "expected": "sentBytes > 0（必要不充分：还要 sha256 相等）",
+          "actual": "share=w1jWUoHH sentBytes=104857600",
+          "note": "责任人 web-ui：手机在取但服务端没有字节计数时，这里红"
+        },
+        {
+          "name": "A2.i 手机上真的出现了这个文件（adb ls）",
+          "ok": true,
+          "expected": "/sdcard/Download/A2-中文件-104857600.bin",
+          "actual": "size=104857600；目录里现有 ['A2-中文件-104857600.bin', 'A7-手机发来.png', 'resume-test-120m.bin', 'resume-v3.png', 'resume-v4.png']",
+          "note": "责任人 android-ui：App 收到却落盘失败时这里会红（曾见 0 字节 .pending-*）"
+        },
+        {
+          "name": "A2.j 从手机拉回来的 sha256 与源文件相等",
+          "ok": true,
+          "expected": "53006a84214a65f6d72e938b569e1bec44e1d3ef51d7bef85740d4fe06420673",
+          "actual": "53006a84214a65f6d72e938b569e1bec44e1d3ef51d7bef85740d4fe06420673（手机上 104857600 字节，源 104857600 字节）",
+          "note": "**ls 看到名字不算成功，只有 sha256 相等才算**"
+        },
+        {
+          "name": "A2.k 手机上文件大小与源一致",
+          "ok": true,
+          "expected": "104857600",
+          "actual": "104857600",
+          "note": ""
+        },
+        {
+          "name": "A2.n 手机真的取走之后，记录状态才变成 sent",
+          "ok": true,
+          "expected": "取走后 state ∈ {sent}",
+          "actual": "states=['sent']",
+          "note": ""
+        },
+        {
+          "name": "A2.l 电脑端截图",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "/home/xgl/qa-real/shots/A2-desktop-progress.png"
+        },
+        {
+          "name": "A2.m 手机截图",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "/home/xgl/qa-real/shots/A2-phone.png"
+        },
+        {
+          "name": "~耗时",
+          "ok": true,
+          "expected": "",
+          "actual": "63.8s",
+          "note": ""
+        }
+      ]
+    }
+  ]
+}

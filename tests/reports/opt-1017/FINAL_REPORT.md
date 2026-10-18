@@ -16,7 +16,7 @@
 | **大文件断点续传** | 上传/下载都是"一次请求"，中途断网全废（真机 100MiB 传到 73MiB abort 后从 0 重来） | 上传：新增 `/api/upload` 续传协议（202/409/status/幂等，旧客户端兼容）；下载：Range 续传 + 本地 `.part` 缓存重试，真机实测 offset 不回退 | `test_http_resume.py` 20 项、`android-fixes.md` |
 | **传输内核 CPU/IO** | AEAD 前后 2 次全量拷贝；fsync 在 PartFile **锁内**（慢盘 p99 达 11.8s）；加密会话接收端重复 crc32；每块 O(n) 扫描 | AEAD 零拷贝（1MiB seal **0.76→3.67 GiB/s** 负载下 A/B）、fsync 后台线程（注入慢盘 p99 **11.8s→0.70ms**）、crc32 调用 **512→256**、索引 **80.8ms→0.13ms**、socket 缓冲自检、 cipher 协商（消掉跨架构 100% tag 失败隐患） | `transport-fixes.md` |
 | **桌面/网页 GUI 准确性** | 接收完成 1 次传输出现 **2 行**（一行 0 B）；接收表**没有进度/速度/ETA**；100% 后仍显示"传输中"数秒；单位 1024 进制标成 KB/MB；页头"未知设备 #hash"；每次接收抛 `UnboundLocalError` | 8 项修复：单行"已完成"、接收表新增 进度/速度/剩余 三列、100% 后显示"校验中…"、KiB/MiB 口径三端统一、页头名称回退链、接收文件真正进会话库、重启恢复记录 | `gui-audit.md`、`gui-fixes.md` |
-| **手机 GUI 准确性** | 下载完成 3.7s 后卡片仍"接收中…"、传输中无任何百分比/速度、批量条目一直"正在排队"、会话标题露内部设备 id | v3 修复（见 `android-fixes.md`）；GUI 探针复测（`realdevice-gui-findings.md` + 阶段 3 探针报告） | 真机截图时间线 |
+| **手机 GUI 准确性** | 下载完成 3.7s 后卡片仍"接收中…"、传输中无任何百分比/速度、批量条目一直"正在排队"、会话标题露内部设备 id | v3→v8 四轮修复：单位口径、**会话标题不再露裸 id（PG-5 已修）**、**已完成卡片自愈为"已在其它客户端取走"**（PG-1 部分）；**传输中实时百分比/批量状态仍未达成**（真机探针证据，根因见 §5.4） | `gui-probe-after-v3/v6/v7/v8.md`、真机截图时间线 |
 | **真机全量验收** | 旧 APK：A7 FAIL（令牌） | v3 新 APK：**见 §5 验收表** | `acceptance-final.*` |
 
 ---
@@ -246,15 +246,15 @@ unexpected EOF/SocketException 时换令牌重试；`deliver()` 令牌判定并�
 v4 APK sha256 `07573e8190544f16b64086f72405b9f4f7961681fab841c65bb08d0474ec573e`（72,257,913 B，
 `install -r` 覆盖、数据保留）。
 
-**复验状态（如实记录）**：
-- 上传续传探针在 v4 上仍未能复现"断网续传"成功链路：v4 安装后 App 处于重装/重启后的
-  **设备抽屉页**，自动化导航（`ensure_phone_chat_page`）没能把它带回会话页 → 探针无法点开文件选择器；
-  该失败发生在**测试驱动层**（UI 导航），不是传输失败。
-- 另发现一个**手机端 UI 残留问题**：多次电脑端重启后，App 主页仍显示旧的
-  「发送失败：Failed to connect…」且「和电脑聊天」按钮不产生新会话，即使心跳已恢复、电脑端看到它在线
-  （真机 00:36 实测）。疑为 UI 连接态（`ui.client`）在重连后未刷新。→ 后续 P1。
-- v4 的全量真机回归（A0/A1/A2/A6/A7/A8）见 §5 追加结果；v4 与 v3 的差异只在令牌逻辑，
-  A7 的传输链路代码未变。
+**复验状态**：
+- 上传续传探针最终在**真机端到端跑通**（收尾轮补测）：手机发 24 MiB 文件 → 传了 **9.96 MB 时
+  `iptables` 断网 2.5s** → 客户端自动换令牌并 Range 续传 → 落地 sha256 一致，全程 **5.66s**
+  （`resume-probe-v4.md`；v8 复测 12.8 MB 断点、6.39s、sha256 一致，`resume-probe-v8.md`）。
+- 中途卡住的原因在**测试驱动**而非产品：① 探针工具的端口探测缺 `SO_REUSEADDR`，上一轮用例退出后
+  TIME_WAIT 会让它误报"端口被占用"（已修，见 §5.4.5）；② App 重装/重启后停在设备抽屉页时，
+  自动化导航失败（已加抽屉识别；并以完整序列驱动规避）。
+- 另发现的**手机端 UI 残留问题**（多次电脑端重启后主页仍显示旧「发送失败」且「和电脑聊天」不产生会话）
+  已在收尾轮定位并修复为 P0 回归：见 §5.4.3。
 
 ## 5.3 v4 全量真机回归（最终 APK）
 
@@ -274,6 +274,62 @@ v4 APK sha256 `07573e8190544f16b64086f72405b9f4f7961681fab841c65bb08d0474ec573e`
 说明：v4 的 A7 复跑需要以完整序列驱动（先 A1/A2 把 App 带到会话页）；单独 `--only A7` 在 App 重启后停在
 设备抽屉页时会被测试驱动的导航问题卡住（不是传输失败），见 §5.2 说明。
 
+## 5.4 收尾轮（v5–v8 APK）：手机 GUI / 重启自愈 / 下载重试 / 分享持久化
+
+### 5.4.1 PG-1/PG-2/PG-3 的真正根因（数据链路，不是 Compose）
+真机流程「桌面发送 → 手机出现卡片 → 点卡片『保存』」里，「保存」按钮走的是 `saveToDownloads`
+**直连下载旁路**（`/api/chat/media/<id>`），根本不创建 `FetchTask` → `ui.fetches` 天然为空 →
+气泡永远「接收中…」、批量条目永远「正在排队」、完成后没有「已保存」。v5 把分享条目的保存统一改走
+`FetchManager.fetchNow(shareId, …)`（进度/速度/ETA/已保存与自动下载同一份事实，inFlight 去重）。
+
+### 5.4.2 为什么 v5 还不够：服务端"抹字段"时把关联 id 一起抹了
+服务端为隐私把消息里的 `mediaSource`（本机绝对路径）剥掉，但没有下发替代的关联字段；手机因此拿不到
+这条消息对应的分享 id，`shareKey` 为空 → 只能退回直连旁路。修复（Lead 补丁）：
+`/api/chat` 序列化时把服务端 `find_share_for_message()` 算出的**不透明 shareId** 一并下发
+（不泄露路径、旧客户端忽略即可）；App 侧两处消息映射都解析（`ApiClient.toMessage` +
+`MainActivity.messageFrom`），气泡按 `target.shareKey ?: message.mediaShareId` 匹配 FetchTask。
+验收：`tests/test_share_persistence.py §5`（消息带 `shareId`、不带 `mediaSource`）+ web selftest **356 项全绿**。
+
+### 5.4.3 v5 的"重启自愈"引入 P0 回归，v8 修复（真机 A7 卡死根因）
+v5 在快照连续失败时把 `ui.client` 置空重连，但 `connectSession()` 命中 `store.client` 进程级缓存时
+**直接 return、没有把 `ui.client` 补回来** → 心跳/快照都正常，聊天页所有操作却报
+「还没连上电脑，先连上再发」；真机复现为 A7 在 A2 之后连续两轮卡死（v7）。v8 修复：命中缓存时若
+`ui.client == null` 则补回、清错误、重播在线公告。**v8 全量真机 6/6 PASS**（`real_device_v8-final.md`），
+A7 恢复 PASS。
+
+### 5.4.4 手机 GUI 探针复测（v6 / v7 / v8，同一探针 `--only A2`）
+| 项 | v3 基线 | v8 实测 | 判定 |
+|---|---|---|---|
+| PG-5 会话标题露内部设备 id | 有 | 「与 一台设备 的对话…」（按 deviceId 反查成员名，绝不露裸 id） | ✅ 已修 |
+| PG-1 完成后卡片状态自愈 | 无 | 已完成卡片显示「已在其它客户端取走」（截图 `gui-probe-shots/after-v8/0003.png`、`0006.png`） | ✅ 部分修好（历史卡片自愈）；"已保存到手机"文案仍取决于是否经 FetchTask |
+| PG-2 传输中百分比/速度 | 无 | **仍未达成**：真机帧里卡片没有实时百分比；logcat `分享自动下载：pending=1 auto=true tasks=0` 证明此刻仍没产生 FetchTask | ❌ 残留 |
+| PG-3 批量条目状态 | 「正在排队」 | 仍显示「正在排队」（同一根因） | ❌ 残留 |
+| PG-6 单位口径 | KB/MB | KiB/MiB/GiB | ✅ 已修 |
+
+PG-2 残留的最短复现与下一步（给后续轮次）：在 A2 流程中抓 `fetcher.tasks.value` 与
+`shareId` 是否为空/是否被 inFlight 卡住；目前证据指向"自动下载/保存路径此刻未创建 FetchTask"，
+而非 UI 绑定或 shareId 匹配（server 侧已用真实桌面路径验证 `/api/chat` 确实下发 shareId）。
+
+### 5.4.5 分享列表持久化 + 测试设施修复 + 真机上传续传首次跑通
+1. **分享列表落盘**（`web/server.py`）：原子写 `data_dir/shares.json`（tmp+rename），启动加载并丢弃
+   "文件已不存在"的条目，`clear_shares`/`mark_share_downloaded` 同步落盘。新增
+   `tests/test_share_persistence.py` **14 项**：落盘→模拟重启→同 id 仍可整文件/206 续传→删文件后丢弃→
+   clear 落盘→聊天消息 shareId 下发；全绿。
+2. **测试驱动端口探测**：`test_real_device.ports_free()` 与 `tools/realdevice_probe.free_ports()` 补
+   `SO_REUSEADDR`（TIME_WAIT 假"端口被占用"曾连续挡住真机复验）；上传续传探针首次在真机端到端跑通。
+3. **下载重试策略**（android-device v5）：6 次尝试、退避 0.5/1/2/4/8/8s、失败保留 `.part` 供续传、
+   >1 天陈旧 `.part` 清理、失败文案带断点大小。
+4. **最终 APK（v8）**：`app-arm64-v8a-debug.apk` 72,261,918 B，
+   sha256 `448585275c7c515e1c170c4ed4834c8bf517fd0d57f7717a142161d5d578fe6c`（install -r 保留数据）。
+
+| 收尾轮验证 | 结果 |
+|---|---|
+| v8 全量真机 A0/A1/A2/A6/A7/A8 | **6/6 PASS**（`real_device_v8-final.md`） |
+| v8 上传断点续传真机探针（断网 2.5s） | **PASS**：12.8 MB 断点续传、sha256 一致、6.39s（`resume-probe-v8.md`） |
+| `tests/test_share_persistence.py` | 14/14 PASS |
+| web selftest / http resume / share 回归 | 356 项 PASS / 20 项 PASS |
+| A/B 性能（tmpfs，5 轮中位） | CPU s/MiB 平均 **-9.7%**、吞吐平均 +4.5%（`bench-before-after.md`） |
+
 ## 6. 兼容性 / 安全 / 边界
 
 - **协议兼容**：EVSD cipher 协商不升版本，旧对端忽略未知字段；HTTP 上传续传无 uploadId 走旧路径，旧客户端无感；
@@ -281,8 +337,10 @@ v4 APK sha256 `07573e8190544f16b64086f72405b9f4f7961681fab841c65bb08d0474ec573e`
 - **HTTP 仍是明文局域网**（与改前一致）：本次未引入加密，属已知安全边界（`docs/PROTOCOL.md §10` 已有说明）；
   手机→电脑传输走 CSRF 令牌保护；若需 LAN 加密可作为下一轮专项。
 - **已知边界/后续建议**：
-  1. 手机下载失败后 `.part` 被删、`MAX_DOWNLOAD_ATTEMPTS=4` 退避总长 ~3.5s 偏短（网络恢复稍慢就放弃）——建议 6 次/退避到 8s + 保留 `.part`；
-  2. 电脑端重启后 share 列表不持久，正在下载的文件续传会 404 ——建议 share 列表落盘或启动时扫描接收目录重建；
+  1. ~~手机下载失败后 `.part` 被删、重试 4 次偏短~~ → **已修（v5）**：6 次尝试、退避至 8s、失败保留 `.part`、
+     失败文案带「已保留 X MiB 断点」、>1 天陈旧 `.part` 自动清理；
+  2. ~~电脑端重启后 share 列表不持久，正在下载的文件续传会 404~~ → **已修（收尾轮）**：分享表原子落盘
+     `data_dir/shares.json`、启动恢复并丢弃文件已不存在的条目（`tests/test_share_persistence.py` 14 项）；
   3. 上传续传的"完成响应丢失 + 电脑端重启"极端边界会重复落盘 `(1)` 文件（完成记录未持久化）；
   4. 桌面 G-07（状态栏"正在接收"）、引擎显式 `phase=verifying`、网页实页/DPI/浅色截图未做；
   5. `netem` 高 RTT 下的窗口自适应（T6）缺可信数据，留待下轮先测后改；
@@ -315,6 +373,14 @@ EVERSEND_REAL_WORK=/home/xgl/qa-real python3 tools/realdevice_probe.py --only A2
 DISPLAY=:99 QT_QPA_PLATFORM=xcb EVERSEND_ADB_SERIAL=2430d3c \
 EVERSEND_REAL_WORK=/home/xgl/qa-real python3 tools/realdevice_upload_resume_probe.py --label v3
 
+# 收尾轮回归（分享持久化 + shareId 下发 + 上传续传真机）
+PYTHONPATH=src python3 tests/test_share_persistence.py        # 14 项
+PYTHONPATH=src python3 tests/test_http_resume.py              # 20 项
+PYTHONPATH=src python3 -u src/eversend/web/selftest.py        # 356 项
+
+# 真机 GUI 准确性探针（v8；PNG 帧 + PC 真值时间线）
+DISPLAY=:99 QT_QPA_PLATFORM=xcb python3 tools/realdevice_probe.py --only A2 --label after-v8
+
 # 性能 A/B（安静窗口；BEFORE=baseline worktree）
 bash tests/reports/opt-1017/ab-run.sh
 ```
@@ -333,8 +399,10 @@ bash tests/reports/opt-1017/ab-run.sh
 |---|---|
 | 产品代码（未 commit，最终快照提交在交付时打） | `src/eversend/core/{crypto,chunkstore,connection,sockutil,transfer}.py`、`src/eversend/core/model.py`、`src/eversend/web/server.py`、`src/eversend/web/assets/app.js`、`src/eversend/desktop/{main_window,transfers_view}.py`、`android/**`（6 files + Manifest）、`docs/PROTOCOL.md` |
 | 新增工具 | `tools/bench_transfer.py`（性能 harness）、`tools/realdevice_probe.py`（GUI 准确性探针）、`tools/realdevice_upload_resume_probe.py`（上传续传探针）、`tools/acceptance_opt1017.py`（全量验收编排） |
-| 新增测试 | `tests/test_http_resume.py` |
-| 测试设施修正 | `tests/test_real_device.py`（ADB 自适应 + A7.j 泵事件循环修正）、`tests/test_gui_actions.py`（列下标→列名） |
+| 新增测试 | `tests/test_http_resume.py`（上传续传 20 项）、`tests/test_share_persistence.py`（分享持久化+shareId 下发 14 项） |
+| 测试设施修正 | `tests/test_real_device.py`（ADB 自适应、A7.j 泵事件循环、端口探测 SO_REUSEADDR、抽屉页导航）、`tools/realdevice_probe.py`（同端口修复）、`tests/test_gui_actions.py`（列下标→列名） |
+| 收尾轮新增报告 | `real_device_v8-final.md`、`gui-probe-after-v{5,6,7,8}.md`、`resume-probe-v{4,8}.md`、`bench-before-after.md` |
+| 最终 APK | `android/app/build/outputs/apk/debug/app-arm64-v8a-debug.apk`，72,261,918 B，sha256 `448585275c7c515e1c170c4ed4834c8bf517fd0d57f7717a142161d5d578fe6c` |
 | 报告 | `tests/reports/opt-1017/` 全部；APK sha256 见 §5 |
 
 ---

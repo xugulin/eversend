@@ -391,6 +391,27 @@ fun Root(store: AppState) {
         fetcher.tasks.collect { tasks -> ui.fetches = tasks }
     }
 
+    // LinkService 后台重连成功 → UI 连接态自愈：
+    // 电脑端重启后，后台 SSE 会重连成功并刷新自己的令牌；但界面里的 ui.client
+    // 还拿着旧令牌，于是主页一直挂着「发送失败：Failed to connect…」、
+    // 点「和电脑聊天」也没反应（真机 P1 实测）。这里观察后台的"恢复代数"，
+    // 一变就清错误 + 丢掉旧 client，下一次轮询用新令牌重连并刷新设备列表/选中态。
+    LaunchedEffect(Unit) {
+        var seen = LinkService.reconnectGeneration
+        while (true) {
+            delay(1000)
+            val generation = LinkService.reconnectGeneration
+            if (generation != seen) {
+                seen = generation
+                Log.d("EverSend", "后台重连成功（gen=$generation）→ 清理 UI 连接态")
+                ui.error = ""
+                ui.client = null
+                ui.linkHost = ""
+                refreshOnce(store, ui)
+            }
+        }
+    }
+
     // 前台保活服务：**App 一启动就把服务拉起来**（keepAlive 默认开），而且
     // **不等 host 非空**：新装/换网/电脑还没出现时 host 可能是空的，而这正是最
     // 需要保活的时候（发现引擎要持续公告+组播监听；掉到 cached 会被系统掐网、
@@ -451,17 +472,21 @@ fun Root(store: AppState) {
     // 会话、传输三块。以前每个 tab 各起一条轮询，切页就断、数字还互相打架。
     LaunchedEffect(Unit) {
         var fast = true
+        var snapFailures = 0
         while (true) {
             val active = ui.client ?: withContext(Dispatchers.IO) { connectSession(store, ui) }
             if (active != null) {
+                var snapProblem = ""
                 val snap = withContext(Dispatchers.IO) {
                     try {
                         readSnapshot(active, store, ui.open?.id)
                     } catch (problem: Exception) {
+                        snapProblem = problem.message ?: problem.javaClass.simpleName
                         null
                     }
                 }
                 if (snap != null) {
+                    snapFailures = 0
                     applySnapshot(ui, snap, store)
                     ui.error = ""
                     // 电脑发布的文件：**自动开始下载**（这就是"收不到文件"的修复）。
@@ -472,6 +497,22 @@ fun Root(store: AppState) {
                         val auto = ui.autoFetch && !fetcher.meteredNetwork()
                         fetcher.autoFetch = ui.autoFetch
                         withContext(Dispatchers.IO) { fetcher.offer(active, pending, auto) }
+                        // 诊断：PG-2 排查要看"真机上下载中到底有没有 FetchTask"。
+                        Log.d(
+                            "EverSend",
+                            "分享自动下载：pending=${pending.size} auto=$auto " +
+                                "tasks=${fetcher.tasks.value.size}",
+                        )
+                    }
+                } else {
+                    // 连续两轮拿不到快照 → 手里的 client 可能持旧令牌（电脑端重启换令牌）：
+                    // 丢掉它，下一轮 connectSession 会重新取令牌/重新连接。
+                    snapFailures++
+                    if (snapFailures >= 2) {
+                        snapFailures = 0
+                        Log.d("EverSend", "快照连续失败（$snapProblem）→ 丢弃旧连接重连")
+                        ui.client = null
+                        ui.error = ""
                     }
                 }
             }
@@ -1689,7 +1730,7 @@ private fun ChatPane(
                         Column(Modifier.padding(12.dp)) {
                             Text(
                                 (if (isGroup) "👥 " else "") +
-                                    readableTitle(conversation.displayTitle.ifBlank { conversation.title }, ui.members),
+                                    readableTitle(conversation.displayTitle.ifBlank { conversation.title }, ui.members, store.deviceId),
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 14.sp,
                             )
@@ -1702,13 +1743,35 @@ private fun ChatPane(
                 Button(
                     onClick = {
                         scope.launch {
-                            val active = ui.client ?: withContext(Dispatchers.IO) { connectSession(store, ui) }
-                            if (active != null) {
-                                withContext(Dispatchers.IO) {
+                            val first = ui.client ?: withContext(Dispatchers.IO) { connectSession(store, ui) }
+                            if (first != null) {
+                                val sent = withContext(Dispatchers.IO) {
                                     try {
-                                        active.postJson("/api/chat/send", JSONObject().put("text", "你好 👋"))
+                                        first.postJson("/api/chat/send", JSONObject().put("text", "你好 👋"))
+                                        true
                                     } catch (problem: Exception) {
                                         ui.status = "发送失败：${problem.message ?: problem.javaClass.simpleName}"
+                                        false
+                                    }
+                                }
+                                if (!sent) {
+                                    // 电脑端重启换令牌后旧 client 会 403/连接被拒：丢掉它，
+                                    // 用新令牌重连一次再试（真机 P1：点「和电脑聊天」没反应）。
+                                    ui.client = null
+                                    val retried = withContext(Dispatchers.IO) { connectSession(store, ui) }
+                                    if (retried != null) {
+                                        withContext(Dispatchers.IO) {
+                                            try {
+                                                retried.postJson(
+                                                    "/api/chat/send",
+                                                    JSONObject().put("text", "你好 👋"),
+                                                )
+                                                ui.status = "重连成功，已发送"
+                                            } catch (problem: Exception) {
+                                                ui.status =
+                                                    "发送失败：${problem.message ?: problem.javaClass.simpleName}"
+                                            }
+                                        }
                                     }
                                 }
                                 refreshOnce(store, ui)
@@ -1734,7 +1797,7 @@ private fun ChatPane(
         ) {
             Text(
                 (if (current.id.startsWith("g:")) "👥 " else "") +
-                    readableTitle(current.displayTitle.ifBlank { current.title }, ui.members),
+                    readableTitle(current.displayTitle.ifBlank { current.title }, ui.members, store.deviceId),
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 15.sp,
                 modifier = Modifier.testTag("chat-title"),
@@ -3879,7 +3942,9 @@ fun Bubble(
     val file = target ?: fileTargetOf(message)
     // 这份文件在本机的下载状态：按"分享条目 id"或"文件名"对上 FetchTask。
     // 电脑发给手机的文件在服务端不是 transfer，进度/速度/ETA/完成态都只能从这拿。
-    val shareId = (target?.key.orEmpty()).removePrefix("share-")
+    // 分享 id 来源有两个：① 传输记录气泡由调用方给的 target.key；② 普通聊天消息
+    // 由服务端 /api/chat 下发 `shareId`（消息之所以能走下载队列而不是旧直连旁路）。
+    val shareId = (target?.key.orEmpty()).removePrefix("share-").ifBlank { message.mediaShareId }
     val fetch = fetches.firstOrNull {
         (shareId.isNotBlank() && it.shareId == shareId) ||
             (message.mediaName.isNotBlank() && it.name == message.mediaName)
@@ -4087,8 +4152,31 @@ fun Bubble(
                                 // 是误导，用户会以为没存下来）。
                                 .clickable(enabled = !fetchDone) {
                                     val active = client
+                                    // 分享 id 来自"传输记录气泡的 target.key"或"聊天消息的
+                                    // 服务端下发 shareId"（见本 composable 顶部）；两者都空
+                                    // 才退回旧直连下载（普通聊天附件保存）。
+                                    val effectiveShare = shareId
+                                    val isShare = effectiveShare.isNotBlank()
                                     if (active == null) {
                                         onError("还没有连上电脑")
+                                    } else if (isShare) {
+                                        // **电脑"交给手机"的文件统一走下载队列（FetchManager）**。
+                                        // 以前这里直接 saveToDownloads → 不产生 FetchTask →
+                                        // 进度/完成态在界面上永远是空的：气泡只显示「接收中…」、
+                                        // 批量条目一直「正在排队」（真机 PG-1/PG-2 的根因）。
+                                        // 走队列后进度条/速度/ETA/「已保存」和自动下载是**同一份事实**，
+                                        // 也不会和自动下载抢同一个分享条目（inFlight 去重）。
+                                        val name = message.mediaName.ifBlank {
+                                            file?.name ?: "eversend-${message.id}"
+                                        }
+                                        val size = if (message.mediaSize > 0) message.mediaSize else (file?.size ?: 0L)
+                                        FetchManager.get(context).fetchNow(
+                                            active,
+                                            effectiveShare,
+                                            name,
+                                            size,
+                                        )
+                                        onStatus("已开始接收：$name")
                                     } else {
                                         scope.launch {
                                             val name = message.mediaName.ifBlank { "eversend-${message.id}" }
@@ -6358,6 +6446,11 @@ fun messageFrom(
     ts = obj.optDouble("ts", 0.0),
     outgoing = outgoingOf(obj, selfId),
     state = obj.optString("state", "sent"),
+    // 电脑为这条文件消息发布的分享条目 id（服务端 /api/chat 下发）：
+    // 聊天气泡的「保存」按钮靠它进入 FetchManager 下载队列，进度/速度/
+    // 「已保存」才有数据源（PG-1/PG-2）。注意主聊天路径走的是本函数，
+    // 不是 ApiClient.toMessage()，两处都要带。
+    mediaShareId = obj.optString("shareId"),
 )
 
 /** IO 线程：把侧栏、会话、传输三块要的东西一次读回来。 */
@@ -6508,7 +6601,18 @@ fun conversationFor(
  *    各自的最后错误），对应宪章 C13 的"自动发现失败时界面明说为什么"。
  */
 fun connectSession(store: AppState, ui: UiState): ApiClient? {
-    store.client?.let { return it }
+    // store.client 是"进程级缓存"，ui.client 才是界面各操作（发文件/保存/聊天）
+    // 实际读的那一份。v5 的自愈逻辑会在快照连续失败时把 ui.client 置空重连；
+    // 若 store.client 还在，这里以前直接 return 缓存 —— 于是快照/心跳都正常，
+    // 但界面所有操作都说"还没连上电脑"（真机 A7 卡死的根因）。必须把 ui.client 补回来。
+    store.client?.let { cached ->
+        if (ui.client == null) {
+            ui.client = cached
+            ui.error = ""
+            announcePresence(store, cached)
+        }
+        return cached
+    }
     val remembered = normalizeHost(store.host)
     val connectable = ui.discovered.filter { it.connectable }
     val lastId = store.lastDesktopId
@@ -7860,12 +7964,17 @@ fun looksLikeInternalId(text: String): Boolean {
     return trimmed.length >= 12 && trimmed.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' }
 }
 
-/** 设备显示名：名字为空/长得像内部 id 时，别把设备号摊给用户看（PG-5）。 */
+/**
+ * 设备显示名：名字为空/长得像内部 id 时**绝不显示裸 id**（PG-5）。
+ *
+ * 真机标题曾出现「与 设备 00254c… 的对话」——那串是设备 id，用户看不懂也不该看。
+ * 名字不可读时统一叫「一台设备」；本机/电脑的判定在调用方（readableTitle /
+ * chatMembersLabel）用 deviceId/kind 反查后给更具体的话。
+ */
 fun humanDeviceName(name: String, id: String = ""): String {
     val trimmed = name.trim()
     if (trimmed.isNotBlank() && !looksLikeInternalId(trimmed)) return trimmed
-    val seed = trimmed.ifBlank { id.trim() }
-    return if (seed.isBlank()) "一台设备" else "设备 ${seed.take(6)}…"
+    return "一台设备"
 }
 
 /**
@@ -7873,17 +7982,30 @@ fun humanDeviceName(name: String, id: String = ""): String {
  * （真机截图「QA-真机验收 与 00254c4971c16f15c4bcd7982900f3cb…」是 PG-5）。
  * 能对上设备就换成名字，对不上就写"一台设备"，绝不把内部 id 摊在标题上。
  */
-fun readableTitle(raw: String, members: List<DeviceRow>, fallback: String = "会话"): String {
+fun readableTitle(
+    raw: String,
+    members: List<DeviceRow>,
+    mineId: String = "",
+    fallback: String = "会话",
+): String {
     val text = raw.trim()
     if (text.isEmpty()) return fallback
     var out = text
     for (match in Regex("[0-9a-fA-F]{16,64}").findAll(text)) {
         val id = match.value
-        val name = members.firstOrNull { member ->
-            member.id == id || member.id.endsWith(id) || member.id == "web:$id" ||
-                member.id == "android:$id" || member.aliases.any { it == id || it.endsWith(id) }
-        }?.name
-        val shown = if (name.isNullOrBlank()) "一台设备" else humanDeviceName(name, id)
+        // 用 devices/knownClients 按 deviceId 反查名字（支持 web:/android: 前缀与别名）。
+        val member = members.firstOrNull { candidate ->
+            candidate.id == id || candidate.id.endsWith(id) || candidate.id == "web:$id" ||
+                candidate.id == "android:$id" ||
+                candidate.aliases.any { it == id || it.endsWith(id) }
+        }
+        val shown = when {
+            member != null && member.name.isNotBlank() &&
+                !looksLikeInternalId(member.name) -> member.name
+            mineId.isNotBlank() && id == mineId -> "本机"
+            member != null && member.kind.contains("desktop", ignoreCase = true) -> "电脑"
+            else -> "一台设备"
+        }
         out = out.replace(id, shown)
     }
     return out.replace(Regex("\\s+"), " ").trim().ifBlank { fallback }
@@ -7919,8 +8041,26 @@ fun chatMembersLabel(members: List<DeviceRow>, conversation: Conversation, store
         // 一个都没对上（对方换了身份、或它还没出现在设备列表里）：如实写原始写法，
         // 别拿"我"顶上，也别显示成空标题。
         val raw = ids.firstOrNull { it != store.deviceId } ?: ids.firstOrNull() ?: ""
-        if (raw.isBlank()) "这段会话的对方已经不在列表里了"
-        else "与 ${humanDeviceName("", raw)} 的对话（这台设备现在不在列表里）"
+        if (raw.isBlank()) {
+            "这段会话的对方已经不在列表里了"
+        } else {
+            // 按 deviceId 反查名字（支持 web:/android: 前缀与别名）；查不到也**不许露裸 id**：
+            // 是本机写"我的手机"，是对端电脑写"电脑"，否则"一台设备"（PG-5）。
+            val resolved = members.firstOrNull { member ->
+                val aliases = identityAliases(member.id) + member.aliases
+                raw in aliases || identityAliases(raw).any { it in aliases }
+            }
+            val own = raw == store.deviceId ||
+                identityAliases(raw).any { it == store.deviceId || it == "android:${store.deviceId}" }
+            val shown = when {
+                resolved != null && resolved.name.isNotBlank() &&
+                    !looksLikeInternalId(resolved.name) -> resolved.name
+                own -> "我的手机"
+                resolved != null && resolved.kind.contains("desktop", ignoreCase = true) -> "电脑"
+                else -> "一台设备"
+            }
+            "与 $shown 的对话（这台设备现在不在列表里）"
+        }
     }
 }
 

@@ -57,6 +57,21 @@ class LinkService : Service() {
         @Volatile
         var lastError: String = ""
             private set
+
+        /**
+         * 后台连接"从坏到好"的代数（每次恢复 +1）。
+         *
+         * MainActivity 轮询它来给 UI 做连接态自愈：电脑端重启后后台会自己换令牌
+         * 重连成功，但界面里的 ApiClient 还拿着旧令牌 —— 观察这个代数，一变就
+         * 清掉旧错误、丢掉旧 client，下一轮用新令牌重连（真机 P1）。
+         */
+        @Volatile
+        var reconnectGeneration: Long = 0L
+            private set
+
+        private fun bumpReconnectGeneration() {
+            reconnectGeneration++
+        }
     }
 
     private var streamUpNotified = false
@@ -411,6 +426,7 @@ class LinkService : Service() {
      */
     private fun heartbeatLoop() {
         var lastFailure = ""
+        var wasDown = false
         while (!stopRequested) {
             val host = currentHost()
             try {
@@ -425,6 +441,12 @@ class LinkService : Service() {
                             lastFailure = ""
                             Log.d(TAG, "心跳恢复")
                         }
+                        if (wasDown) {
+                            // 从坏到好：通知界面做连接态自愈（清旧错误/丢旧 client）。
+                            wasDown = false
+                            bumpReconnectGeneration()
+                            Log.d(TAG, "后台连接已恢复（gen=$reconnectGeneration）")
+                        }
                     }
                 }
             } catch (problem: Exception) {
@@ -438,6 +460,7 @@ class LinkService : Service() {
                     } catch (ignored: Exception) {
                     }
                 }
+                wasDown = true
                 if (message != lastFailure) {
                     lastFailure = message
                     Log.d(TAG, "心跳失败: $message")
