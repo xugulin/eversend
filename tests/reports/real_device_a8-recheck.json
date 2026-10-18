@@ -1,0 +1,135 @@
+{
+  "label": "a8-recheck",
+  "when": "2026-10-18 02:49:05",
+  "repo": {
+    "when": "2026-10-18 02:49:05",
+    "loadavg": [
+      0.9,
+      1.2,
+      1.25
+    ],
+    "cpu_count": 16,
+    "head": "0346e2a",
+    "dirty_count": 36,
+    "dirty": [
+      "src/eversend/web/server.py",
+      "tests/reports/opt-1017/FINAL_REPORT.md",
+      "tests/reports/opt-1017/acceptance-final2.json",
+      "tests/reports/opt-1017/acceptance-final2.md",
+      "tests/reports/opt-1017/acceptance-logs/concurrency.log",
+      "tests/reports/opt-1017/acceptance-logs/enterprise.log",
+      "tests/reports/opt-1017/acceptance-logs/gui-actions.log",
+      "tests/reports/opt-1017/acceptance-logs/http-resume.log",
+      "tests/reports/opt-1017/acceptance-logs/loopback.log",
+      "tests/reports/opt-1017/acceptance-logs/realdevice.log",
+      "tests/reports/opt-1017/acceptance-logs/resilience.log",
+      "tests/reports/opt-final2.json",
+      "tests/reports/opt-final2.md",
+      "tests/reports/real_device_opt-final2.json",
+      "tests/reports/real_device_opt-final2.md",
+      "tests/screenshots/01-session.png",
+      "tests/screenshots/02-transfers.png",
+      "tests/screenshots/03-receive.png",
+      "tests/screenshots/04-settings.png",
+      "tests/screenshots/06-chat.png",
+      "tests/screenshots/07-preview.png",
+      "tests/screenshots/08-preview-image.png",
+      "tests/screenshots/09-emoji-and-sections.png",
+      "tests/screenshots/10-offline-devices.png",
+      "tests/screenshots/11-sections-collapsed.png",
+      "tests/screenshots/12-emoji-in-bubble.png",
+      "tests/screenshots/12-transfers-failed.png",
+      "tests/screenshots/13-one-row-per-file.png",
+      "tests/screenshots/13-settings-top.png",
+      "tests/screenshots/14-transfer-record-in-chat.png",
+      "tests/screenshots/15-settings-maintenance.png",
+      "tests/screenshots/16-one-phone-one-row.png",
+      "tests/screenshots/conversation-list.png",
+      "tests/test_enterprise_acceptance.py",
+      "tests/test_http_resume.py",
+      "tools/acceptance_opt1017.py"
+    ],
+    "mtimes": {
+      "src/eversend/web/server.py": 1792261543.9,
+      "tests/reports/opt-1017/FINAL_REPORT.md": 1792261787.3,
+      "tests/reports/opt-1017/acceptance-final2.json": 1792262919.3,
+      "tests/reports/opt-1017/acceptance-final2.md": 1792262919.3,
+      "tests/reports/opt-1017/acceptance-logs/concurrency.log": 1792261681.4,
+      "tests/reports/opt-1017/acceptance-logs/enterprise.log": 1792262749.5,
+      "tests/reports/opt-1017/acceptance-logs/gui-actions.log": 1792261939.9,
+      "tests/reports/opt-1017/acceptance-logs/http-resume.log": 1792261688.1,
+      "tests/reports/opt-1017/acceptance-logs/loopback.log": 1792261649.8,
+      "tests/reports/opt-1017/acceptance-logs/realdevice.log": 1792262919.3,
+      "tests/reports/opt-1017/acceptance-logs/resilience.log": 1792261671.8,
+      "tests/reports/opt-final2.json": 1792262749.4,
+      "tests/reports/opt-final2.md": 1792262749.4,
+      "tests/reports/real_device_opt-final2.json": 1792262919.2,
+      "tests/reports/real_device_opt-final2.md": 1792262919.2,
+      "tests/screenshots/01-session.png": 1792261988.8,
+      "tests/screenshots/02-transfers.png": 1792261989.2,
+      "tests/screenshots/03-receive.png": 1792261989.5,
+      "tests/screenshots/04-settings.png": 1792261989.9,
+      "tests/screenshots/06-chat.png": 1792261990.3,
+      "tests/screenshots/07-preview.png": 1792261995.4,
+      "tests/screenshots/08-preview-image.png": 1792261995.9,
+      "tests/screenshots/09-emoji-and-sections.png": 1792261990.9,
+      "tests/screenshots/10-offline-devices.png": 1792261991.6,
+      "tests/screenshots/11-sections-collapsed.png": 1792261991.2,
+      "tests/screenshots/12-emoji-in-bubble.png": 1792261992.0,
+      "tests/screenshots/12-transfers-failed.png": 1792261993.9,
+      "tests/screenshots/13-one-row-per-file.png": 1792261992.4,
+      "tests/screenshots/13-settings-top.png": 1792261994.3,
+      "tests/screenshots/14-transfer-record-in-chat.png": 1792261992.8,
+      "tests/screenshots/15-settings-maintenance.png": 1792261993.1,
+      "tests/screenshots/16-one-phone-one-row.png": 1792261993.5,
+      "tests/screenshots/conversation-list.png": 1792261773.7,
+      "tests/test_enterprise_acceptance.py": 1792262865.2,
+      "tests/test_http_resume.py": 1792261555.1,
+      "tools/acceptance_opt1017.py": 1792262865.2
+    },
+    "note": "仓库处于写入中"
+  },
+  "adb_serial": "2430d3c",
+  "phone_online": true,
+  "summary": {
+    "A8": "PASS"
+  },
+  "results": [
+    {
+      "id": "A8",
+      "title": "双向中文 + emoji 消息，两端都能看到",
+      "status": "PASS",
+      "error": "",
+      "subs": [
+        {
+          "name": "A8.1 电脑发的中文+emoji 消息出现在手机界面上",
+          "ok": true,
+          "expected": "手机界面含 'QA 真机消息 🚀 中文+emoji 62990'",
+          "actual": "手机界面片段=['💻', 'QA-真机验收', 'linux · 192.168.110.41:52119 · 发现方式：组播', '在线', '已信任', '打开接收文件夹', '⋯', 'QA-真机验收', '与 一台设备 的对话（这台设备现在不在列表里）', '← 会话', 'QA-真机验收 · 02:17', '📄']",
+          "note": ""
+        },
+        {
+          "name": "A8.desktop_rows",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "电脑端会话行数=1"
+        },
+        {
+          "name": "A8.phone_shot",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "/home/xgl/qa-real/shots/A8-phone-message.png"
+        },
+        {
+          "name": "~耗时",
+          "ok": true,
+          "expected": "",
+          "actual": "49.9s",
+          "note": ""
+        }
+      ]
+    }
+  ]
+}

@@ -41,7 +41,7 @@ EverSend core loopback tests
       .part 峰值 192.0 MiB / 目录实占 192.0 MiB → 取消后 0.00 MiB
 
 [6] End-to-end throughput (64 MiB, 4 streams)
-      64 MiB in 1.17s = 54 MiB/s
+      64 MiB in 0.40s = 160 MiB/s
   [32mPASS[0m fast transfer succeeded
   [32mPASS[0m throughput above the floor (5 MiB/s)
 
@@ -64,5 +64,5 @@ EverSend core loopback tests
 
 ============================================================
 All checks passed.
-警告：/home/xgl/我的项目/自制软件/韧传/eversend/.testscratch/run-615dm3oh/identity.json 公钥与私钥不匹配（这份身份是在缺少加密库时生成的），已重新生成身份。
+警告：/home/xgl/我的项目/自制软件/韧传/eversend/.testscratch/run-22do2awq/identity.json 公钥与私钥不匹配（这份身份是在缺少加密库时生成的），已重新生成身份。
       本机设备号会变化，其他设备需要重新配对一次。

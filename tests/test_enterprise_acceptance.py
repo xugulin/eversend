@@ -2296,6 +2296,14 @@ def e04(r: R) -> None:
 
     run_all = os.environ.get("EVERSEND_QA_FULL_LEGACY", "") not in ("", "0", "false")
     suites = LEGACY_SUITES if run_all else tuple(s for s in LEGACY_SUITES if s[0] != "test_resilience")
+    # 全量验收编排器（tools/acceptance_opt1017.py）已经**单独跑过** test_gui_actions
+    # 这一步；E4 里再跑一遍不仅浪费 ~3 分钟，实测还会在"同一进程/同一会话里第二次
+    # 跑整套 Qt 点击交互"时长时间挂住（一次 11+ 分钟直到被外层杀掉，反而把 E4 判红）。
+    # 编排器会设 EVERSEND_SKIP_LEGACY_GUI=1，这里就不再重复；独立跑 enterprise 时
+    # 不设该变量，行为不变。
+    if os.environ.get("EVERSEND_SKIP_LEGACY_GUI", "") not in ("", "0", "false"):
+        suites = tuple(s for s in suites if s[0] != "test_gui_actions")
+        r.note("E4.scope", "test_gui_actions 由验收编排器单独跑过，这里跳过避免重复执行")
     if not run_all:
         r.note("E4.scope", "默认跳过多耗时的 test_resilience（与 test_loopback 的重叠部分已覆盖）；"
                            "设 EVERSEND_QA_FULL_LEGACY=1 可跑全量")

@@ -269,6 +269,70 @@ def main() -> int:
         unknown = get_json(base + "/api/upload/status?uploadId=" + secrets.token_hex(16))
         check("6.4 未知 uploadId 返回 offset=0", unknown.get("offset") == 0, str(unknown))
 
+        # ---- 7. 进程重启：完成快照落盘 → 幂等重放不重复落盘 --------------
+        print("\n[7] 进程重启后的幂等重放（完成快照落盘）")
+        resume_id4 = secrets.token_hex(16)
+        name4 = "重启-已完成.bin"
+        first4 = payload[: 400 * 1024]
+        cast(base, token, name=name4, device_id=own_id, data=first4,
+             upload_id=resume_id4, offset=0, total=total)
+        rest4 = payload[len(first4):]
+        status, body = cast(base, token, name=name4, device_id=own_id, data=rest4,
+                            upload_id=resume_id4, offset=len(first4), total=total)
+        check("7.1 重启前完成上传", status in (200, 202) and body.get("complete") is True,
+              f"status={status} body={body}")
+        done_file = receive / name4
+        check("7.2 重启前文件已落地且 sha256 一致",
+              done_file.exists() and sha256_file(done_file) == digest,
+              str(done_file.exists()))
+
+        # 模拟电脑端进程重启：同一个 engine / data_dir 上重新创建一个 WebUI。
+        ui.stop()
+        ui = create_web_ui(engine, host="127.0.0.1", port=0, keep_uploads=True)
+        port = ui.start()
+        base = f"http://127.0.0.1:{port}"
+        token = ui.token
+        files_before = sorted(p.name for p in receive.iterdir() if p.is_file())
+        status, body = cast(base, token, name=name4, device_id=own_id, data=b"",
+                            upload_id=resume_id4, offset=total, total=total)
+        files_after = sorted(p.name for p in receive.iterdir() if p.is_file())
+        check("7.3 重启后重放最后一段仍返回完成",
+              status in (200, 202) and body.get("complete") is True,
+              f"status={status} body={body}")
+        check("7.4 重启后重放不再落重复文件（不出现 (1)）", files_before == files_after,
+              f"before={files_before[-3:]} after={files_after[-3:]}")
+
+        # 半途重启：spool 已收字节必须保留，客户端按服务端 offset 继续。
+        resume_id5 = secrets.token_hex(16)
+        name5 = "重启-半途.bin"
+        half = 600 * 1024
+        cast(base, token, name=name5, device_id=own_id, data=payload[:half],
+             upload_id=resume_id5, offset=0, total=total)
+        ui.stop()
+        ui = create_web_ui(engine, host="127.0.0.1", port=0, keep_uploads=True)
+        port = ui.start()
+        base = f"http://127.0.0.1:{port}"
+        token = ui.token
+        status_info = get_json(base + "/api/upload/status?uploadId=" + resume_id5)
+        check("7.5 重启后仍查得到已收字节", status_info.get("offset") == half, str(status_info))
+        status, body = cast(base, token, name=name5, device_id=own_id,
+                            data=payload[: 100 * 1024], upload_id=resume_id5,
+                            offset=0, total=total)
+        check("7.6 重启后用旧偏移续传返回 409", status == 409,
+              f"status={status} body={body}")
+        offset5 = int(body.get("offset") or 0)
+        status, body = cast(base, token, name=name5, device_id=own_id,
+                            data=payload[offset5:], upload_id=resume_id5,
+                            offset=offset5, total=total)
+        landed5 = receive / name5
+        check("7.7 重启后按正确 offset 续传完成且 sha256 一致",
+              status in (200, 202) and body.get("complete") is True
+              and landed5.exists() and sha256_file(landed5) == digest,
+              f"status={status} landed={landed5.exists()}")
+        done_snapshot = root / "state" / "resume_done.json"
+        check("7.8 完成快照已落盘（下次重启仍可幂等重放）", done_snapshot.exists(),
+              str(done_snapshot))
+
         print("\n" + "=" * 60)
         if _failures:
             print(f"{FAIL} {len(_failures)} 项失败：")

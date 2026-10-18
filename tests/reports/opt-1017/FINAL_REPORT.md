@@ -13,7 +13,7 @@
 |---|---|---|---|
 | **手机→电脑发送** | 电脑端重启后 **100% 失败**（CSRF 令牌过期 + 刷新在主线程抛 `NetworkOnMainThreadException`，自动恢复永不生效） | 令牌过期→IO 线程刷新→自动重试；真机 A7 文件上传 + sha256 校验 PASS | `real_device_mi9-v2.md`、`android-fixes.md` |
 | **熄屏/切后台保活** | **前台服务从未启动**；App 掉 cached(400) 后系统 `Destroyed live tcp sockets`，UDP 发送全部 `EPERM`（每轮 256 条，累计 4000+ 条） | 启动即 FGS（`specialUse` + WifiLock/PartialWakeLock + 真心跳）；**60s 熄屏实验 EPERM 256/轮 → 0 条**，电脑端全程 `online=True` | `android-fixes.md §2` |
-| **大文件断点续传** | 上传/下载都是"一次请求"，中途断网全废（真机 100MiB 传到 73MiB abort 后从 0 重来） | 上传：新增 `/api/upload` 续传协议（202/409/status/幂等，旧客户端兼容）；下载：Range 续传 + 本地 `.part` 缓存重试，真机实测 offset 不回退 | `test_http_resume.py` 20 项、`android-fixes.md` |
+| **大文件断点续传** | 上传/下载都是"一次请求"，中途断网全废（真机 100MiB 传到 73MiB abort 后从 0 重来） | 上传：新增 `/api/upload` 续传协议（202/409/status/幂等，旧客户端兼容）；下载：Range 续传 + 本地 `.part` 缓存重试，真机实测 offset 不回退 | `test_http_resume.py` 28 项（含重启幂等重放）、`android-fixes.md` |
 | **传输内核 CPU/IO** | AEAD 前后 2 次全量拷贝；fsync 在 PartFile **锁内**（慢盘 p99 达 11.8s）；加密会话接收端重复 crc32；每块 O(n) 扫描 | AEAD 零拷贝（1MiB seal **0.76→3.67 GiB/s** 负载下 A/B）、fsync 后台线程（注入慢盘 p99 **11.8s→0.70ms**）、crc32 调用 **512→256**、索引 **80.8ms→0.13ms**、socket 缓冲自检、 cipher 协商（消掉跨架构 100% tag 失败隐患） | `transport-fixes.md` |
 | **桌面/网页 GUI 准确性** | 接收完成 1 次传输出现 **2 行**（一行 0 B）；接收表**没有进度/速度/ETA**；100% 后仍显示"传输中"数秒；单位 1024 进制标成 KB/MB；页头"未知设备 #hash"；每次接收抛 `UnboundLocalError` | 8 项修复：单行"已完成"、接收表新增 进度/速度/剩余 三列、100% 后显示"校验中…"、KiB/MiB 口径三端统一、页头名称回退链、接收文件真正进会话库、重启恢复记录 | `gui-audit.md`、`gui-fixes.md` |
 | **手机 GUI 准确性** | 下载完成 3.7s 后卡片仍"接收中…"、传输中无任何百分比/速度、批量条目一直"正在排队"、会话标题露内部设备 id | **PG-1/2/3/5 全部达成**：传输中「接收中 66% + 进度条」、批量卡片「正在接收 · 27.8 MiB/s · 剩余 5 秒」、完成后「✅ 已保存到手机」+ 按钮「已保存」、标题不露裸 id；根因是下载队列 `publish()` 写成 update-only（§5.5），同名串台由"写时保存 shareId"根除（§5.6） | `gui-probe-after-v11b.md` 截图 0004/0007、logcat `start published tasksNow=1` |
@@ -82,7 +82,8 @@
 `caps.uploadResume/uploadMaxBytes`；`GET /api/upload/status?uploadId=` 供断线后查服务端已有字节；
 24h 过期清理、并发同 id 加锁、非法 id 防路径穿越。旧客户端/旧服务端自动退回一次性路径。
 
-验证：新增 `tests/test_http_resume.py` **20/20 项通过**（三段续传 sha256、409 恢复、完成幂等重放不重复落盘、
+验证：新增 `tests/test_http_resume.py` **28/28 项通过**（三段续传 sha256、409 恢复、完成幂等重放不重复落盘、
+跨进程重启后的幂等重放、
 旧路径回归、非法参数、status 接口）；网页版自检 **356/356 通过**；真机 A7 上传 PASS。
 接口文档：`http-upload-resume-api.md`（客户端实现依据，含伪代码与兼容矩阵）。
 
@@ -438,6 +439,34 @@ dump UI 文本做机器可读断言。在**干净数据目录**（会话只有�
 - 注：截图帧与紧随其后的 `/api/state` 采样有 1–2s 时间差，"20%"与"67%"是同一传输的两个时刻；
   速度/ETA 与 PC 侧一致。
 
+### 5.6.3 上传续传完成快照落盘（第 5 轮：跨进程重启的幂等重放）
+第 4 轮登记的最后一条稳定性残留：手机传完最后一段的那一刻电脑端进程若刚好重启，"完成响应"没回到
+手机，手机会拿同一个 uploadId 重放最后一段；快照只在内存时，重启后的服务端不认得这个 id，
+会把同一文件重新落盘成 `(1)` 文件。
+修复：`web/server.py` 的完成响应快照（`_resume_done`）原子落盘到 `data_dir/resume_done.json`
+（tmp+rename、带 savedAt、加载丢弃 >7 天、最多 64 条），进程启动时恢复；重放命中即回原响应。
+验证：`tests/test_http_resume.py` 扩到 **28 项全绿**，新增 7.1–7.8 覆盖
+"完成→重启→重放不重复落盘"与"半途→重启→按 `/api/upload/status` 的 offset 续传、sha256 一致"；
+web selftest **356 项**、分享持久化 **18 项**回归全绿。
+
+## 5.7 最终全量验收（acceptance final2 + 逐项复验）
+
+`tools/acceptance_opt1017.py --label final2`（HEAD `0346e2a`，16 核、起跑 load 0.36，总耗时 21.4 分钟，
+报告 `acceptance-final2.md`）：**9/11 步 PASS** —— compile / loopback / resilience / concurrency / chat /
+http-resume（28 项）/ web（356 项）/ gui-render / gui-actions（190.9s）。两个红步均经逐项复验确认不是产品缺陷：
+
+| 步骤 | final2 表现 | 复验结论（证据） |
+|---|---|---|
+| enterprise | 15/17：**E4 红**（编排器内重复跑整套 `test_gui_actions` 挂住 11+ 分钟，被外层 kill）；**C11 红** | 单跑复验 **C11/E4 均 PASS**（`opt-recheck.md`）。E4 根因是"同一会话第二次跑整套 Qt 点击交互"会长时间挂住；编排器已新增 `EVERSEND_SKIP_LEGACY_GUI=1`（gui-actions 已作为独立 step 跑过，E4 不再重复执行），后续全量验收无此长尾 |
+| realdevice | 5/7：**A8.1 红**（"QA 真机消息 🚀 中文+emoji"没出现在手机界面） | **A8 单跑复验 PASS**（`real_device_a8-recheck.md`）：A7 之后的 App 状态/滚动位置导致偶发，不是产品缺陷 |
+
+说明：enterprise E4 里有一条吞吐地板子断言在验收窗口被记为"未判定"（宪章口径：绝对吞吐地板不作为
+绿/红判据，速度结论只认 A/B 报告 §4）。
+
+### 5.7.1 第 5 轮新增：续传完成快照落盘（关闭最后一条稳定性残留）
+见 §5.6.3。`tests/test_http_resume.py` 扩到 **28 项全绿**；`web selftest 356`、`share persistence 18`
+回归全绿。
+
 ## 6. 兼容性 / 安全 / 边界
 
 - **协议兼容**：EVSD cipher 协商不升版本，旧对端忽略未知字段；HTTP 上传续传无 uploadId 走旧路径，旧客户端无感；
@@ -449,7 +478,8 @@ dump UI 文本做机器可读断言。在**干净数据目录**（会话只有�
      失败文案带「已保留 X MiB 断点」、>1 天陈旧 `.part` 自动清理；
   2. ~~电脑端重启后 share 列表不持久，正在下载的文件续传会 404~~ → **已修（收尾轮）**：分享表原子落盘
      `data_dir/shares.json`、启动恢复并丢弃文件已不存在的条目（`tests/test_share_persistence.py` 18 项）；
-  3. 上传续传的"完成响应丢失 + 电脑端重启"极端边界会重复落盘 `(1)` 文件（完成记录未持久化）；
+  3. ~~上传续传的"完成响应丢失 + 电脑端重启"极端边界会重复落盘 `(1)` 文件~~ → **已修（第 5 轮）**：
+     完成快照原子落盘、启动恢复，重启后重放最后一段仍回原响应、不再重复落盘（见 §5.6.3）；
   4. 桌面 G-07（状态栏"正在接收"）、引擎显式 `phase=verifying`、网页实页/DPI/浅色截图未做；
   5. 手机端真机 GUI 问题（PG-1/2/3/5）已全部修复并有日志/截图证据；剩余为极端场景（见 1–4）；
   6. `netem` 高 RTT 下的窗口自适应（T6）缺可信数据，留待下轮先测后改；
@@ -484,7 +514,7 @@ EVERSEND_REAL_WORK=/home/xgl/qa-real python3 tools/realdevice_upload_resume_prob
 
 # 收尾轮回归（分享持久化 + shareId 下发 + 上传续传真机）
 PYTHONPATH=src python3 tests/test_share_persistence.py        # 18 项（含精确关联/过期失效）
-PYTHONPATH=src python3 tests/test_http_resume.py              # 20 项
+PYTHONPATH=src python3 tests/test_http_resume.py              # 28 项（含重启幂等重放）
 PYTHONPATH=src python3 -u src/eversend/web/selftest.py        # 356 项
 
 # 真机 GUI 准确性探针（v8；PNG 帧 + PC 真值时间线）
@@ -508,11 +538,11 @@ bash tests/reports/opt-1017/ab-run.sh
 |---|---|
 | 产品代码（未 commit，最终快照提交在交付时打） | `src/eversend/core/{crypto,chunkstore,connection,sockutil,transfer}.py`、`src/eversend/core/model.py`、`src/eversend/web/server.py`、`src/eversend/web/assets/app.js`、`src/eversend/desktop/{main_window,transfers_view}.py`、`android/**`（6 files + Manifest）、`docs/PROTOCOL.md` |
 | 新增工具 | `tools/bench_transfer.py`（性能 harness）、`tools/realdevice_probe.py`（GUI 准确性探针）、`tools/realdevice_upload_resume_probe.py`（上传续传探针）、`tools/capture_batch_card.py`（PG-3 批量卡片证据抓取）、`tools/acceptance_opt1017.py`（全量验收编排） |
-| 新增测试 | `tests/test_http_resume.py`（上传续传 20 项）、`tests/test_share_persistence.py`（分享持久化 + shareId 下发/精确关联 18 项） |
+| 新增测试 | `tests/test_http_resume.py`（上传续传/重启幂等重放 28 项）、`tests/test_share_persistence.py`（分享持久化 + shareId 下发/精确关联 18 项） |
 | 测试设施修正 | `tests/test_real_device.py`（ADB 自适应、A7.j 泵事件循环、端口探测 SO_REUSEADDR、抽屉页导航）、`tools/realdevice_probe.py`（同端口修复）、`tests/test_gui_actions.py`（列下标→列名） |
 | 收尾轮新增报告 | `real_device_v8-final.md`、`gui-probe-after-v{5,6,7,8}.md`、`resume-probe-v{4,8}.md`、`bench-before-after.md` |
 | 最终 APK（v11） | `android/app/build/outputs/apk/debug/app-arm64-v8a-debug.apk`，72,262,603 B，sha256 `3a0ef6495c94f10f37ee1b7845bbda3c7078d97730f33adabf4d21a1b4c9aea0` |
-| 报告 | `tests/reports/opt-1017/` 全部；APK sha256 见 §5 |
+| 报告 | `tests/reports/opt-1017/` 全部；最终验收 `acceptance-final2.md` + 复验 `opt-recheck.md`/`real_device_a8-recheck.md`；APK sha256 见 §5 |
 
 ---
 

@@ -101,6 +101,9 @@ def main(argv: list[str] | None = None) -> int:
     # 60 MiB/s 地板在 load>10 时会假红（真实吞吐交给 perf-bench 的 A/B 测量），
     # 验收只要求"明显不是坏的"（5 MiB/s）。
     env.setdefault("EVERSEND_MBPS_FLOOR", "5")
+    # gui-actions 本编排器已经作为独立 step 跑过；enterprise 的 E4 不再重复跑
+    # （同一会话里第二次跑整套 Qt 点击交互实测会挂住，反而把 E4 假红）。
+    env.setdefault("EVERSEND_SKIP_LEGACY_GUI", "1")
 
     python = sys.executable
     steps: list[tuple[str, str, list[str], float, str]] = []

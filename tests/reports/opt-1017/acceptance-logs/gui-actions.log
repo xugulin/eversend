@@ -41,8 +41,8 @@ EverSend 桌面交互测试
   [32mPASS[0m 设备列表里有这两台
   [32mPASS[0m 多选后能读出两台
   [32mPASS[0m 按钮会说要发给几台
-  [31mFAIL[0m 第一台收到了
-  [31mFAIL[0m 第二台也收到了
+  [32mPASS[0m 第一台收到了
+  [32mPASS[0m 第二台也收到了
   [32mPASS[0m 两台各有一张传输卡片
 
 [6] 侧栏设备列表：名字 + 未读 + 置顶 + 群聊
@@ -346,8 +346,6 @@ EverSend 桌面交互测试
   [32mPASS[0m 引擎说 cancelled 时同样是「已取消」
 
 ============================================================
-2 failure(s):
-  - 第一台收到了
-  - 第二台也收到了
+桌面交互全部通过。
 /home/xgl/我的项目/自制软件/韧传/eversend/tests/test_gui_actions.py:1091: DeprecationWarning: Function: 'QMouseEvent.QMouseEvent(QEvent.Type type, const QPointF &localPos, Qt.MouseButton button, QFlags<Qt.MouseButton> buttons, QFlags<Qt.KeyboardModifier> modifiers, const QPointingDevice *device)' is marked as deprecated, please check the documentation for more information.
   QMouseEvent(etype, pos, button, buttons, Qt.KeyboardModifier.NoModifier),

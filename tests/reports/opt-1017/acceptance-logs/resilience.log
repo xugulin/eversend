@@ -7,7 +7,7 @@ EverSend resilience tests
   [32mPASS[0m file landed
   [32mPASS[0m bytes identical
   [32mPASS[0m size correct
-      24 MiB through a hostile proxy in 6.5s (8 kills)
+      24 MiB through a hostile proxy in 6.2s (8 kills)
 
 [2] Every stream killed repeatedly, then a clean retry
   [32mPASS[0m recovery attempt succeeded
@@ -19,13 +19,13 @@ EverSend resilience tests
   [32mPASS[0m throttled transfer succeeded
   [32mPASS[0m bytes identical under backpressure
   [32mPASS[0m throughput respects the throttle
-      12 MiB at 6.9 MiB/s through an 8 MiB/s throttle
+      12 MiB at 7.5 MiB/s through an 8 MiB/s throttle
 
 [4] Large file (512 MiB) — sustained transfer, bounded memory
   [32mPASS[0m 512 MiB transfer succeeded
   [32mPASS[0m 512 MiB bytes identical
   [32mPASS[0m memory stayed bounded
-      512 MiB in 5.8s = 88 MiB/s, peak RSS 188 MiB
+      512 MiB in 1.9s = 273 MiB/s, peak RSS 257 MiB
 
 [5] The peer resets the connection instead of answering the offer
   [32mPASS[0m send() reports failure instead of raising

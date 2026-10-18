@@ -634,6 +634,10 @@ class WebUI:
         #: uploadId -> 完成响应快照。断线后客户端可能重发最后一段（幂等重放）：
         #: 已经完成的 id 直接回原响应，而不是把同一文件再落一次盘。
         self._resume_done: dict[str, dict[str, Any]] = {}
+        #: 完成快照落盘：手机传完最后一段时电脑端进程若刚好重启，内存快照没了，
+        #: 重启后同一个 uploadId 会被当成新上传 → 接收目录多一份 "(1)" 文件（极端边界）。
+        self._resume_done_path = os.path.join(engine.config.data_dir, "resume_done.json")
+        self._load_resume_done()
         self._index_cache: tuple[float, str] | None = None
         self._address_cache: tuple[float, list[str]] | None = None
         self._bound_port = 0
@@ -2176,11 +2180,63 @@ class WebUI:
             self._resume_done[upload_id] = dict(payload)
             while len(self._resume_done) > 64:  # 有界，别无限攒
                 self._resume_done.pop(next(iter(self._resume_done)))
+        self._save_resume_done()
 
     def resume_completed(self, upload_id: str) -> dict[str, Any] | None:
         with self._upload_lock:
             payload = self._resume_done.get(upload_id)
             return dict(payload) if payload is not None else None
+
+    # -- 续传完成快照持久化（opt-1017 收尾轮） -----------------------------
+    #
+    # 为什么落盘：手机传完最后一段的那一刻电脑端进程若刚好重启，"完成响应"没回到
+    # 手机，手机会拿同一个 uploadId 重发最后一段（幂等重放）。快照只在内存里的话，
+    # 重启后服务端不认得这个 id → 把同一文件重新落盘一份 "(1)"（真机验收里登记过的
+    # 极端边界）。落盘后重启也能回原响应，不再重复写接收目录。
+
+    def _load_resume_done(self) -> None:
+        try:
+            with open(self._resume_done_path, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return
+        entries = data.get("entries") if isinstance(data, dict) else None
+        cutoff = time.time() - 7 * 24 * 3600
+        loaded: dict[str, dict[str, Any]] = {}
+        for item in entries or []:
+            if not isinstance(item, dict):
+                continue
+            upload_id = self.valid_resume_id(str(item.get("uploadId") or ""))
+            payload = item.get("payload")
+            try:
+                saved_at = float(item.get("savedAt") or 0.0)
+            except (TypeError, ValueError):
+                saved_at = 0.0
+            if not upload_id or not isinstance(payload, dict) or saved_at < cutoff:
+                continue
+            loaded[upload_id] = payload
+        if not loaded:
+            return
+        with self._upload_lock:
+            for upload_id, payload in loaded.items():
+                self._resume_done.setdefault(upload_id, payload)
+        log.info("从 %s 恢复了 %d 条续传完成快照", self._resume_done_path, len(loaded))
+
+    def _save_resume_done(self) -> None:
+        """原子落盘（tmp+rename）；只读介质/磁盘错误不能影响上传本身。"""
+        try:
+            with self._upload_lock:
+                entries = [
+                    {"uploadId": key, "savedAt": time.time(), "payload": value}
+                    for key, value in self._resume_done.items()
+                ]
+            payload = {"entries": entries}
+            tmp = self._resume_done_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2, default=str)
+            os.replace(tmp, self._resume_done_path)
+        except (OSError, ValueError, TypeError):
+            log.debug("resume-done snapshots could not be persisted", exc_info=True)
 
     def sweep_resume_spools(self, max_age: float = 24 * 3600) -> int:
         """删掉超龄的续传 spool（断线后再没回来续的那些）。"""
