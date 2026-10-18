@@ -1,0 +1,58 @@
+EverSend resilience tests
+==================================================================
+
+[1] Connections killed mid-transfer (simulates Wi-Fi drops / NAT rebinding)
+  [32mPASS[0m transfer completed despite kills
+  [32mPASS[0m proxy killed several connections during the transfer
+  [32mPASS[0m file landed
+  [32mPASS[0m bytes identical
+  [32mPASS[0m size correct
+      24 MiB through a hostile proxy in 6.5s (8 kills)
+
+[2] Every stream killed repeatedly, then a clean retry
+  [32mPASS[0m recovery attempt succeeded
+  [32mPASS[0m file landed
+  [32mPASS[0m bytes identical after abuse
+      first attempt ok=True, recovery ok=True
+
+[3] Throttled link (8 MB/s) with latency and jitter — integrity under backpressure
+  [32mPASS[0m throttled transfer succeeded
+  [32mPASS[0m bytes identical under backpressure
+  [32mPASS[0m throughput respects the throttle
+      12 MiB at 6.9 MiB/s through an 8 MiB/s throttle
+
+[4] Large file (512 MiB) — sustained transfer, bounded memory
+  [32mPASS[0m 512 MiB transfer succeeded
+  [32mPASS[0m 512 MiB bytes identical
+  [32mPASS[0m memory stayed bounded
+      512 MiB in 5.8s = 88 MiB/s, peak RSS 188 MiB
+
+[5] The peer resets the connection instead of answering the offer
+  [32mPASS[0m send() reports failure instead of raising
+  [32mPASS[0m send() says the transfer did not happen
+  [32mPASS[0m the failure is visible as an event with a reason
+
+[6] Cancelling a 200 MiB receive gives the disk back
+  [32mPASS[0m 取消时接收正在跑，.part 已按整份文件预分配
+  [32mPASS[0m 取消后接收目录里没有满尺寸 .part 残片
+  [32mPASS[0m 取消后目录占用回到取消前
+      实测：.part 实占 200 MiB，取消 1.2s 后目录占用 0.00 MiB（取消前 0 字节）
+  [32mPASS[0m sweep 能收掉接收目录里的 .part/.journal（不是只扫 data_dir）
+
+[7] 启动清理：扫接收目录和 data_dir，但不碰还能续传的残片
+  [32mPASS[0m 启动清理收掉了接收目录里的陈年残片（.part 和 journal 一起）
+  [32mPASS[0m 启动清理也扫 data_dir
+  [32mPASS[0m 没有 journal 的孤立 .part 也收掉（它本来就续不了）
+  [32mPASS[0m 刚暂停、还能续传的残片必须留着
+  [32mPASS[0m 拿 data_dir 建索引也能扫到接收目录的 journal
+
+[8] 「打开」失败能被调用方知道（并拿到给用户看的理由）
+  [32mPASS[0m xdg-open 退出码 3 时 open_path 返回 False（不再谎报成功）
+  [32mPASS[0m 失败原因可读（含退出码/错误行）
+  [32mPASS[0m 装了 handler 后失败消息交给它 —— 前端据此在状态行提示用户
+  [32mPASS[0m open_path_report 给出 (False, 原因)
+  [32mPASS[0m 能打开的路径仍然返回 True（不是无脑 False）
+  [32mPASS[0m 文件不在时返回 False 且有原因
+
+==================================================================
+All resilience checks passed.

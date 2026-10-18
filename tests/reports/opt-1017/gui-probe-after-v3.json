@@ -1,0 +1,211 @@
+{
+  "label": "after-v3",
+  "only": "A2",
+  "interval": 1.2,
+  "when": "2026-10-18 00:20:34",
+  "env": {
+    "adb": "2430d3c",
+    "work": "/home/xgl/qa-real",
+    "loadavg": [
+      0.564453125,
+      1.6103515625,
+      6.0556640625
+    ]
+  },
+  "harness_exit": 0,
+  "harness_report": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/real_device_probe-after-v3.md",
+  "harness_summary": "| A2 | 电脑发中等文件（约 100 MB）→ 手机磁盘 + sha256 | ✅ PASS | — |\n",
+  "samples": [
+    {
+      "t": 0.0,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v3/0000.png",
+      "truth": null
+    },
+    {
+      "t": 1.49,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v3/0001.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 2.97,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v3/0002.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 4.45,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v3/0003.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": false
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 5.94,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v3/0004.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": false
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 7.43,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v3/0005.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 23068672,
+            "size": 104857600,
+            "downloaded": false
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 8.92,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v3/0006.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 55836672,
+            "size": 104857600,
+            "downloaded": false
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 10.43,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v3/0007.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 87818240,
+            "size": 104857600,
+            "downloaded": false
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 11.93,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v3/0008.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 104857600,
+            "size": 104857600,
+            "downloaded": true
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 13.42,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v3/0009.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 104857600,
+            "size": 104857600,
+            "downloaded": true
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 14.9,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v3/0010.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 104857600,
+            "size": 104857600,
+            "downloaded": true
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 16.39,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v3/0011.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 104857600,
+            "size": 104857600,
+            "downloaded": true
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 17.87,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v3/0012.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 104857600,
+            "size": 104857600,
+            "downloaded": true
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 19.52,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v3/0013.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 104857600,
+            "size": 104857600,
+            "downloaded": true
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 21.16,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v3/0014.png",
+      "truth": null
+    }
+  ]
+}

@@ -85,8 +85,17 @@ class LanDiscovery private constructor(private val appContext: Context) {
         /** 主动扫描的节流：两次之间至少隔这么久。 */
         private const val SCAN_MIN_GAP_MS = 6_000L
 
-        /** 没有发现任何设备时的主动扫描周期（有设备了就不需要一直扫）。 */
+        /** 没有发现任何设备时的主动扫描周期起点（有设备了就不需要一直扫）。 */
         private const val SCAN_PERIOD_MS = 20_000L
+
+        /** 一直找不到设备时扫描周期逐轮翻倍，最大到这里（5 分钟）。 */
+        private const val SCAN_MAX_PERIOD_MS = 300_000L
+
+        /** 单播全网兜底扫（254 包）的最小间隔：广播/组播都被拦时才用。 */
+        private const val UNICAST_SWEEP_MS = 60_000L
+
+        /** 发送失败日志限流：同一通道两次日志至少隔这么久（EPERM 时别刷爆 logcat）。 */
+        private const val SEND_ERROR_LOG_GAP_MS = 5_000L
 
         @Volatile
         private var shared: LanDiscovery? = null
@@ -134,6 +143,20 @@ class LanDiscovery private constructor(private val appContext: Context) {
     private var announcer: Thread? = null
     private var scanner: Thread? = null
 
+    // ---- 降噪/退避（真机 EPERM 事件后的加固，见 android-audit.md P1-C）----
+
+    /** 上一次单播全网兜底扫的时刻：平时不扫，最多每分钟一次。 */
+    @Volatile private var lastUnicastSweepAt = 0L
+
+    /** 连续多少轮公告没听到任何可连设备（≥2 才动用单播兜底扫）。 */
+    @Volatile private var announcePassesWithoutPeer = 0
+
+    /** 本轮公告里发送失败的包数（日志里给出汇总数，而不是每包一条）。 */
+    @Volatile private var sendFailuresThisPass = 0
+
+    /** 发送失败日志限流用：每通道上一次打日志的时刻。 */
+    private val lastSendLogAt = HashMap<DiscoveryChannel, Long>()
+
     // ------------------------------------------------------------------ 启动 / 停止
 
     /**
@@ -177,6 +200,9 @@ class LanDiscovery private constructor(private val appContext: Context) {
             spawn("eversend-discover-scanloop") { scanLoop() }
             publish()
             // 启动就公告一次 + 扫一次：UDP 全被网络拦掉时，主动扫描是"≤5 秒出现"的保险。
+            // 但单播兜底扫（254 包/网卡）不要一启动就触发：从"现在"开始算冷却，
+            // 只有 60 秒后仍然没有可连设备才用（平时靠组播 + 定向广播 + TCP 扫描）。
+            lastUnicastSweepAt = System.currentTimeMillis()
             announceOnce("启动")
             scanNow("启动", announce = false)
         }
@@ -403,13 +429,32 @@ class LanDiscovery private constructor(private val appContext: Context) {
                     send(socket, payload, directed, PORT, nic, DiscoveryChannel.Broadcast)
                 }
             }
-            unicastSocket?.let { socket ->
-                // 广播被 ROM / 交换机拦掉时的第二条路：把本网段每一台主机各敲一下。
-                // 254 个小包，几十毫秒的事。
+        }
+        // 单播全网（254 包/网卡）**不再每轮都发**。
+        // 原实现是"广播被 ROM 拦掉时的第二条路"，但代价太大：真机实测每轮公告
+        // 给 /24 每台主机各发一个 UDP，ARP 表被 FAILED 条目塞满（ip neigh 里
+        // 上百条 FAILED），一旦 App 掉到 cached 状态系统还会让每个包都返 EPERM
+        // —— 一轮 256 条日志、256 次 UI 状态刷新，logcat 直接刷爆。
+        // 现在：只有连续 2 轮一个能连的设备都没听到（说明组播+广播确实没兜住）
+        // 才扫一次，且最多每 60 秒一次；平时靠组播 + 定向广播 + TCP 主动扫描
+        // （scanLoop 已带指数退避）就够。
+        val hasPeer = _peers.value.any { it.connectable }
+        if (hasPeer) announcePassesWithoutPeer = 0 else announcePassesWithoutPeer++
+        sendFailuresThisPass = 0
+        val sweepSocket = unicastSocket
+        val now = System.currentTimeMillis()
+        if (sweepSocket != null && !hasPeer &&
+            announcePassesWithoutPeer >= 2 && now - lastUnicastSweepAt >= UNICAST_SWEEP_MS
+        ) {
+            lastUnicastSweepAt = now
+            var count = 0
+            for (nic in interfaces()) {
                 for (host in subnetHosts(nic)) {
-                    send(socket, payload, host, PORT, nic, DiscoveryChannel.Unicast)
+                    send(sweepSocket, payload, host, PORT, nic, DiscoveryChannel.Unicast)
+                    count++
                 }
             }
+            Log.d(TAG, "单播兜底扫一轮：$count 个地址")
         }
         if (reason.isNotBlank()) Log.d(TAG, "公告一轮（$reason）")
     }
@@ -437,8 +482,33 @@ class LanDiscovery private constructor(private val appContext: Context) {
             socket.send(DatagramPacket(payload, payload.size, target, port))
             sent[channel] = (sent[channel] ?: 0) + 1
         } catch (problem: Exception) {
-            record(channel, "发往 $target 失败：${problem.javaClass.simpleName}: ${problem.message}")
+            sendFailuresThisPass++
+            throttledSendError(channel, problem, target)
         }
+    }
+
+    /**
+     * 发送失败：限流 + 聚合。
+     *
+     * 以前每个包失败都 `record()` 一次 —— log 一行 + StateFlow publish + 覆盖
+     * UI 上的错误。真机 cached 状态下发 256 个包全 EPERM 时，就是每秒几百行
+     * logcat + 几百次 UI 重组，真正有用的信息全被埋掉。
+     * 现在：同一通道每 5 秒最多记一条，内容是本轮累计失败数 + 一个样例。
+     */
+    private fun throttledSendError(
+        channel: DiscoveryChannel,
+        problem: Exception,
+        target: InetAddress,
+    ) {
+        val now = System.currentTimeMillis()
+        val last = lastSendLogAt[channel] ?: 0L
+        if (now - last < SEND_ERROR_LOG_GAP_MS) return
+        lastSendLogAt[channel] = now
+        val summary = "发送失败（本轮已 ${sendFailuresThisPass} 个包）：" +
+            "${problem.javaClass.simpleName}: ${problem.message}（例：$target）"
+        lastError[channel] = summary
+        Log.d(TAG, "发现通道 ${channel.label}：$summary")
+        publish()
     }
 
     /** 手机自己的公告：`kind=mobile`、没有 TCP/网页端口（它只通过电脑中转）。 */
@@ -505,11 +575,20 @@ class LanDiscovery private constructor(private val appContext: Context) {
     }
 
     private fun scanLoop() {
+        var period = SCAN_PERIOD_MS
         while (running.get()) {
-            if (!sleep(SCAN_PERIOD_MS)) return
+            if (!sleep(period)) return
             if (!running.get()) return
             // 已经有能连的设备就不再反复扫网段：没必要刷交换机。
-            if (_peers.value.any { it.connectable }) continue
+            if (_peers.value.any { it.connectable }) {
+                period = SCAN_PERIOD_MS
+                continue
+            }
+            // 一直找不到设备时逐轮拉长周期（20s→40→80→160→300s 封顶）。
+            // 以前是固定 20 秒一次全 /24 TCP 扫描（254 条连接）：电脑没开机、
+            // 熄屏、网络被限的时候等于一直在戳网络 —— 费电、扰民、还制造
+            // 大量 EPERM 日志。现在退避后包数下降一个数量级。
+            period = (period * 2).coerceAtMost(SCAN_MAX_PERIOD_MS)
             scanNow("定期")
         }
     }

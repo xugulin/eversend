@@ -115,23 +115,42 @@ class ApiClient(val base: String, token: String) {
         }
     }
 
-    /** 上传附件：字节从 content URI 直接流进 socket，不整份读进内存。 */
+    /**
+     * 上传附件：字节从 content URI 直接流进 socket，不整份读进内存。
+     *
+     * 支持断点续传（服务端 v1，见 `tests/reports/opt-1017/http-upload-resume-api.md`）：
+     * 传了 [uploadId] 就走续传协议（带 `X-EverSend-Total`，body 从 [offset] 起）；
+     * 不传就是原来的旧一次性上传（行为完全不变）。
+     *
+     * **[length] 始终是文件总字节**，body 长度 = length - offset。
+     * 返回服务端 JSON；202/409 也正常返回（调用方按 `offset` 续），其它非 2xx 抛异常。
+     * [onProgress] 的参数是"整份文件已发出多少字节"（= offset + 本次已发）。
+     */
     fun upload(
         path: String,
         stream: InputStream,
         length: Long,
         mime: String,
+        uploadId: String = "",
+        offset: Long = 0L,
+        total: Long = -1L,
         onProgress: (Long) -> Unit = {},
     ): JSONObject {
         val conn = open(path)
         conn.requestMethod = "POST"
         conn.doOutput = true
-        conn.setFixedLengthStreamingMode(length)
+        val bodyLength = (length - offset).coerceAtLeast(0L)
+        conn.setFixedLengthStreamingMode(bodyLength)
         conn.setRequestProperty("Content-Type", mime.ifBlank { "application/octet-stream" })
+        if (uploadId.isNotBlank()) {
+            // 续传协议要求带总大小：服务端靠它判断"收满没有"以及 409 的偏移。
+            conn.setRequestProperty("X-EverSend-Total", (if (total > 0) total else length).toString())
+        }
         try {
+            if (offset > 0L) skipFully(stream, offset)
             conn.outputStream.use { out ->
                 val buffer = ByteArray(64 * 1024)
-                var sent = 0L
+                var sent = offset
                 while (true) {
                     val read = stream.read(buffer)
                     if (read <= 0) break
@@ -141,9 +160,18 @@ class ApiClient(val base: String, token: String) {
                 }
             }
             val code = conn.responseCode
-            val body = if (code in 200..299) conn.inputStream else conn.errorStream
+            val body = if (code in 200..299 || code == 409) conn.inputStream else conn.errorStream
             val text = body?.reader(Charsets.UTF_8)?.readText().orEmpty()
             val json = if (text.isBlank()) JSONObject() else JSONObject(text)
+            // 202 = 收了一部分（`complete=false` + `offset`）；409 = 偏移不匹配
+            // （同样带 `offset`）。这两种都交给调用方按服务端给的 offset 续传。
+            if (code == 202 || code == 409) {
+                val serverOffset = json.optLong("offset", -1L)
+                if (serverOffset > 0L) {
+                    Log.d(TAG, "上传未完成/偏移不符（HTTP $code）：服务端已有 $serverOffset 字节")
+                }
+                return json
+            }
             // **非 2xx 必须抛**：以前这里不检查状态码 —— 服务端回 400/404/500 时它照样
             // 读 errorStream、解析出 JSON 返回，调用方以为成功、界面写「已发给 N 台
             // 设备」，而电脑那边一个字节都没收到（真机上可复现）。
@@ -158,10 +186,66 @@ class ApiClient(val base: String, token: String) {
         }
     }
 
-    fun download(path: String, sink: java.io.OutputStream, onProgress: (Long) -> Unit = {}): Long {
+    /** 断点续传前问服务端这个 uploadId 已有多少字节；失败返回 -1（调用方保留本地值）。 */
+    fun uploadStatus(uploadId: String): Long {
+        val conn = open("/api/upload/status?uploadId=" + java.net.URLEncoder.encode(uploadId, "UTF-8"))
+        try {
+            val text = conn.inputStream.reader(Charsets.UTF_8).readText()
+            if (text.isBlank()) return -1L
+            val json = JSONObject(text)
+            return if (json.optBoolean("ok", false)) json.optLong("offset", -1L) else -1L
+        } catch (problem: Exception) {
+            return -1L
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun skipFully(stream: InputStream, count: Long) {
+        var left = count
+        while (left > 0) {
+            val skipped = stream.skip(left)
+            if (skipped > 0) {
+                left -= skipped
+                continue
+            }
+            // skip() 返回 0 不一定是 EOF（网络/ContentProvider 流很常见）：读一个字节探一下。
+            if (stream.read() < 0) throw java.io.IOException("文件比预期短：想从第 $count 字节续传，但它没这么长")
+            left -= 1
+        }
+    }
+
+    /**
+     * 下载到 [sink]。[offset] > 0 时用 HTTP Range 续传
+     * （电脑端 `/api/share`、`/api/chat/media`、`/api/download` 都支持单段 Range 并回 206）。
+     *
+     * 返回"这条文件一共取到多少字节"（续传时 = offset + 本次收到）。
+     * 读超时/连接被系统掐断会抛 IOException，由调用方按 [offset] 续传重试。
+     */
+    fun download(
+        path: String,
+        sink: java.io.OutputStream,
+        offset: Long = 0L,
+        onProgress: (Long) -> Unit = {},
+    ): Long {
         val conn = open(path)
         try {
-            var total = 0L
+            if (offset > 0L) conn.setRequestProperty("Range", "bytes=$offset-")
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                val why = try {
+                    conn.errorStream?.reader(Charsets.UTF_8)?.readText().orEmpty()
+                } catch (ignored: Exception) {
+                    ""
+                }
+                throw java.io.IOException("HTTP $code${if (why.isBlank()) "" else "：$why"}")
+            }
+            if (offset > 0L && code != 206) {
+                // 服务端没理 Range（或文件变了）：不能再往半截文件后面追加，
+                // 抛一个能识别的错误让调用方从头下。
+                throw java.io.IOException("服务端不支持续传（期望 206，实际 $code）")
+            }
+            var total = offset
             conn.inputStream.use { input ->
                 val buffer = ByteArray(64 * 1024)
                 while (true) {
@@ -240,14 +324,25 @@ class ApiClient(val base: String, token: String) {
     fun events(onEvent: (JSONObject) -> Unit, isRunning: () -> Boolean) {
         val conn = open("/api/events")
         conn.setRequestProperty("Accept", "text/event-stream")
-        conn.readTimeout = 0
+        // 电脑端每 SSE_HEARTBEAT=15 秒发一条 ": ping" 注释保活，所以 90 秒一行都
+        // 没收到 = 这条 TCP 已经半死（切 Wi-Fi、路由器掉 NAT 表但没回 RST）。
+        // 以前 readTimeout=0（永不超时）：readLine() 永远阻塞，LinkService 的重连
+        // 和心跳根本轮不到执行 —— 界面一直显示"已连接"，事件永远不来。
+        conn.readTimeout = 90_000
         try {
             val reader = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8))
             val data = StringBuilder()
+            var idleTimeouts = 0
             while (isRunning()) {
                 val line = try {
-                    reader.readLine()
+                    val next = reader.readLine()
+                    idleTimeouts = 0
+                    next
                 } catch (timeout: SocketTimeoutException) {
+                    // 连续两次（180 秒）没心跳：认定连接已死，抛出去让上层重连。
+                    if (++idleTimeouts >= 2) {
+                        throw java.io.IOException("事件流 180 秒没有任何数据，重建连接")
+                    }
                     continue
                 } ?: break
                 if (line.isEmpty()) {
@@ -560,8 +655,12 @@ class ApiClient(val base: String, token: String) {
             }
             val addresses = candidates.mapNotNull { it.hostAddress }.toSet()
             val probed = java.util.concurrent.atomic.AtomicInteger(0)
+            // 串行先探过的地址记下来：下面的并发池必须跳过它们，否则同一台会被探两遍，
+            // 日志就会出现"探了 266/254 台"这种自相矛盾的数字（真机日志实测到过）。
+            val earlyProbed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
             for (host in preferred.take(12)) {
                 if (host !in addresses) continue
+                earlyProbed.add(host)
                 probed.incrementAndGet()
                 val match = probeWeb(host, webPort, connectTimeoutMs = 500)
                 if (match != null) {
@@ -585,6 +684,8 @@ class ApiClient(val base: String, token: String) {
                     pool.execute {
                         if (found.size >= 4) return@execute
                         val host = address.hostAddress ?: return@execute
+                        // 优先名单里串行探过的跳过：别让同一台主机被探两遍（266/254 的根因）。
+                        if (host in earlyProbed) return@execute
                         probed.incrementAndGet()
                         val match = probeWeb(host, webPort)
                         if (match != null) found["$host:$webPort"] = match

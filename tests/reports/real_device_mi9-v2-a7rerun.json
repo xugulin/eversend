@@ -1,0 +1,116 @@
+{
+  "label": "mi9-v2-a7rerun",
+  "when": "2026-10-17 23:34:21",
+  "repo": {
+    "when": "2026-10-17 23:34:21",
+    "loadavg": [
+      18.03,
+      16.4,
+      15.03
+    ],
+    "cpu_count": 16,
+    "head": "e18c079",
+    "dirty_count": 34,
+    "dirty": [
+      "android/app/src/main/AndroidManifest.xml",
+      "android/app/src/main/java/cn/eversend/app/ApiClient.kt",
+      "android/app/src/main/java/cn/eversend/app/Discovery.kt",
+      "android/app/src/main/java/cn/eversend/app/Fetch.kt",
+      "android/app/src/main/java/cn/eversend/app/LinkService.kt",
+      "android/app/src/main/java/cn/eversend/app/MainActivity.kt",
+      "docs/PROTOCOL.md",
+      "src/eversend/core/chunkstore.py",
+      "src/eversend/core/connection.py",
+      "src/eversend/core/crypto.py",
+      "src/eversend/core/model.py",
+      "src/eversend/core/sockutil.py",
+      "src/eversend/core/transfer.py",
+      "src/eversend/desktop/main_window.py",
+      "src/eversend/desktop/transfers_view.py",
+      "src/eversend/web/assets/app.js",
+      "src/eversend/web/server.py",
+      "tests/reports/opt-1017/",
+      "tests/reports/real_device_1017-2223.json",
+      "tests/reports/real_device_1017-2223.md",
+      "tests/reports/real_device_mi9-clean1.json",
+      "tests/reports/real_device_mi9-clean1.md",
+      "tests/reports/real_device_mi9-clean2.json",
+      "tests/reports/real_device_mi9-clean2.md",
+      "tests/reports/real_device_mi9-v2.json",
+      "tests/reports/real_device_mi9-v2.md",
+      "tests/reports/real_device_probe-before-oldapk.json",
+      "tests/reports/real_device_probe-before-oldapk.md",
+      "tests/screenshots/conversation-list.png",
+      "tests/test_http_resume.py",
+      "tests/test_real_device.py",
+      "tools/acceptance_opt1017.py",
+      "tools/bench_transfer.py",
+      "tools/realdevice_probe.py"
+    ],
+    "mtimes": {
+      "android/app/src/main/AndroidManifest.xml": 1792248775.8,
+      "android/app/src/main/java/cn/eversend/app/ApiClient.kt": 1792250666.0,
+      "android/app/src/main/java/cn/eversend/app/Discovery.kt": 1792250666.6,
+      "android/app/src/main/java/cn/eversend/app/Fetch.kt": 1792250746.2,
+      "android/app/src/main/java/cn/eversend/app/LinkService.kt": 1792248685.5,
+      "android/app/src/main/java/cn/eversend/app/MainActivity.kt": 1792251092.8,
+      "docs/PROTOCOL.md": 1792250467.7,
+      "src/eversend/core/chunkstore.py": 1792249739.9,
+      "src/eversend/core/connection.py": 1792251256.1,
+      "src/eversend/core/crypto.py": 1792250344.3,
+      "src/eversend/core/model.py": 1792250571.9,
+      "src/eversend/core/sockutil.py": 1792251256.1,
+      "src/eversend/core/transfer.py": 1792250244.4,
+      "src/eversend/desktop/main_window.py": 1792251096.8,
+      "src/eversend/desktop/transfers_view.py": 1792251255.5,
+      "src/eversend/web/assets/app.js": 1792250580.8,
+      "src/eversend/web/server.py": 1792248757.4,
+      "tests/reports/real_device_1017-2223.json": 1792246984.0,
+      "tests/reports/real_device_1017-2223.md": 1792246984.0,
+      "tests/reports/real_device_mi9-clean1.json": 1792247248.9,
+      "tests/reports/real_device_mi9-clean1.md": 1792247248.9,
+      "tests/reports/real_device_mi9-clean2.json": 1792247505.6,
+      "tests/reports/real_device_mi9-clean2.md": 1792247505.6,
+      "tests/reports/real_device_mi9-v2.json": 1792250755.9,
+      "tests/reports/real_device_mi9-v2.md": 1792250755.9,
+      "tests/reports/real_device_probe-before-oldapk.json": 1792249186.9,
+      "tests/reports/real_device_probe-before-oldapk.md": 1792249186.9,
+      "tests/screenshots/conversation-list.png": 1792250373.5,
+      "tests/test_http_resume.py": 1792248766.9,
+      "tests/test_real_device.py": 1792251101.3,
+      "tools/acceptance_opt1017.py": 1792250260.3,
+      "tools/bench_transfer.py": 1792251116.1,
+      "tools/realdevice_probe.py": 1792249092.0
+    },
+    "note": "仓库处于写入中"
+  },
+  "adb_serial": "2430d3c",
+  "phone_online": true,
+  "summary": {
+    "A7": "FAIL"
+  },
+  "results": [
+    {
+      "id": "A7",
+      "title": "手机发文件给电脑 → 电脑接收目录 + sha256",
+      "status": "FAIL",
+      "error": "",
+      "subs": [
+        {
+          "name": "A7 电脑端已就绪",
+          "ok": false,
+          "expected": "通过",
+          "actual": "start_pc() 没成功",
+          "note": ""
+        },
+        {
+          "name": "~耗时",
+          "ok": true,
+          "expected": "",
+          "actual": "0.0s",
+          "note": ""
+        }
+      ]
+    }
+  ]
+}

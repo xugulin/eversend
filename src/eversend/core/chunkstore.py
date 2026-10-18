@@ -76,6 +76,18 @@ JOURNAL_FLUSH_INTERVAL = 1.0
 #: How often the journal is fsync'd by default (seconds).
 JOURNAL_SYNC_INTERVAL = 10.0
 
+#: How often the background syncer wakes up to check whether a sync is due.
+#: The actual fsync cadence is governed by the two intervals above; this only
+#: decides how promptly the syncer notices.  0.25 s keeps the worst-case lag
+#: well below JOURNAL_FLUSH_INTERVAL without busy-waiting.
+SYNC_POLL_INTERVAL = 0.25
+
+#: Part files smaller than this do not start a background syncer thread: a
+#: short transfer finishes long before the first periodic sync is due, so the
+#: mandatory flush at finalize already covers it.  Avoiding one thread (create
+#: + join) per tiny file keeps directory transfers cheap.
+SYNCER_MIN_BYTES = 4 * 1024 * 1024
+
 #: How deep :meth:`ResumeIndex.sweep` looks below a registered folder for
 #: ``.part``/``.journal`` leftovers.  Received files keep the sender's layout,
 #: and a chat attachment is two levels down (``韧传聊天/<hash>/file``), so one
@@ -102,6 +114,15 @@ class PartFile:
     number of data-stream threads.  Data writes proceed in parallel (distinct
     offsets are safe with ``pwrite``); only the bitmap and the journal append
     are serialised, and neither does any bulk work.
+
+    Durability: ``fsync``/``fdatasync`` are expensive and **never run on a
+    data-stream thread**.  A background syncer thread does them at the same
+    cadence as before (journal every ``JOURNAL_FLUSH_INTERVAL``, data every
+    ``JOURNAL_SYNC_INTERVAL``), so a slow disk can no longer stall every
+    receive stream while one thread sits in ``fdatasync``.  The ordering
+    invariant is unchanged: chunk data is written before its journal record is
+    appended, and :meth:`flush` (called at finalize and on close) still does a
+    **blocking** data + journal sync so a completed file is durable.
     """
 
     __slots__ = (
@@ -123,6 +144,9 @@ class PartFile:
         "_dirty",
         "_expected_crcs",
         "_mtime_ns",
+        "_io_lock",
+        "_syncer",
+        "_sync_stop",
     )
 
     def __init__(
@@ -150,6 +174,13 @@ class PartFile:
         self._last_sync = 0.0
         self._closed = False
         self._dirty = False
+        #: Serialises the *actual* fsync/fdatasync calls between the background
+        #: syncer and :meth:`flush`, so a file descriptor is never synced and
+        #: closed concurrently.  Never held while waiting for data-stream work.
+        self._io_lock = threading.Lock()
+        #: Background fsync thread (started lazily, see :meth:`_ensure_syncer`).
+        self._syncer: threading.Thread | None = None
+        self._sync_stop: threading.Event | None = None
         #: CRC recorded per chunk, kept in memory so corruption can be
         #: localised later without re-reading the journal.
         self._expected_crcs: dict[int, int] = {}
@@ -279,7 +310,9 @@ class PartFile:
                 self._expected_crcs[index] = crc
                 os.write(self._jfd, _RECORD.pack(index, crc))
                 self._dirty = True
-            self._maybe_flush()
+        # Scheduling the durability work is deliberately done outside the lock:
+        # an fsync must never make a data-stream thread wait (T4 fix).
+        self._maybe_flush()
 
     def mark_lost(self, index: int) -> None:
         """Forget a chunk (used by the repair pass after a digest mismatch)."""
@@ -312,37 +345,134 @@ class PartFile:
 
     # -- lifecycle ---------------------------------------------------------
 
+    # -- durability --------------------------------------------------------
+
     def _maybe_flush(self, force: bool = False) -> None:
-        """Push journal records to the kernel, and to disk, periodically."""
-        now = time.monotonic()
-        if force or (self._dirty and now - self._last_flush >= JOURNAL_FLUSH_INTERVAL):
+        """Schedule durability work; never block the calling chunk writer.
+
+        Historically this method ran ``fsync``/``fdatasync`` inline on the
+        data-stream thread **while holding ``self._lock``**, which could freeze
+        every receive stream for seconds on a slow disk.  Now it only makes
+        sure the background syncer thread exists.  ``force=True`` keeps the old
+        blocking guarantee for callers (diagnostics/tests) that ask for it.
+        """
+        if force:
+            self.flush()
+            return
+        self._ensure_syncer()
+
+    def _ensure_syncer(self) -> None:
+        """Start the background fsync thread if this file is worth one."""
+        if self._size < SYNCER_MIN_BYTES or self._syncer is not None:
+            # Fast path for the per-chunk call: the unsynchronised read can
+            # only be stale while the thread is being created, and the slow
+            # path re-checks under the lock.
+            return
+        with self._lock:
+            if self._syncer is not None or self._closed:
+                return
+            stop = threading.Event()
+            thread = threading.Thread(
+                target=self._sync_loop,
+                args=(stop,),
+                name="eversend-part-sync",
+                daemon=True,
+            )
+            self._sync_stop = stop
+            self._syncer = thread
+        thread.start()
+
+    def _sync_loop(self, stop: threading.Event) -> None:
+        while not stop.wait(SYNC_POLL_INTERVAL):
+            try:
+                if not self._sync_step():
+                    return
+            except Exception:  # pragma: no cover - a syncer must never die loudly
+                pass
+
+    def _sync_step(self) -> bool:
+        """One throttled sync step.  Returns False once the store is closed."""
+        journal_due = False
+        data_due = False
+        with self._lock:
+            if self._closed:
+                return False
+            now = time.monotonic()
+            if self._dirty and now - self._last_flush >= JOURNAL_FLUSH_INTERVAL:
+                journal_due = True
+                self._last_flush = now
+                # Keep the historical cadence: a journal flush also postpones
+                # the data sync, so the two intervals do not drift together.
+                self._last_sync = now
+                self._dirty = False
+            elif self._received and now - self._last_sync >= JOURNAL_SYNC_INTERVAL:
+                data_due = True
+                self._last_sync = now
+        if not (journal_due or data_due):
+            return True
+        if journal_due:
+            self._fsync_journal()
+        if data_due:
+            self._fdatasync_data()
+        return True
+
+    def _fsync_journal(self) -> None:
+        with self._io_lock:
             try:
                 os.fsync(self._jfd)
             except OSError:
                 pass
-            self._last_flush = now
-            self._last_sync = now
-            self._dirty = False
-        elif self._dirty and now - self._last_sync >= JOURNAL_SYNC_INTERVAL:
-            self._file.sync()
-            self._last_sync = now
+
+    def _fdatasync_data(self) -> None:
+        with self._io_lock:
+            try:
+                self._file.sync()
+            except OSError:
+                pass
+
+    def _stop_syncer(self) -> None:
+        with self._lock:
+            thread = self._syncer
+            stop = self._sync_stop
+            self._syncer = None
+            self._sync_stop = None
+        if thread is None or stop is None:
+            return
+        stop.set()
+        if thread is not threading.current_thread():
+            thread.join(timeout=10.0)
 
     def flush(self) -> None:
-        """Force journal and data to stable storage."""
-        with self._lock:
-            self._file.sync()
+        """Force journal and data to stable storage (blocking).
+
+        Called at finalize and on close, i.e. exactly when the file must be
+        durable before it is renamed into place or the store is torn down.
+        The background syncer is stopped first so no fsync can race with the
+        descriptor teardown; then the file is flushed synchronously.
+        """
+        self._stop_syncer()
+        with self._io_lock:
+            try:
+                self._file.sync()
+            except OSError:
+                pass
             try:
                 os.fsync(self._jfd)
             except OSError:
                 pass
+        with self._lock:
             self._dirty = False
-            self._last_flush = time.monotonic()
-            self._last_sync = self._last_flush
+            now = time.monotonic()
+            self._last_flush = now
+            self._last_sync = now
 
     def close(self) -> None:
         if self._closed:
             return
-        self._closed = True
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
         try:
             self.flush()
         except Exception:

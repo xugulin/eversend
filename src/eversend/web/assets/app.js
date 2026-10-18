@@ -62,8 +62,11 @@
 
   // Mirrors eversend.core.model.human_bytes / human_speed / human_duration so
   // the phone and the desktop show identical numbers.
+  // Divisor is 1024 => IEC unit labels (KiB/MiB/GiB…).  Labelling 1024-based
+  // sizes as KB/MB under-reports every number by 4.6%; all three front ends
+  // (desktop Qt, this page, Android) must speak this same vocabulary.
   function fmtBytes(value) {
-    var units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    var units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
     var size = Number(value) || 0;
     for (var i = 0; i < units.length; i++) {
       if (Math.abs(size) < 1024 || i === units.length - 1) {
@@ -71,7 +74,7 @@
       }
       size /= 1024;
     }
-    return size.toFixed(2) + ' PB';
+    return size.toFixed(2) + ' PiB';
   }
 
   function fmtSpeed(bps) { return fmtBytes(bps) + '/s'; }

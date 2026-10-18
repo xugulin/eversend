@@ -336,6 +336,14 @@ class UiState {
     var fetches by mutableStateOf<List<FetchTask>>(emptyList())
     /** 自动下载开关（设置页可关；默认开）。 */
     var autoFetch by mutableStateOf(true)
+
+    /**
+     * 前台保活服务当前用哪个地址（"" = 没起来）。
+     *
+     * 用它做幂等：只有地址变了才重新 startForegroundService —— 重复调用虽然
+     * 幂等，但每 3 秒发一次 binder 调用没必要。
+     */
+    var linkHost by mutableStateOf("")
 }
 
 // ------------------------------------------------------------------ 根布局
@@ -381,6 +389,36 @@ fun Root(store: AppState) {
     LaunchedEffect(fetcher) {
         ui.autoFetch = fetcher.autoFetch
         fetcher.tasks.collect { tasks -> ui.fetches = tasks }
+    }
+
+    // 前台保活服务：**App 一启动就把服务拉起来**（keepAlive 默认开），而且
+    // **不等 host 非空**：新装/换网/电脑还没出现时 host 可能是空的，而这正是最
+    // 需要保活的时候（发现引擎要持续公告+组播监听；掉到 cached 会被系统掐网、
+    // 销毁 socket）。地址为空时服务先跑发现，连上后这个循环会把地址补进去。
+    //
+    // 以前这段只在「设置」页的 LaunchedEffect 里 —— 用户不点进设置页，就从来
+    // 没有前台服务；App 一旦掉到后台（切文件选择器、熄屏），系统把进程
+    // importance 降成 CACHED(400)，紧接着：
+    //   · `InetDiagMessage: Destroyed live tcp sockets for uids={10292}`
+    //     （100MB 下载到 73MiB 被切走 → "Software caused connection abort"）；
+    //   · 发现通道 udp sendto 全部 EPERM（日志刷屏）。
+    // 真机（MI9/crDroid 16）实测：回到前台 importance=100 立刻恢复。
+    LaunchedEffect(Unit) {
+        while (true) {
+            val host = normalizeHost(store.host)
+            // "<未连接>" 也是合法的"已启动"状态：服务已经在跑，只差地址。
+            val wantedKey = if (store.keepAlive) host.ifBlank { "<未连接>" } else ""
+            if (wantedKey.isNotEmpty() && ui.linkHost != wantedKey) {
+                startLinkService(context, store, true)
+                ui.linkHost = wantedKey
+                Log.d("EverSend", "保活服务启动（host=${host.ifBlank { "待发现" }}）")
+            } else if (wantedKey.isEmpty() && ui.linkHost.isNotEmpty()) {
+                startLinkService(context, store, false)
+                ui.linkHost = ""
+                Log.d("EverSend", "保活服务停止（keepAlive=false）")
+            }
+            delay(3000)
+        }
     }
 
     // 待重发队列的泵：1s/2s/4s/8s/16s 退避、最多 5 次；到点自动再投一次。
@@ -515,7 +553,40 @@ fun Root(store: AppState) {
                                 } catch (problem: Exception) {
                                     val why = problem.message ?: problem.javaClass.simpleName
                                     android.util.Log.w("EverSend", "发送失败（准备换令牌）: $why")
-                                    if (why.contains("令牌") && api.refreshToken()) {
+                                    // **refreshToken() 会发 HTTP 请求，必须在 IO 线程**。
+                                    // 以前这里裸调（deliver() 跑在主调度器上），真机日志：
+                                    //   "refreshToken 失败: NetworkOnMainThreadException: null"
+                                    // —— 所以"令牌过期→换一张→自动重发"这条恢复路径从来没生效过，
+                                    // 用户看到的就是发不出去（A7 真机用例 FAIL 的直接原因）。
+                                    // 令牌过期的表现**不只一种**：电脑端重启后地址不变，
+                                    // 服务端 CSRF 门禁在**读 body 之前**就 403 并关连接——
+                                    // 客户端正在流式写 body，看到的是 `Broken pipe` /
+                                    // `Connection reset`，而不是含「令牌」的错误 JSON
+                                    // （真机 P0：6 次重试全是 Broken pipe，自动恢复没触发）。
+                                    val whyLower = why.lowercase()
+                                    val tokenish = why.contains("令牌") ||
+                                        whyLower.contains("broken pipe") ||
+                                        whyLower.contains("connection reset") ||
+                                        whyLower.contains("socketexception") ||
+                                        whyLower.contains("unexpected end of stream")
+                                    val refreshed = if (tokenish) {
+                                        withContext(Dispatchers.IO) {
+                                            try {
+                                                api.refreshToken()
+                                            } catch (failure: Throwable) {
+                                                android.util.Log.w(
+                                                    "EverSend",
+                                                    "换令牌失败: ${failure.javaClass.simpleName}: ${failure.message}",
+                                                )
+                                                false
+                                            }
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                    if (refreshed) {
+                                        // 换到新令牌后原样重试一次；还失败就抛给外层，
+                                        // 外层会写出"回设备列表重新点一下"这类可执行的话。
                                         withContext(Dispatchers.IO) {
                                             uploadToDevice(
                                                 context, api, picked.uri,
@@ -1617,9 +1688,8 @@ private fun ChatPane(
                     ) {
                         Column(Modifier.padding(12.dp)) {
                             Text(
-                                (if (isGroup) "👥 " else "") + conversation.displayTitle.ifBlank {
-                                    conversation.title.ifBlank { conversation.id.take(12) }
-                                },
+                                (if (isGroup) "👥 " else "") +
+                                    readableTitle(conversation.displayTitle.ifBlank { conversation.title }, ui.members),
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 14.sp,
                             )
@@ -1663,9 +1733,8 @@ private fun ChatPane(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                (if (current.id.startsWith("g:")) "👥 " else "") + current.displayTitle.ifBlank {
-                    current.title.ifBlank { "会话" }
-                },
+                (if (current.id.startsWith("g:")) "👥 " else "") +
+                    readableTitle(current.displayTitle.ifBlank { current.title }, ui.members),
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 15.sp,
                 modifier = Modifier.testTag("chat-title"),
@@ -1747,6 +1816,8 @@ private fun ChatPane(
                         // 下载中的那些文件也当成"接收中的传输"喂进去：气泡上的
                         // 「接收中 42% + 进度条」于是对手机自己的下载同样成立。
                         transfers = ui.transfers + fetchTransfers(ui.fetches),
+                        // 本机下载的真实进度/速度/完成态（电脑发给手机的文件只有这里有）。
+                        fetches = ui.fetches,
                         target = entry.target,
                         actions = !entry.transferNote,
                         onStatus = { ui.status = it },
@@ -2779,8 +2850,13 @@ private fun SharesSummaryCard(
         ui.fetches.firstOrNull { it.shareId == share.optString("id") }
     }
     val totalSize = pending.sumOf { it.optLong("size") }
-    val got = tasks.sumOf { it.got }
-    val running = tasks.any { it.active }
+    // "在跑"不能只看"已匹配到的 tasks"：真机探针抓到过下载到 41.8% 时这张卡片
+    // 还写「正在排队」—— 那一刻 tasks 匹配为空（分享 id 与本地 fetch 记录短暂对不上），
+    // 但全局确实有下载在跑。所以两个来源都看（PG-3）。
+    val activeFetches = ui.fetches.filter { it.active }
+    val running = tasks.any { it.active } || activeFetches.isNotEmpty()
+    val runningTask = tasks.firstOrNull { it.active } ?: activeFetches.firstOrNull()
+    val got = if (runningTask != null) runningTask.got else tasks.sumOf { it.got }
     val failed = tasks.filter { it.state == FetchState.Failed && it.error != "已取消" }
     val done = tasks.count { it.state == FetchState.Done }
 
@@ -2790,13 +2866,20 @@ private fun SharesSummaryCard(
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
-                "📥 电脑发来 ${pending.size} 个文件 · 点击下载",
+                if (running) "📥 正在接收电脑发来的文件…" else "📥 电脑发来 ${pending.size} 个文件 · 点击下载",
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 13.sp,
             )
             Text(
                 when {
-                    running -> "正在接收 $done/${pending.size} · ${fmtSize(got)} / ${fmtSize(totalSize)}"
+                    // 进度那句话里带百分比 / 已收/总大小 / 速度 / ETA（PG-2/PG-3 的判据）：
+                    // 数据来源是本地 FetchTask（每 400ms 更新），不是服务端 transfers
+                    // —— 手机自己下载的字节只有本机知道。
+                    running -> {
+                        val task = runningTask
+                        if (task != null) "正在接收 · ${task.progressText}"
+                        else "正在接收 $done/${pending.size} · ${fmtSize(got)} / ${fmtSize(totalSize)}"
+                    }
                     done == pending.size -> "全部接收完成（在系统「下载」里）"
                     failed.isNotEmpty() -> "${failed.size} 个下载失败，下面可以重试"
                     metered -> "当前是移动网络，自动下载已暂停（省流量）——点右边按钮用流量下"
@@ -3765,6 +3848,11 @@ fun Bubble(
     onError: (String) -> Unit = {},
     /** 正在跑的传输（`/api/state` 的 transfers）：进度长在这条消息下面。 */
     transfers: List<JSONObject> = emptyList(),
+    /**
+     * 本机下载队列（[FetchManager]）。电脑"交给手机"的文件走的是手机自己拉取，
+     * 在服务端**没有**对应 transfer —— 进度/速度/完成状态只能从这里拿（PG-1/PG-2）。
+     */
+    fetches: List<FetchTask> = emptyList(),
     /** 「传输文件」那条记录带过来的那份文件；普通消息按消息 id 取。 */
     target: FileTarget? = null,
     /** 附件气泡上要不要画「预览/保存」那行按钮（传输记录那条不用，长按即可）。 */
@@ -3789,6 +3877,15 @@ fun Bubble(
     val hasMedia = message.kind != "text" && message.kind != "system"
     // 这份文件在哪儿：普通附件按消息 id 取，传输记录那份由调用方给（可能是本机原件）。
     val file = target ?: fileTargetOf(message)
+    // 这份文件在本机的下载状态：按"分享条目 id"或"文件名"对上 FetchTask。
+    // 电脑发给手机的文件在服务端不是 transfer，进度/速度/ETA/完成态都只能从这拿。
+    val shareId = (target?.key.orEmpty()).removePrefix("share-")
+    val fetch = fetches.firstOrNull {
+        (shareId.isNotBlank() && it.shareId == shareId) ||
+            (message.mediaName.isNotBlank() && it.name == message.mediaName)
+    }
+    val fetchRunning = fetch?.active == true
+    val fetchDone = fetch?.state == FetchState.Done
 
     DisposableEffect(message.id) {
         onDispose {
@@ -3887,9 +3984,16 @@ fun Bubble(
                     }
                 }
                 else -> MediaCard(
-                    icon = "📄",
+                    icon = if (fetchDone) "✅" else "📄",
                     title = message.mediaName.ifBlank { "文件" },
-                    detail = fmtSize(message.mediaSize) + " · 点击保存到手机",
+                    // 详情不能是死文案：下载中显示 百分比+已收/总+速度+ETA（PG-2），
+                    // 保存完写"已保存到手机"而不是继续骗用户点保存（PG-1）。
+                    detail = when {
+                        fetchRunning && fetch != null -> fetch.progressText
+                        fetchDone -> fmtSize(message.mediaSize) + " · 已保存到手机"
+                        message.state == "failed" -> "接收失败"
+                        else -> fmtSize(message.mediaSize) + " · 点击保存到手机"
+                    },
                     tag = "file-card",
                     onLongClick = { if (file != null) menu = true },
                 ) {
@@ -3975,11 +4079,13 @@ fun Bubble(
                                 .testTag("preview-open"),
                         )
                         Text(
-                            "保存",
+                            if (fetchDone) "已保存" else "保存",
                             fontSize = 12.sp,
-                            color = Es.Accent,
+                            color = if (fetchDone) Es.Ok else Es.Accent,
                             modifier = Modifier
-                                .clickable {
+                                // 已保存就不给"保存"入口（PG-1：完成 3.7s 后仍写「点击保存到手机」
+                                // 是误导，用户会以为没存下来）。
+                                .clickable(enabled = !fetchDone) {
                                     val active = client
                                     if (active == null) {
                                         onError("还没有连上电脑")
@@ -4014,7 +4120,19 @@ fun Bubble(
             // 传输的状态/进度就长在这条消息下面（和传输表里那一行是同一份记录）。
             if (hasMedia) {
                 val live = liveTransferOf(transfers, message.mediaName, outgoing)
-                if (live != null) {
+                if (live == null && fetchRunning && fetch != null) {
+                    // 电脑发给手机的文件：本机下载进度（百分比+已收/总+速度+ETA）。
+                    Text(
+                        fetch.progressText,
+                        fontSize = 10.sp,
+                        color = Es.Accent,
+                        modifier = Modifier.testTag("transfer-live"),
+                    )
+                    LinearProgressIndicator(
+                        progress = { fetch.percent.coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().height(4.dp).padding(top = 2.dp),
+                    )
+                } else if (live != null) {
                     Text(
                         live.label,
                         fontSize = 10.sp,
@@ -4028,7 +4146,9 @@ fun Bubble(
                         )
                     }
                 } else {
-                    val label = messageStateLabel(message)
+                    // 本机已下载完成就写「已保存到手机」——不能只依赖服务端消息状态
+                    // （PG-1：完成 3.7s 后仍显示「接收中…」）。
+                    val label = if (fetchDone) "已保存到手机" else messageStateLabel(message)
                     if (label.isNotBlank()) {
                         Text(
                             label,
@@ -6790,12 +6910,15 @@ fun fmtEta(seconds: Double): String = when {
 
 /** 启动/停止前台保活服务。幂等：重复调用只是把地址刷新一下。 */
 fun startLinkService(context: android.content.Context, store: AppState, enabled: Boolean) {
-    val intent = LinkService().startIntent(context, "http://${normalizeHost(store.host)}/")
     if (!enabled) {
         context.stopService(Intent(context, LinkService::class.java))
         return
     }
-    if (normalizeHost(store.host).isBlank()) return
+    val host = normalizeHost(store.host)
+    // **host 可以为空**：新装/换网/电脑还没出现时先启动服务跑发现与组播监听，
+    // 连上电脑之后调用方会再调一次把地址补进来。以前这里空 host 直接 return，
+    // 于是"没连上过电脑"的设备永远没有前台服务，一掉后台就被系统掐网。
+    val intent = LinkService().startIntent(context, if (host.isBlank()) "" else "http://$host/")
     try {
         ContextCompat.startForegroundService(context, intent)
     } catch (problem: Exception) {
@@ -6965,7 +7088,10 @@ fun clock(seconds: Double): String {
 /** 人类可读的大小，气泡里那行说明用。 */
 fun fmtSize(bytes: Long): String {
     if (bytes <= 0) return ""
-    val units = listOf("B", "KB", "MB", "GB")
+    // 1024 进制 + IEC 单位标签（KiB/MiB/GiB）：原来标成 KB/MB/GB，512 MiB 会显示成
+    // "512.0 MB"，按 SI 差 -4.6%。三端（桌面 model.py / 网页 app.js / 手机）统一为
+    // 1024 进制 + IEC 标签（PG-6，与 gui-desktop 对齐）。
+    val units = listOf("B", "KiB", "MiB", "GiB", "TiB")
     var value = bytes.toDouble()
     var unit = 0
     while (value >= 1024 && unit < units.size - 1) {
@@ -7084,11 +7210,15 @@ fun cleanupPendingDownloads(context: android.content.Context): Int {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return 0
     val resolver = context.contentResolver
     var removed = 0
+    // 只清"陈旧"的 pending 行（>5 分钟）：正在下载的那条 pending 行是新鲜的，
+    // 不能被并发清理误删（A6.3 真机残留的根因就是活跑期间没人清）。
+    val cutoff = System.currentTimeMillis() / 1000 - 300
     try {
         resolver.query(
             android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
             arrayOf(android.provider.MediaStore.Downloads._ID),
-            android.provider.MediaStore.Downloads.IS_PENDING + " = 1",
+            android.provider.MediaStore.Downloads.IS_PENDING + " = 1" +
+                " AND " + android.provider.MediaStore.Downloads.DATE_ADDED + " < " + cutoff,
             null,
             null,
         )?.use { cursor ->
@@ -7106,6 +7236,20 @@ fun cleanupPendingDownloads(context: android.content.Context): Int {
         }
     } catch (problem: Exception) {
         Log.d("EverSend", "清理 pending 残留失败: ${problem.message}")
+    }
+    // MediaStore 行删掉后磁盘文件通常也没了；但真机抓到过**没有对应行**的 0 字节
+    // `.pending-*` 文件（进程在 insert 与写盘之间被杀）——按文件名再扫一遍兜底。
+    try {
+        val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        dir?.listFiles()?.forEach { file ->
+            if (file.name.startsWith(".pending-") &&
+                System.currentTimeMillis() - file.lastModified() > 5 * 60_000L
+            ) {
+                if (file.delete()) removed++
+            }
+        }
+    } catch (problem: Exception) {
+        Log.d("EverSend", "清理 pending 文件失败: ${problem.message}")
     }
     return removed
 }
@@ -7138,6 +7282,36 @@ private class CountingOutputStream(private val delegate: java.io.OutputStream) :
  * 电脑端交给那台手机的页面去下载 —— 手机之间没法直连，这是 App 作为
  * "电脑的客户端"唯一能走通的路。`pin` 是对方设了 PIN 时的口令（可空）。
  */
+private const val MAX_UPLOAD_ATTEMPTS = 6
+
+/**
+ * "上传 0 字节就失败"且异常长这样 → 很可能是令牌过期。
+ *
+ * 电脑端重启后地址不变、令牌已换：服务端 CSRF 门禁在**读 body 之前**就 403
+ * 并关闭连接；客户端这时正流式写 body，只能收到 `Broken pipe` / `Connection
+ * reset` / `unexpected end of stream`，错误文案里根本没有"令牌"两个字。
+ * （真机 P0：电脑重启后手机发 25MB 文件 6 次重试全 Broken pipe。）
+ */
+private fun looksLikeTokenFailure(problem: Exception): Boolean {
+    val text = ((problem.message ?: "") + " " + problem.javaClass.simpleName).lowercase()
+    return text.contains("令牌") ||
+        text.contains("broken pipe") ||
+        text.contains("connection reset") ||
+        text.contains("unexpected end of stream") ||
+        text.contains("socketexception") ||
+        problem is java.net.SocketException
+}
+
+/**
+ * 把一份文件发给一台设备。
+ *
+ * 优先走 **断点续传**（服务端 `caps.uploadResume=true` 时；接口见
+ * `tests/reports/opt-1017/http-upload-resume-api.md`）：
+ *   · 客户端生成 32 位 hex `uploadId`，同一份文件的重试链复用它；
+ *   · `have` 永远以服务端回报的 offset 为准（202/409/status），不要信本地计数；
+ *   · 每段用 setFixedLengthStreamingMode，流式发送，不整份读进内存。
+ * 旧服务端（没有 caps.uploadResume）退回原来的"一次性 POST"，行为完全不变。
+ */
 suspend fun uploadToDevice(
     context: android.content.Context,
     api: ApiClient,
@@ -7149,15 +7323,99 @@ suspend fun uploadToDevice(
 ) {
     val name = info.first
     val size = info.second
-    val query = "/api/upload?name=${encodeUrl(name)}" +
+    val baseQuery = "/api/upload?name=${encodeUrl(name)}" +
         "&deviceId=${encodeUrl(device.id)}" +
         if (pin.isBlank()) "" else "&pin=${encodeUrl(pin)}"
-    // 读不到就**抛**，不许静默跳过：以前这里是 ``openInputStream(uri)?.use { … }``，
-    // 系统没给读权限（URI 过期、被回收）时它什么都不做也不报错 —— 循环照常往下走，
-    // 最后界面上写「已发给 N 台设备」，而电脑那边一个字节都没收到（真机实测到过）。
-    val stream = context.contentResolver.openInputStream(uri)
-        ?: throw IllegalStateException("读不到这个文件（系统没给读权限或它已被移走），请重新选一次")
-    stream.use { api.upload(query, it, size, "application/octet-stream") }
+    val resolver = context.contentResolver
+
+    // **上传链开始前先换一张令牌**（真机 P0）：电脑端每次重启都换令牌、地址不变；
+    // 拿旧令牌上传时服务端在**读 body 之前**就 403+关连接，客户端流式写 body 只能
+    // 看到 "Broken pipe" —— 错误文案里没有"令牌"，自动恢复链判断不到。
+    // 这里先无条件换一次（一次 GET，几十毫秒），彻底绕开这个盲区。
+    try {
+        withContext(Dispatchers.IO) { api.refreshToken() }
+    } catch (ignored: Exception) {
+    }
+
+    // 先问服务端能力：旧服务端没有 caps 就退回一次性上传（不然旧服务端会把
+    // 带 offset 的 body 当成整个文件，落一个不完整文件 —— 兼容矩阵里写明了）。
+    val caps = try {
+        withContext(Dispatchers.IO) { api.getJson("/api/state").optJSONObject("caps") }
+    } catch (problem: Exception) {
+        null
+    }
+    val canResume = caps?.optBoolean("uploadResume", false) == true && size > 0
+    if (!canResume) {
+        // 读不到就**抛**，不许静默跳过：以前这里是 ``openInputStream(uri)?.use { … }``，
+        // 系统没给读权限（URI 过期、被回收）时它什么都不做也不报错 —— 循环照常往下走，
+        // 最后界面上写「已发给 N 台设备」，而电脑那边一个字节都没收到（真机实测到过）。
+        val stream = resolver.openInputStream(uri)
+            ?: throw IllegalStateException("读不到这个文件（系统没给读权限或它已被移走），请重新选一次")
+        stream.use { api.upload(baseQuery, it, size, "application/octet-stream") }
+        return
+    }
+    val maxBytes = caps?.optLong("uploadMaxBytes", 0L) ?: 0L
+    if (maxBytes > 0 && size > maxBytes) {
+        throw IllegalStateException("文件太大：服务端最多接 ${maxBytes / (1024 * 1024)} MiB")
+    }
+
+    val uploadId = java.util.UUID.randomUUID().toString().replace("-", "")
+    var have = 0L
+    var attempt = 0
+    var lastProblem: Exception? = null
+    while (have < size && attempt < MAX_UPLOAD_ATTEMPTS) {
+        attempt++
+        try {
+            val result = withContext(Dispatchers.IO) {
+                val stream = resolver.openInputStream(uri)
+                    ?: throw IllegalStateException(
+                        "读不到这个文件（系统没给读权限或它已被移走），请重新选一次",
+                    )
+                stream.use { src ->
+                    api.upload(
+                        path = "$baseQuery&uploadId=$uploadId&offset=$have",
+                        stream = src,
+                        length = size,
+                        mime = "application/octet-stream",
+                        uploadId = uploadId,
+                        offset = have,
+                        total = size,
+                    )
+                }
+            }
+            if (result.optBoolean("complete", false)) return
+            // 202：服务端收了一部分；409：它有的比我们记的多。都跟它走。
+            val serverOffset = result.optLong("offset", -1L)
+            if (serverOffset > have) have = serverOffset
+            lastProblem = null
+        } catch (problem: Exception) {
+            lastProblem = problem
+            android.util.Log.w(
+                "EverSend",
+                "上传中断（第 $attempt 次，已确认 $have/$size 字节）: ${problem.message}",
+            )
+            // 断线后先问服务端到底收了多少 —— 不要信本地计数（socket 缓冲可能没到）。
+            val serverOffset = try {
+                withContext(Dispatchers.IO) { api.uploadStatus(uploadId) }
+            } catch (ignored: Exception) {
+                -1L
+            }
+            if (serverOffset >= 0L) have = serverOffset
+            // 0 字节就失败、且是"对端提前关连接"类错误 → 很可能是令牌过期
+            // （服务端读 body 前就 403 关连接，客户端只能看到 Broken pipe）。
+            // 换一张令牌再试，下一轮 attempt 就会带上新令牌。
+            if (have == 0L && attempt <= 2 && looksLikeTokenFailure(problem)) {
+                try {
+                    withContext(Dispatchers.IO) { api.refreshToken() }
+                    android.util.Log.w("EverSend", "上传 0 字节失败疑似令牌过期，已换令牌后重试")
+                } catch (ignored: Exception) {
+                }
+            }
+            if (have >= size) return
+            delay(500L shl (attempt - 1).coerceAtMost(4))
+        }
+    }
+    throw (lastProblem ?: IllegalStateException("上传没传完（服务端已有 $have / $size 字节），请重试"))
 }
 
 /** 设备行：电脑（协议对端）与手机（网页/App 客户端）都在这里。
@@ -7596,6 +7854,41 @@ fun resendDeviceOf(ui: UiState): DeviceRow? =
         ?: mergeDiscovered(ui.devices, ui.discovered).firstOrNull { it.online }
         ?: mergeDiscovered(ui.devices, ui.discovered).firstOrNull()
 
+/** 这个名字像不像内部 id（32~64 位 hex）：设备列表没认出名字时的回退值。 */
+fun looksLikeInternalId(text: String): Boolean {
+    val trimmed = text.trim()
+    return trimmed.length >= 12 && trimmed.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' }
+}
+
+/** 设备显示名：名字为空/长得像内部 id 时，别把设备号摊给用户看（PG-5）。 */
+fun humanDeviceName(name: String, id: String = ""): String {
+    val trimmed = name.trim()
+    if (trimmed.isNotBlank() && !looksLikeInternalId(trimmed)) return trimmed
+    val seed = trimmed.ifBlank { id.trim() }
+    return if (seed.isBlank()) "一台设备" else "设备 ${seed.take(6)}…"
+}
+
+/**
+ * 会话标题可读化：服务端给的 displayTitle 里可能夹着内部设备号
+ * （真机截图「QA-真机验收 与 00254c4971c16f15c4bcd7982900f3cb…」是 PG-5）。
+ * 能对上设备就换成名字，对不上就写"一台设备"，绝不把内部 id 摊在标题上。
+ */
+fun readableTitle(raw: String, members: List<DeviceRow>, fallback: String = "会话"): String {
+    val text = raw.trim()
+    if (text.isEmpty()) return fallback
+    var out = text
+    for (match in Regex("[0-9a-fA-F]{16,64}").findAll(text)) {
+        val id = match.value
+        val name = members.firstOrNull { member ->
+            member.id == id || member.id.endsWith(id) || member.id == "web:$id" ||
+                member.id == "android:$id" || member.aliases.any { it == id || it.endsWith(id) }
+        }?.name
+        val shown = if (name.isNullOrBlank()) "一台设备" else humanDeviceName(name, id)
+        out = out.replace(id, shown)
+    }
+    return out.replace(Regex("\\s+"), " ").trim().ifBlank { fallback }
+}
+
 /**
  * 会话页副标题：成员用统一格式写清楚 —— 名字（系统 · 韧传 版本 · IP）。
  *
@@ -7614,7 +7907,7 @@ fun chatMembersLabel(members: List<DeviceRow>, conversation: Conversation, store
         val matched = ids.any { it in aliases || identityAliases(it).any { alias -> alias in aliases } }
         if (ids.isNotEmpty() && !matched) continue
         val facts = member.facts.ifBlank { member.kind }
-        others.add("${member.name}（$facts）")
+        others.add("${humanDeviceName(member.name, member.id)}（$facts）")
     }
     // 一对一的标题里**不能有"我"**：真机上显示成「与 我（MI 9） 的对话」，
     // 用户看到的是"跟自己的对话"—— 标题说的是对面是谁。
@@ -7627,7 +7920,7 @@ fun chatMembersLabel(members: List<DeviceRow>, conversation: Conversation, store
         // 别拿"我"顶上，也别显示成空标题。
         val raw = ids.firstOrNull { it != store.deviceId } ?: ids.firstOrNull() ?: ""
         if (raw.isBlank()) "这段会话的对方已经不在列表里了"
-        else "与 $raw 的对话（这台设备现在不在列表里）"
+        else "与 ${humanDeviceName("", raw)} 的对话（这台设备现在不在列表里）"
     }
 }
 

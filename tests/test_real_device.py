@@ -83,7 +83,13 @@ def wait_for_ui(pred, timeout: float = 60.0, interval: float = 0.5) -> bool:
         return False
 
 
-ADB = "/home/xgl/android-dev/sdk/platform-tools/adb"
+#: adb 位置：优先环境变量，其次 PATH，最后才是旧版写死的 SDK 路径。
+#: 换机器/换手机时只改环境变量，不改测试代码（2026-10-17 MI9 联调时加）。
+ADB = (
+    os.environ.get("EVERSEND_ADB")
+    or shutil.which("adb")
+    or "/home/xgl/android-dev/sdk/platform-tools/adb"
+)
 SERIAL = os.environ.get("EVERSEND_ADB_SERIAL", "10AEBS3L74002AA")
 
 #: 手机上的下载目录。App 落盘到这里，测试只认这里。
@@ -487,12 +493,23 @@ def ensure_phone_chat_page(timeout: float = 40.0) -> bool:
 
     A7 的驱动踩过这个坑：``ensure_phone_connected`` 只保证"连上了"，App 可能停在
     首页设备列表上 —— 那一页根本没有"传输文件"这个按钮，直接点就会"候选为空"。
+    另一种真机实测状态：App 被重启后停在**设备详情页**（有「打开接收文件夹 /
+    ⋯ / 会话」），点错「会话」这个标签什么都不发生 —— 连续两轮没进展就按一次
+    BACK 回到设备列表页，再从「和电脑聊天」进入。
     """
     deadline = time.monotonic() + timeout
+    rounds = 0
     while time.monotonic() < deadline:
+        rounds += 1
         nodes = phone_ui()
         if any(n.text and "传输文件" in n.text for n in nodes):
             return True
+        # 抽屉（设备详情侧栏）开着：里面只有"打开接收文件夹/⋯/设备行"，没有
+        # 「和电脑聊天」。点左上角 ☰ 把它关掉，回到会话主页面。
+        if any(n.text and "打开接收文件夹" in n.text for n in nodes):
+            phone_tap(108, 249)
+            time.sleep(2.0)
+            continue
         # 首页有「和电脑聊天」就直接进去；设备详情页有「会话」按钮；都没有就点设备卡片。
         hit = next((n for n in nodes if n.text and "和电脑聊天" in n.text), None)
         if hit is None:
@@ -510,6 +527,11 @@ def ensure_phone_chat_page(timeout: float = 40.0) -> bool:
             hit = next((n for n in nodes if n.text and n.text.strip().startswith(("☐", "☑"))), None)
         if hit is not None:
             phone_tap(*hit.center)
+        elif rounds >= 2:
+            # 连续两轮都没找到可用入口（真机实测：App 重启后停在设备详情页，
+            # 「会话」那行是标签不是按钮，点了没反应）→ BACK 回设备列表页，
+            # 下一轮就能看到「和电脑聊天」。
+            adb("shell", "input", "keyevent", "KEYCODE_BACK")
         else:
             card = next(
                 (n for n in nodes
@@ -1034,9 +1056,13 @@ def a07(r: R) -> None:
                 return ""
             return ""
 
-        got = wait_for(record_state, timeout=30, interval=1.0)
+        # 记录是**窗口定时器/信号**在 Qt 主线程里落库的：这里必须泵事件循环，
+        # 否则 wait_for 只 sleep，信号永远排不到 → 明明记录了也读不到（v2 真机
+        # 实测假红：A7.j 判红而 chat.db 里其实已经有这条 done 记录）。
+        done_ok = wait_for_ui(lambda: record_state() == "done", timeout=30.0)
+        got = record_state()
         r.ok("A7.j 电脑端的记录里有这条入站文件（状态 done）",
-             got == "done", expected="done", actual=repr(got),
+             done_ok and got == "done", expected="done", actual=repr(got),
              note="手机 POST 上来落盘的路径必须留下一条记录，否则用户翻不到谁发过什么")
 
         shot = SHOTS / "A7-desktop-received.png"

@@ -96,6 +96,9 @@ class FetchManager private constructor(private val appContext: Context) {
         /** 「下载完成」通知的渠道：和常驻通知分开，用户可以单独关掉它。 */
         const val CHANNEL_FILES = "eversend-files"
 
+        /** 下载断线后的最大尝试次数（续传，不从头再来）。 */
+        private const val MAX_DOWNLOAD_ATTEMPTS = 4
+
         @Volatile
         private var shared: FetchManager? = null
 
@@ -120,6 +123,27 @@ class FetchManager private constructor(private val appContext: Context) {
     /** 自动下载总开关（设置页可关；默认开）。 */
     @Volatile
     var autoFetch: Boolean = true
+
+    /** 陈旧 pending 行自愈清理的限频（每 60s 最多一次）。 */
+    @Volatile
+    private var lastPendingCleanupAt = 0L
+
+    /**
+     * 兜底清掉陈旧的 pending 行（>5 分钟，A6.3）。
+     *
+     * 只清"陈旧"的，所以不会误删并发下载中（新鲜）的那条；每次下载结束
+     * （成功/失败）调一次，限频 60s —— App 不重启也能自愈。
+     */
+    private fun cleanupStalePending() {
+        val now = System.currentTimeMillis()
+        if (now - lastPendingCleanupAt < 60_000L) return
+        lastPendingCleanupAt = now
+        try {
+            val removed = cleanupPendingDownloads(appContext)
+            if (removed > 0) Log.d(TAG, "清理了 $removed 条陈旧 pending 残留")
+        } catch (ignored: Exception) {
+        }
+    }
 
     // ------------------------------------------------------------------ 入队
 
@@ -203,46 +227,112 @@ class FetchManager private constructor(private val appContext: Context) {
         scope.launch { run(api, task) }
     }
 
+    /**
+     * 下载一份电脑发布的文件。
+     *
+     * **断点续传**（P1-D）：先下到 App 缓存里的 `.part` 文件，收满再一次性发布到
+     * 系统「下载」。原因：MediaStore 的 pending 输出流没法可靠地"从第 N 字节续写"，
+     * 而真机切换前台/锁屏那一刻连接会被系统掐掉（A2：100MB 下到 73MiB 被 abort）。
+     * 缓存文件可以自由 append，配合服务端的 Range(206) 从断点续；代价是多一次
+     * 本地拷贝（局域网 24MB/s 下 100MB 只多花 <1s）。
+     */
     private fun run(api: ApiClient, task: FetchTask) {
         var lastReport = 0L
         var lastBytes = 0L
         var lastAt = System.currentTimeMillis()
         var uri: Uri? = null
+        val partial = java.io.File(
+            appContext.cacheDir,
+            "fetch-" + task.shareId.replace(Regex("[^A-Za-z0-9_.-]"), "_") + ".part",
+        )
         try {
-            // 期望字节数 = 电脑报的大小：MediaStore 落盘 + 字节校验，两者都过才算完成
-            // （真机教训：只写了 0 字节也会"成功"，界面上却写着已收到）。
-            uri = saveToDownloads(appContext, task.name, if (task.size > 0) task.size else -1L) { sink ->
-                api.download("/api/share/" + encodeUrl(task.shareId), sink) { sent ->
-                    if (cancelled.contains(task.shareId)) throw java.io.IOException("已取消")
-                    val now = System.currentTimeMillis()
-                    if (now - lastReport >= 400 || (task.size > 0 && sent >= task.size)) {
-                        lastReport = now
-                        val elapsed = (now - lastAt).coerceAtLeast(1L)
-                        val speed = (sent - lastBytes) * 1000.0 / elapsed
-                        lastBytes = sent
-                        lastAt = now
-                        publish(
-                            FetchTask(
-                                shareId = task.shareId,
-                                name = task.name,
-                                size = task.size,
-                                got = sent,
-                                state = FetchState.Downloading,
-                                startedAt = task.startedAt,
-                                speed = speed,
-                            ),
+            partial.parentFile?.mkdirs()
+            var attempts = 0
+            while (true) {
+                val already = if (partial.exists()) partial.length() else 0L
+                if (task.size > 0 && already >= task.size) break
+                attempts++
+                lastBytes = already
+                lastAt = System.currentTimeMillis()
+                try {
+                    java.io.FileOutputStream(partial, true).use { sink ->
+                        api.download(
+                            "/api/share/" + encodeUrl(task.shareId),
+                            sink,
+                            offset = already,
+                        ) { sent ->
+                            if (cancelled.contains(task.shareId)) throw java.io.IOException("已取消")
+                            val now = System.currentTimeMillis()
+                            if (now - lastReport >= 400 || (task.size > 0 && sent >= task.size)) {
+                                lastReport = now
+                                val elapsed = (now - lastAt).coerceAtLeast(1L)
+                                val speed = (sent - lastBytes) * 1000.0 / elapsed
+                                lastBytes = sent
+                                lastAt = now
+                                update(task.shareId) {
+                                    it.copy(
+                                        state = FetchState.Downloading,
+                                        got = sent,
+                                        speed = speed,
+                                        error = "",
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } catch (problem: Exception) {
+                    if (cancelled.contains(task.shareId)) throw problem
+                    val landedNow = if (partial.exists()) partial.length() else 0L
+                    Log.d(
+                        TAG,
+                        "下载中断（第 $attempts 次尝试，已落 $landedNow/${task.size} 字节）: ${problem.message}",
+                    )
+                    if (attempts >= MAX_DOWNLOAD_ATTEMPTS) throw problem
+                    update(task.shareId) {
+                        it.copy(
+                            state = FetchState.Downloading,
+                            got = landedNow,
+                            speed = 0.0,
+                            error = "连接中断，正在从断点续传…（第 $attempts 次）",
                         )
+                    }
+                    Thread.sleep(500L * (1 shl (attempts - 1).coerceAtMost(3)))
+                    continue
+                }
+                break
+            }
+            val got = if (partial.exists()) partial.length() else 0L
+            if (task.size > 0 && got != task.size) {
+                throw java.io.IOException("只收到 $got / ${task.size} 字节")
+            }
+            // 收满了再发布到系统「下载」（期望字节数仍然要校验一遍）。
+            uri = saveToDownloads(appContext, task.name, if (task.size > 0) task.size else -1L) { sink ->
+                java.io.FileInputStream(partial).use { input ->
+                    val buffer = ByteArray(256 * 1024)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read <= 0) break
+                        sink.write(buffer, 0, read)
                     }
                 }
             }
         } catch (problem: Exception) {
             // 半截文件不能留在「下载」里（MediaStore 里那条是 pending 状态）：
             // 用户看到"有个文件但是打不开"比看到"下载失败"更糟。
+            try {
+                partial.delete()
+            } catch (ignored: Exception) {
+            }
             Log.d(TAG, "下载失败 ${task.name}: ${problem.message}")
-            val reason = reasonOf(problem)
-            update(task.shareId) { it.copy(state = FetchState.Failed, error = reason) }
             inFlight.remove(task.shareId)
+            val reason = if (cancelled.contains(task.shareId)) "已取消" else reasonOf(problem)
+            update(task.shareId) { it.copy(state = FetchState.Failed, error = reason) }
+            cleanupStalePending()
             return
+        }
+        try {
+            partial.delete()
+        } catch (ignored: Exception) {
         }
         inFlight.remove(task.shareId)
         if (cancelled.contains(task.shareId)) {
@@ -261,7 +351,7 @@ class FetchManager private constructor(private val appContext: Context) {
                 shareId = task.shareId,
                 name = task.name,
                 size = task.size,
-                got = if (landed > 0) landed else task.size,
+                got = if (task.size > 0) task.size else if (landed > 0) landed else task.size,
                 state = FetchState.Done,
                 uri = uri.toString(),
                 startedAt = task.startedAt,
@@ -269,6 +359,7 @@ class FetchManager private constructor(private val appContext: Context) {
             ),
         )
         notifyDone(task.name, uri)
+        cleanupStalePending()
     }
 
     // ------------------------------------------------------------------ 状态
@@ -360,6 +451,13 @@ fun fetchTransfers(fetches: List<FetchTask>): List<JSONObject> = fetches.mapNotN
             .put("percent", task.percent * 100.0)
             .put("done", task.got)
             .put("total", task.size)
+            // 速度和 ETA 也给出来：气泡/卡片上的进度行要显示"与真值一致"的数字，
+            // 不能只显示百分比（PG-2）。
+            .put("speed", task.speed)
+            .put(
+                "eta",
+                if (task.speed > 0 && task.size > task.got) (task.size - task.got) / task.speed else 0.0,
+            )
             .put("items", org.json.JSONArray().put(JSONObject().put("name", task.name)))
     } catch (ignored: Exception) {
         null

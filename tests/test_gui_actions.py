@@ -1611,11 +1611,13 @@ def test_one_row_per_file_and_records_in_chat(app, root) -> None:
             same = [name for name in visible if "只该占一行" in name]
             check("这份文件在「接收」表里只占一行（不是正在传 + 历史两行）",
                   len(same) == 1, str(visible))
+            # 接收表新增了「进度/速度/剩余」三列（gui-desktop G-B），状态列不再是
+            # 写死的下标 4；按列名查，列顺序以后再变这条断言也不会假失败。
+            status_column = list(recv_table.model().columns).index("状态")
+            last_history = sorted(recv_table.history_rows)[-1] if recv_table.history_rows else None
             check("留下的那一行是「已完成」的历史行",
-                  bool(recv_table.history_rows) and "已完成" in str(
-                      recv_table.item(sorted(recv_table.history_rows)[-1], 4).text()
-                      if recv_table.item(sorted(recv_table.history_rows)[-1], 4) else ""
-                  ),
+                  last_history is not None
+                  and "已完成" in str(recv_table.item(last_history, status_column).text()),
                   str(sorted(recv_table.history_rows)))
             if recv_table.history_rows:
                 history_row = sorted(recv_table.history_rows)[-1]

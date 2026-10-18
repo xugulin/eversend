@@ -51,9 +51,9 @@
 
 ```
 发起方 I                                        响应方 R
-   |-- HELLO ────────────────────────────────────>|   {proto, device, x25519, ed25519, nonce_i, encrypt}
+   |-- HELLO ────────────────────────────────────>|   {proto, device, x25519, ed25519, nonce_i, encrypt, cipher}
    |                                              |
-   |<─────────────────────────────── HELLO_ACK ---|   {proto, device, x25519, ed25519, nonce_r, encrypt, sig_r}
+   |<─────────────────────────────── HELLO_ACK ---|   {proto, device, x25519, ed25519, nonce_r, encrypt, cipher, sig_r}
    |                                              |
    |   [双方在此推导会话密钥]                        |
    |                                              |
@@ -102,13 +102,41 @@ sas = SHA-256("eversend/v1/sas" || session_key)[:4] mod 10^6   → 6 位十进�
 
 `cryptography` 不可用时，会话退化为 `NullCipher`：AAD/签名全部跳过，`authenticated=False`，**UI 必须显著提示**。绝不静默降级。
 
+### 3.6 AEAD 协商（向后兼容的可选字段）
+
+`cipher` 字段（v1 追加，**可选**）用来让两端在**同一个 AEAD 算法**上工作：
+
+- 发起方在 `HELLO` 里带上本地偏好：`"cipher": "aes256gcm"` 或 `"chacha20poly1305"`
+  （选择依据是本地 CPU 是否有 AES 加速，`crypto.preferred_algorithm()`）。
+- 响应方若在自己能构造的算法集合（`SUPPORTED_ALGORITHMS`）里认识它，就采用它，并在
+  `HELLO_ACK` 里**回显**同一个值；双方随后都用这个算法建会话。
+- 若 `HELLO` 里没有 `cipher`（旧版对端），响应方按本地偏好选择、`HELLO_ACK` 里的 `cipher`
+  也只是本地偏好；发起方看到 `HELLO_ACK` 的 `cipher` 时才采用，否则回退本地选择。
+
+**为什么必须加**：旧实现里两端**各自**按本机 CPU 选算法且不协商。x86-64 端选 AES-256-GCM、
+32 位 ARM（如 `armv7l`）端选 ChaCha20-Poly1305，两者的会话密钥相同但算法不同，**第一个加密帧
+就会认证失败**，表现为"握手成功、传输 100% 失败"。
+
+**兼容矩阵**（新 = 本版含协商；旧 = 不含 `cipher` 字段的版本）：
+
+| 组合 | 同架构（都选 AES 或都选 ChaCha） | 跨架构（一边 AES 一边 ChaCha） |
+|---|---|---|
+| 新 ↔ 新 | ✅ 协商后一致 | ✅ 协商后一致（跟随发起方偏好） |
+| 新发起 ↔ 旧响应 | ✅ 旧端忽略未知字段，两边本地选择相同 | ❌ 旧端不协商，必然不一致（与旧↔旧相同） |
+| 旧发起 ↔ 新响应 | ✅ 同上（新端收不到 `cipher` → 回退本地选择） | ❌ 同上 |
+| 旧 ↔ 旧 | ✅ | ❌ |
+
+因此该字段是**兼容性增强**而非不兼容变更：不需要提升 `PROTOCOL_VERSION`；旧端读写 JSON 时
+会自动忽略未知键。字段本身不在签名转录里（与 `encrypt` 一样是明文协商信息），不改变身份认证
+的安全性质；**没有任何路径会在协商失败时退化成"不加密"**——不支持就按本地选择，加密照旧。
+
 ---
 
 ## 4. AEAD 与 nonce
 
 | 项 | 值 |
 |---|---|
-| 算法 | AES-256-GCM（x86-64 / ARM64，有 AES 加速）或 ChaCha20-Poly1305 |
+| 算法 | AES-256-GCM（x86-64 / ARM64，有 AES 加速）或 ChaCha20-Poly1305；由握手 `cipher` 字段协商（见 3.6），旧对端无该字段时各按本地 CPU 选择 |
 | nonce | 12 字节 = 4 字节方向前缀 + 8 字节大端计数器 |
 | 方向前缀 | 发起方加密用 `00 00 00 01`，响应方用 `00 00 00 02` |
 | 计数器 | 每条连接、每个方向独立，从 0 自增，**不上线** |
@@ -127,7 +155,7 @@ sas = SHA-256("eversend/v1/sas" || session_key)[:4] mod 10^6   → 6 位十进�
 
 | 值 | 名称 | 方向 | 载荷 |
 |---|---|---|---|
-| 0x01 | HELLO | I→R | `proto, device, x25519, ed25519, nonce, encrypt` |
+| 0x01 | HELLO | I→R | `proto, device, x25519, ed25519, nonce, encrypt, cipher?`（`cipher` 可选，见 3.6） |
 | 0x02 | HELLO_ACK | R→I | 同上 + `sig` |
 | 0x03 | AUTH | I→R | `sig` |
 | 0x04 | AUTH_OK | R→I | `ok, authenticated` |

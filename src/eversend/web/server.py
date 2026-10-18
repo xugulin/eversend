@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import queue
+import re
 import secrets
 import socket
 import sys
@@ -624,6 +625,12 @@ class WebUI:
         self._shares: dict[str, dict[str, Any]] = {}
         self._workers: set[threading.Thread] = set()
         self._upload_lock = threading.Lock()
+        #: 可续传上传（opt-1017）：uploadId -> 该 id 的写锁，防止同一 id 并发写串。
+        #: 键是客户端生成并校验过的十六进制串（见 ``valid_resume_id``）。
+        self._resume_locks: dict[str, threading.Lock] = {}
+        #: uploadId -> 完成响应快照。断线后客户端可能重发最后一段（幂等重放）：
+        #: 已经完成的 id 直接回原响应，而不是把同一文件再落一次盘。
+        self._resume_done: dict[str, dict[str, Any]] = {}
         self._index_cache: tuple[float, str] | None = None
         self._address_cache: tuple[float, list[str]] | None = None
         self._bound_port = 0
@@ -1651,6 +1658,11 @@ class WebUI:
         )
         self._thread.start()
         log.info("web UI listening on http://%s:%d/", self.host, self._bound_port)
+        # 启动时清一次过期续传 spool（opt-1017）。失败不影响服务。
+        try:
+            self.sweep_resume_spools()
+        except Exception:  # pragma: no cover - 清理是 best effort
+            log.debug("sweep_resume_spools failed", exc_info=True)
         if self.advertise:
             try:
                 self.engine.announce()
@@ -1922,6 +1934,13 @@ class WebUI:
                 "apk": self.apk_info(),
             },
             "device": self._self_device(),
+            # 能力宣告：手机 App 据此决定是否启用「断点续传上传」（opt-1017）。
+            # 旧客户端忽略未知字段，旧服务端没有这个字段时新 App 退回一次性上传。
+            "caps": {
+                "uploadResume": True,
+                "uploadMaxBytes": self.max_upload_bytes,
+                "downloadRange": True,
+            },
             "devices": self._devices(),
             "transfers": active,
             "offers": self._pending_offers(),
@@ -2040,6 +2059,77 @@ class WebUI:
         clean = sanitize_component(name) or "upload.bin"
         with self._upload_lock:
             return unique_path(os.path.join(self.spool_dir, clean))
+
+    # -- 可续传上传（opt-1017） ---------------------------------------------
+    #
+    # 手机→电脑的大文件以前是"一次 POST 传完"：传到 70% 断网就全废，重发从 0
+    # 开始。这里给 spool 加一个**固定名字**（由客户端生成的 uploadId 决定），
+    # 断线重连后带 offset 继续写同一个文件；传满 X-EverSend-Total 字节才定稿。
+    # 没有 uploadId 的旧客户端仍然走一次性路径，行为完全不变。
+
+    #: uploadId 只接受十六进制，长度有界 —— 它直接进文件名，必须防路径穿越。
+    _RESUME_ID_RE = re.compile(r"^[0-9a-f]{16,64}$")
+
+    def valid_resume_id(self, raw: str) -> str:
+        candidate = (raw or "").strip().lower()
+        return candidate if self._RESUME_ID_RE.match(candidate) else ""
+
+    def resume_spool(self, upload_id: str) -> tuple[str, int]:
+        """续传 spool 的路径 + 已经收到的字节数（不存在则 0）。"""
+        path = os.path.join(self.spool_dir, "resume-" + upload_id)
+        try:
+            have = os.path.getsize(path)
+        except OSError:
+            have = 0
+        return path, have
+
+    def resume_lock(self, upload_id: str) -> threading.Lock:
+        with self._upload_lock:
+            lock = self._resume_locks.get(upload_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._resume_locks[upload_id] = lock
+            return lock
+
+    def promote_resume_spool(self, spool: str, name: str) -> str:
+        """收满之后把 spool 改回用户文件名，交给既有 finish/land 流程。"""
+        clean = sanitize_component(name) or "upload.bin"
+        with self._upload_lock:
+            final = unique_path(os.path.join(self.spool_dir, clean))
+            os.replace(spool, final)
+        return final
+
+    def remember_resume_done(self, upload_id: str, payload: dict[str, Any]) -> None:
+        with self._upload_lock:
+            self._resume_done[upload_id] = dict(payload)
+            while len(self._resume_done) > 64:  # 有界，别无限攒
+                self._resume_done.pop(next(iter(self._resume_done)))
+
+    def resume_completed(self, upload_id: str) -> dict[str, Any] | None:
+        with self._upload_lock:
+            payload = self._resume_done.get(upload_id)
+            return dict(payload) if payload is not None else None
+
+    def sweep_resume_spools(self, max_age: float = 24 * 3600) -> int:
+        """删掉超龄的续传 spool（断线后再没回来续的那些）。"""
+        now = time.time()
+        removed = 0
+        try:
+            entries = list(os.scandir(self.spool_dir))
+        except OSError:
+            return 0
+        for entry in entries:
+            if not entry.name.startswith("resume-") or not entry.is_file():
+                continue
+            try:
+                if now - entry.stat().st_mtime > max_age:
+                    os.unlink(entry.path)
+                    removed += 1
+            except OSError:
+                continue
+        if removed:
+            log.info("清理了 %d 个过期的续传 spool", removed)
+        return removed
 
     def finish_upload(self, spool: str) -> str:
         """Return the path the engine should send, keeping ``keep_uploads``.
@@ -2603,6 +2693,32 @@ class _Handler(BaseHTTPRequestHandler):
                     "shares": ui.shares(for_key=self._self_client_key(ui)),
                     "total": len(ui._shares),
                 },
+            )
+            return
+        if path == "/api/upload/status":
+            # 续传辅助接口（opt-1017）：手机断线重连后先问"服务端已经有几字节"。
+            # 只读、无副作用；uploadId 是客户端生成的 128 位随机串，猜不到。
+            upload_id = ui.valid_resume_id((query.get("uploadId") or [""])[0])
+            if not upload_id:
+                raise _BadRequest("uploadId 非法（应为 16-64 位十六进制）")
+            done = ui.resume_completed(upload_id)
+            if done is not None:
+                done_size = int(done.get("size") or 0)
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "complete": True,
+                        "resumeId": upload_id,
+                        "offset": done_size,
+                        "total": done_size,
+                    },
+                )
+                return
+            _spool, have = ui.resume_spool(upload_id)
+            self._send_json(
+                HTTPStatus.OK,
+                {"ok": True, "complete": False, "resumeId": upload_id, "offset": have},
             )
             return
         if path == "/api/files":
@@ -3305,6 +3421,42 @@ class _Handler(BaseHTTPRequestHandler):
             raise
         return written
 
+    def _append_upload_body(self, ui, spool: str, total: int, have: int) -> int:
+        """把**续传**请求体追加进 spool；断线时保留已写部分（这正是续传的意义）。
+
+        和 ``_accept_upload_body`` 的区别：失败时**不删** spool —— 已经收到的
+        字节就是下次续传的起点；只有收满 ``total`` 才由调用方定稿/改名。
+        """
+        written = 0
+        remaining = max(1, total - have)
+        with open(spool, "ab", buffering=0) as handle:
+            for chunk in self._iter_body(remaining):
+                handle.write(chunk)
+                written += len(chunk)
+        if written == 0:
+            raise _BadRequest("请求体为空")
+        return written
+
+    def _resume_conflict(self, upload_id: str, have: int, total: int) -> None:
+        """续传偏移对不上：把服务端真实偏移告诉客户端，让它从那里继续。
+
+        HTTP 409 是"请求与当前资源状态冲突"的标准语义；手机端收到后读
+        ``offset`` 字段重新发剩余字节即可，不需要用户重选文件。
+
+        用 ``_fail`` 而不是裸 ``_send_json``：请求体还没读，keep-alive 会把
+        残余字节当成下一个请求解析 —— ``_fail`` 会关连接并排掉未读 body。
+        """
+        self._fail(
+            HTTPStatus.CONFLICT,
+            f"偏移不匹配：服务端已有 {have} 字节，请从该偏移继续",
+            extra={
+                "offset": have,
+                "total": total,
+                "resumeId": upload_id,
+                "complete": False,
+            },
+        )
+
     def _receive_upload(self, query: dict[str, list[str]]) -> None:
         """``POST /api/upload``: the body *is* the file.
 
@@ -3346,18 +3498,120 @@ class _Handler(BaseHTTPRequestHandler):
             )
             return
 
-        # 空间预检与 spool 准备对所有目标都一样：**先拒绝再写**，比写一半失败好。
-        declared = self._body_length()
-        if declared is not None:
-            available = free_space(ui.receive_dir)
-            if available and declared > available:
-                self._fail(
-                    HTTPStatus.INSUFFICIENT_STORAGE,
-                    f"接收目录剩余空间不足（需要 {declared} 字节，可用 {available} 字节）",
+        # 可续传上传（opt-1017）：带 uploadId 的请求，body 是「从 offset 起的剩余
+        # 字节」，写进固定名字的 spool；断线重连后从服务端已有字节继续。收满
+        # X-EverSend-Total 才走定稿流程。**没有 uploadId 的旧客户端完全走原路径。**
+        raw_upload_id = (query.get("uploadId") or [""])[0]
+        resumable_id = ui.valid_resume_id(raw_upload_id)
+        if raw_upload_id and not resumable_id:
+            raise _BadRequest("uploadId 非法（应为 16-64 位十六进制）")
+        resumable = bool(resumable_id)
+        resume_total = 0
+        resume_offset = 0
+        if resumable:
+            try:
+                resume_offset = int((query.get("offset") or ["0"])[0] or 0)
+            except ValueError:
+                raise _BadRequest("offset 非法") from None
+            raw_total = self.headers.get("X-EverSend-Total", "")
+            try:
+                resume_total = int(raw_total)
+            except (TypeError, ValueError):
+                raise _BadRequest("续传上传缺少合法的 X-EverSend-Total 头") from None
+            if resume_offset < 0 or resume_total <= 0 or resume_offset > resume_total:
+                raise _BadRequest("offset / X-EverSend-Total 越界")
+            if resume_total > ui.max_upload_bytes:
+                raise _BodyTooLarge(f"这个文件超过服务端上限 {ui.max_upload_bytes} 字节")
+
+        written = 0
+        if resumable:
+            replay = ui.resume_completed(resumable_id)
+            if replay is not None:
+                # 幂等重放：客户端断线重发最后一段时不能把同一文件再落一次盘。
+                replay.update(
+                    {
+                        "ok": True,
+                        "complete": True,
+                        "resumeId": resumable_id,
+                        "offset": replay.get("size", resume_total),
+                        "total": resume_total,
+                    }
                 )
+                self._send_json(HTTPStatus.OK, replay)
                 return
-        spool = ui.spool_path(clean)
-        written = self._accept_upload_body(ui, spool, declared)
+            spool, have = ui.resume_spool(resumable_id)
+            if resume_offset != have:
+                self._resume_conflict(resumable_id, have, resume_total)
+                return
+            if have >= resume_total:
+                # 上次收满了但没来得及定稿（例如进程在收尾时崩溃）：直接定稿。
+                spool_final = ui.promote_resume_spool(spool, clean)
+                written = have
+            else:
+                expected = resume_total - have
+                declared = self._body_length()
+                if declared is not None and declared > expected:
+                    raise _BadRequest(
+                        f"Content-Length 超过剩余字节数（本次最多 {expected} 字节）"
+                    )
+                available = free_space(ui.receive_dir)
+                if available and expected > available:
+                    self._fail(
+                        HTTPStatus.INSUFFICIENT_STORAGE,
+                        f"接收目录剩余空间不足（还需要 {expected} 字节，可用 {available} 字节）",
+                    )
+                    return
+                with ui.resume_lock(resumable_id):
+                    spool, have = ui.resume_spool(resumable_id)
+                    if resume_offset != have:
+                        self._resume_conflict(resumable_id, have, resume_total)
+                        return
+                    got = self._append_upload_body(ui, spool, resume_total, have)
+                    written = have + got
+                if written < resume_total:
+                    # 还没收满（客户端主动分段/连接被切）：保留 spool 等下一次续传。
+                    self._send_json(
+                        HTTPStatus.ACCEPTED,
+                        {
+                            "ok": True,
+                            "complete": False,
+                            "offset": written,
+                            "total": resume_total,
+                            "resumeId": resumable_id,
+                            "name": clean,
+                        },
+                    )
+                    return
+                spool_final = ui.promote_resume_spool(spool, clean)
+        else:
+            # 空间预检与 spool 准备对所有目标都一样：**先拒绝再写**，比写一半失败好。
+            declared = self._body_length()
+            if declared is not None:
+                available = free_space(ui.receive_dir)
+                if available and declared > available:
+                    self._fail(
+                        HTTPStatus.INSUFFICIENT_STORAGE,
+                        f"接收目录剩余空间不足（需要 {declared} 字节，可用 {available} 字节）",
+                    )
+                    return
+            spool_final = ui.spool_path(clean)
+            written = self._accept_upload_body(ui, spool_final, declared)
+
+        def finish_resumable(payload: dict[str, Any]) -> dict[str, Any]:
+            """续传上传的完成响应：登记幂等快照并补齐 complete/resumeId 字段。"""
+            if not resumable:
+                return payload
+            ui.remember_resume_done(resumable_id, payload)
+            merged = dict(payload)
+            merged.update(
+                {
+                    "complete": True,
+                    "resumeId": resumable_id,
+                    "offset": written,
+                    "total": written,
+                }
+            )
+            return merged
 
         if target["kind"] == "self":
             # "发给我自己" = 本地落地：不生成传输、不调 engine.send。
@@ -3365,7 +3619,7 @@ class _Handler(BaseHTTPRequestHandler):
             sender_id = self._self_client_id(ui)
             sender_name = self._self_client_name(ui)
             upload = ui.land_upload(
-                spool,
+                spool_final,
                 clean,
                 device_id=str(ui.engine.info.device_id),
                 from_id=sender_id,
@@ -3373,13 +3627,21 @@ class _Handler(BaseHTTPRequestHandler):
             )
             self._send_json(
                 HTTPStatus.ACCEPTED,
-                {"ok": True, "uploadId": upload["id"], "name": upload["name"],
-                 "size": upload["size"], "path": upload.get("path", ""), "local": True},
+                finish_resumable(
+                    {
+                        "ok": True,
+                        "uploadId": upload["id"],
+                        "name": upload["name"],
+                        "size": upload["size"],
+                        "path": upload.get("path", ""),
+                        "local": True,
+                    }
+                ),
             )
             return
 
         peer = target.get("peer")
-        final = ui.finish_upload(spool)
+        final = ui.finish_upload(spool_final)
 
         upload = {
             "id": uuid.uuid4().hex,
@@ -3409,21 +3671,25 @@ class _Handler(BaseHTTPRequestHandler):
             ui.register_upload(upload)
             self._send_json(
                 HTTPStatus.ACCEPTED,
-                {"ok": True, "upload": upload, "handedOff": True, "shareId": shared[0]["id"]},
+                finish_resumable(
+                    {"ok": True, "upload": upload, "handedOff": True, "shareId": shared[0]["id"]}
+                ),
             )
             return
         ui.register_upload(upload)
         transfer_id = ui.start_send(peer, final, pin, upload)
         self._send_json(
             HTTPStatus.ACCEPTED,
-            {
-                "ok": True,
-                "uploadId": upload["id"],
-                "transferId": transfer_id,
-                "name": upload["name"],
-                "size": written,
-                "device": device_dict(peer.info),
-            },
+            finish_resumable(
+                {
+                    "ok": True,
+                    "uploadId": upload["id"],
+                    "transferId": transfer_id,
+                    "name": upload["name"],
+                    "size": written,
+                    "device": device_dict(peer.info),
+                }
+            ),
         )
 
     # -- chat --------------------------------------------------------------

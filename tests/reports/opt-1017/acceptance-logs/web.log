@@ -1,0 +1,424 @@
+EverSend web UI self-test
+==============================================================
+
+[0] QR encoder internals
+  [32mPASS[0m block tables agree with the module geometry (versions 1-40)
+  [32mPASS[0m a LAN URL fits in a small symbol
+  [32mPASS[0m size matches the version
+  [32mPASS[0m error correction level is M
+  [32mPASS[0m a mask was selected
+  [32mPASS[0m all three finder patterns are intact
+  [32mPASS[0m SVG contains an <svg> root
+  [32mPASS[0m SVG has a plausible number of <rect> modules
+  [32mPASS[0m PNG is a valid PNG container
+  [32mPASS[0m the engine learns the bound web port
+
+[HTTPS 副本] 加密页面不能顶掉对外公告的 HTTP 端口
+  [32mPASS[0m 自签证书可以生成
+  [32mPASS[0m HTTPS 页面用的是另一个端口
+  [32mPASS[0m 公告出去的仍然是 HTTP 端口
+  [32mPASS[0m HTTPS 页面能应答
+
+[APK] 手机从这台电脑直接下载安卓安装包
+  [32mPASS[0m 没有安装包时状态里说不可用
+  [32mPASS[0m 没有安装包时 /apk 回 404
+  [32mPASS[0m 页面里那一块默认是隐藏的
+  [32mPASS[0m 网页版有「设备列表」卡片
+  [32mPASS[0m 不再有单独的「局域网里的手机」卡片
+  [32mPASS[0m 放进安装包后状态里说可用
+  [32mPASS[0m 状态里带上文件名和大小
+  [32mPASS[0m 下载得到安装包本体
+  [32mPASS[0m 带的是安卓安装包的 MIME 类型
+  [32mPASS[0m 浏览器会把它当附件存下来
+  [32mPASS[0m 断点续传取得到中间一段
+  [32mPASS[0m 删掉之后又变回不可用
+
+[发现回包] 电脑要立刻回答手机的探针
+  [32mPASS[0m 手机发一条探针，电脑立刻单播回包
+  [32mPASS[0m 回包里带着电脑的网页端口（手机要靠它拼地址）
+  [32mPASS[0m 回包回的是发送方的端口，不是广播
+  [32mPASS[0m 一秒内的重复探针不会反复回包（有冷却）
+  [32mPASS[0m 不是韧传的包一律不回应
+
+[表情] 三端共用一份表情表
+  [32mPASS[0m 接口给了表情分组
+  [32mPASS[0m 数量和核心里的表一致
+  [32mPASS[0m 够多（用户嫌 48 个太少）
+  [32mPASS[0m 每个分组都有名字和表情
+
+[设备唯一性] 换地址不换身份
+  [32mPASS[0m 带设备号的浏览器被登记
+  [32mPASS[0m 键是设备号而不是地址
+  [32mPASS[0m 换 IP 之后仍然只有一台
+  [32mPASS[0m 地址跟着更新
+  [32mPASS[0m 同一地址上历史遗留的旧记录会被收掉
+  [32mPASS[0m 没有为同一台设备再建一条记录
+
+[设备去重] 一台手机只能有一行
+  [32mPASS[0m 打开页面成功
+  [32mPASS[0m 第一次打开时还只能按地址记一条（此时谁都不知道它是谁）
+  [32mPASS[0m 带设备号的 /api/state 成功
+  [32mPASS[0m 一台手机只剩一条记录
+  [32mPASS[0m 留下的是带设备号的那条
+  [32mPASS[0m 地址只是它身上的一个字段
+  [32mPASS[0m identityKey 就是稳定设备号
+  [32mPASS[0m 它还在线（刚说过话）
+  [32mPASS[0m /api/state 的 knownClients 里也只有一条
+  [32mPASS[0m 每一条 knownClient 都带 identityKey
+  [32mPASS[0m identityKey 在名单里唯一（客户端可以据此兜底去重）
+  [32mPASS[0m 正在说话的名单里也只有一个身份
+  [32mPASS[0m 再打开一次页面/静态资源也不会多一条
+  [32mPASS[0m 换地址之后仍然只有一条
+  [32mPASS[0m 地址更新成最新的那个
+  [32mPASS[0m 换地址之后也还是一条在线记录
+  [32mPASS[0m 没有设备号的普通浏览器照样有自己的记录
+  [32mPASS[0m 它的 identityKey 只能退回自己的地址键
+  [32mPASS[0m 它不会把手机那条吃掉
+  [32mPASS[0m 老数据里同一台设备的两条被并成一条
+  [32mPASS[0m 并的是地址键那条，留下设备号那条
+  [32mPASS[0m 被并掉的旧键留在 aliases 里（老会话还要靠它查名字）
+  [32mPASS[0m lastSeen 取最新的（刚说过话的在线状态不丢）
+  [32mPASS[0m firstSeen 取更早的（配对历史不丢）
+  [32mPASS[0m 地址键那条真的从注册表和活跃表里都清掉了
+  [32mPASS[0m 换过地址的旧记录也被收掉，不留幽灵行
+  [32mPASS[0m 不在说话了就是 online=False（记录本身仍然留着）
+  [32mPASS[0m 带设备号的「断开连接」回 200
+  [32mPASS[0m 接口说它断开了
+  [32mPASS[0m 断开之后名单里没有它了
+
+[归并留痕] 老会话的成员写法还要认得出来
+  [32mPASS[0m 归并前：那段老会话有名字（不是「未知设备」）
+  [32mPASS[0m 影子记录被并掉了（注册表里只剩设备号那条）
+  [32mPASS[0m 旧键被记成 alias
+  [32mPASS[0m 归并之后老会话的标题一字不变
+  [32mPASS[0m 新会话用的是设备现在的名字
+
+[坏数据] 字段残缺的记录不能把 /api/state 拖崩
+  [32mPASS[0m known_clients() 不抛异常
+  [32mPASS[0m 残缺记录照样列得出来（缺字段用默认值）
+  [32mPASS[0m 记录里没有 key 字段时用注册表的键兜底（那一行才点得动）
+  [32mPASS[0m 时间字段是字符串也不炸（当成 0）
+  [32mPASS[0m 每条 knownClient 仍然都有 identityKey
+  [32mPASS[0m /api/state 不会因为一行坏数据 500
+
+[mDNS] 电脑要能回答查询（安卓 NsdManager 靠它找电脑）
+  [32mPASS[0m 能加入 mDNS 组播组
+  [32mPASS[0m 查询得到回答
+  [32mPASS[0m 回答里有 PTR/SRV/TXT/A 四段
+  [32mPASS[0m TXT 里带着设备号与网页端口（手机要用来拼地址）
+
+[附件路径] 本机路径只留在本机
+  [32mPASS[0m 本机发出的图片记下了它的原始路径
+  [32mPASS[0m 这条路径不会随消息发给对方
+  [32mPASS[0m 手机接口里也看不到这条路径
+
+[1b] A scan reports when it is done
+  [32mPASS[0m the scan emits a completion event
+  [32mPASS[0m the event says how many devices answered
+  [32mPASS[0m the event carries no error
+
+[1] HTTP surface
+  [32mPASS[0m /api/state returns 200
+  [32mPASS[0m /api/state is JSON
+  [32mPASS[0m /api/state parses
+  [32mPASS[0m state carries the device block
+  [32mPASS[0m state carries the device list
+  [32mPASS[0m state carries transfers
+  [32mPASS[0m state reports receiveDir
+  [32mPASS[0m state reports freeSpace
+  [32mPASS[0m state reports connected browsers
+  [32mPASS[0m the client carries an address and a label
+  [32mPASS[0m a loopback client is flagged as local
+  [32mPASS[0m the label names the browser family
+  [32mPASS[0m a script is labelled as one, not as a browser
+  [32mPASS[0m /api/devices returns 200 + a list
+  [32mPASS[0m / serves the app shell
+  [32mPASS[0m the shell mentions 韧传
+  [32mPASS[0m the shell declares a mobile viewport
+  [32mPASS[0m the phone page offers a disconnect button
+  [32mPASS[0m the phone page can keep the link alive with the screen off
+  [32mPASS[0m the page explains who owns the computer's file list
+  [32mPASS[0m the page script has no duplicate function definitions
+  [32mPASS[0m 网页版把设备名编码后才放进请求头（头部只收 ISO-8859-1）
+  [32mPASS[0m the phone page shows what the computer sent it
+  [32mPASS[0m the phone page calls the computer's folder the computer's
+  [32mPASS[0m the CSRF token is embedded in the page
+  [32mPASS[0m the page is never cached (it carries a token)
+  [32mPASS[0m 带百分号编码的设备名不会让接口出错
+  [32mPASS[0m /assets/app.js is served as JavaScript
+  [32mPASS[0m static assets carry an ETag
+  [32mPASS[0m a matching If-None-Match gets a 304
+  [32mPASS[0m /api/qr.svg returns 200 SVG
+  [32mPASS[0m the SVG contains <svg
+  [32mPASS[0m the SVG contains many <rect> modules
+  [32mPASS[0m the SVG encodes the URL this server is reachable at
+
+[0b] QR decoded by an independent tool (optional)
+  SKIP  zbarimg is not installed
+  [32mPASS[0m /api/qr.png returns a PNG
+  [32mPASS[0m unknown API routes 404
+
+[2] Security
+  [32mPASS[0m POST without a token is refused (403)
+  [32mPASS[0m POST with a wrong token is refused (403)
+  [32mPASS[0m POST with the right token is accepted
+  [32mPASS[0m a token in the JSON body is accepted too
+  [32mPASS[0m HEAD on the event stream is refused instead of hanging
+  [32mPASS[0m GET on a POST-only route returns 405
+  [32mPASS[0m 405 advertises the allowed methods
+  [32mPASS[0m traversal /assets/../../core/engine.py is refused
+  [32mPASS[0m traversal /assets/..%2f..%2fcore%2fengine.py is refused
+  [32mPASS[0m traversal /assets/%2e%2e/%2e%2e/core/engine.py is refused
+  [32mPASS[0m traversal /assets/....//....//core/engine.py is refused
+  [32mPASS[0m download /api/download?path=../../etc/passwd is refused
+  [32mPASS[0m download /api/download?path=..%2f..%2fetc%2fpasswd is refused
+  [32mPASS[0m download /api/download?path=/etc/passwd is refused
+  [32mPASS[0m download /api/download?path=....//....//etc/passwd is refused
+  [32mPASS[0m download /api/download?path=sub%00file is refused
+  [32mPASS[0m a DNS name in Host is refused (rebinding)
+  [32mPASS[0m an IP literal in Host is accepted
+  [32mPASS[0m an oversized body is rejected (413)
+  [32mPASS[0m an upload to an unknown device is refused
+
+[2b] Keep-alive connection reuse
+  [32mPASS[0m HEAD /api/state answers 200
+  [32mPASS[0m the next GET on the same connection still has a body
+  [32mPASS[0m ...and it is the state document
+  [32mPASS[0m a body token is not reused for the next request
+
+[3] Download + Range
+  [32mPASS[0m full download returns 200
+  [32mPASS[0m download advertises Accept-Ranges
+  [32mPASS[0m download sets a filename
+  [32mPASS[0m range request returns 206
+  [32mPASS[0m range bytes are correct
+  [32mPASS[0m Content-Range is right
+  [32mPASS[0m suffix range returns the tail
+  [32mPASS[0m an unsatisfiable range returns 416
+  [32mPASS[0m /api/files lists the received file
+  [32mPASS[0m /api/files hides internal spool files
+  [32mPASS[0m a file inside the upload spool is not downloadable
+  [32mPASS[0m an IPv4-mapped address is displayed as IPv4
+
+[4] Server-Sent Events
+  [32mPASS[0m /api/events opens
+  [32mPASS[0m stream content type is text/event-stream
+  [32mPASS[0m proxies are told not to buffer
+  [32mPASS[0m a hello frame arrives immediately
+
+[3b] Hand-off to the browser (send to phone)
+  [32mPASS[0m sharing a local file succeeds
+  [32mPASS[0m the share shows up in /api/state
+  [32mPASS[0m the share does not leak the local path
+  [32mPASS[0m the phone can download the shared file
+  [32mPASS[0m the download is an attachment with the real name
+  [32mPASS[0m a resumed (ranged) download works too
+  [32mPASS[0m an unknown share id is a 404
+  [32mPASS[0m the desktop learns that the phone took the file
+  [32mPASS[0m a missing file is not shared
+  [32mPASS[0m a phone that is talking right now is online
+  [32mPASS[0m a phone that went quiet is still remembered
+  [32mPASS[0m but it is no longer marked online
+  [32mPASS[0m the remembered phone carries address, label and a key
+  [32mPASS[0m state publishes the remembered phones too
+  [32mPASS[0m removing a remembered phone works
+  [32mPASS[0m and it is really gone
+
+[会话名字] 三个客户端拿到的都是人能读的名字，而且视角正确
+  [32mPASS[0m 会话在列表里
+  [32mPASS[0m 手机上看到的是电脑的名字
+  [32mPASS[0m 不是手机自己的名字（那等于照镜子）
+  [32mPASS[0m 会话 id 不再被当成名字用
+  [32mPASS[0m 成员也是名字（系统 · 版本 · IP）
+  [32mPASS[0m /api/chat 也带同一个名字
+  [32mPASS[0m 没起名的群写人数
+  [32mPASS[0m 查不到名字时不拿 id 前缀充数
+
+[手机 App 登记] 用设备号登记，并且不会和「浏览器」那条重复
+  [32mPASS[0m 老版本 App 会以浏览器身份被记住
+  [32mPASS[0m 只广播过的设备先记下来（也许马上就会说话）
+  [32mPASS[0m 重装 App 后不会留下两条同名记录
+  [32mPASS[0m 一直没再出现的临时记录会被忘掉
+  [32mPASS[0m App 用自己的设备号登记
+  [32mPASS[0m 登记后标签就是设备名
+  [32mPASS[0m 类型标成 App（不是浏览器）
+  [32mPASS[0m 同一个手机上不再有重复记录
+  [32mPASS[0m 留下的那条就是 App
+  [32mPASS[0m 换网后仍然只有一台
+  [32mPASS[0m 没有设备号就拒绝登记
+  [32mPASS[0m App 反复轮询也只留一条记录
+  [32mPASS[0m 而且它还显示为在线
+  [32mPASS[0m 记住的设备说明文字会跟着更新
+  [32mPASS[0m a browser can say goodbye
+  [32mPASS[0m saying goodbye removes that browser from the list
+  [32mPASS[0m a local script can publish a file over the API
+  [32mPASS[0m publishing without the token is refused
+
+[3c] Chat from the browser
+  [32mPASS[0m a phone can send a chat line
+  [32mPASS[0m the line is stored as incoming on this computer
+  [32mPASS[0m the emoji survived the round trip
+  [32mPASS[0m a phone can upload a voice note
+  [32mPASS[0m the voice note knows how long it is
+  [32mPASS[0m the attachment lands inside the receive directory
+  [32mPASS[0m the attachment can be fetched back byte for byte
+  [32mPASS[0m the conversation lists both messages
+  [32mPASS[0m the browser is told which member id is itself
+  [32mPASS[0m state carries the chat summary
+  [32mPASS[0m a chat with an unknown peer is still stored
+
+[5] Upload: phone -> web server -> engine -> peer
+  [32mPASS[0m the peer engine is visible through /api/devices
+  [32mPASS[0m the machine serving the page is offered as a target
+  [32mPASS[0m upload returns 202 Accepted
+  [32mPASS[0m upload answers with a transferId
+  [32mPASS[0m upload echoes the byte count
+  [32mPASS[0m the filename is sanitised but kept
+  [32mPASS[0m the file lands in the peer's receive directory
+  [32mPASS[0m the bytes are identical end to end
+  [32mPASS[0m the spool file is removed after sending
+  [32mPASS[0m uploading to the local machine is accepted
+  [32mPASS[0m the file arrives under its own name (no ' (1)' suffix)
+  [32mPASS[0m the local upload is byte-identical
+  [32mPASS[0m the spool directory is empty again
+  [32mPASS[0m no spool file leaks into the receive directory
+  [32mPASS[0m an upload over the size cap is rejected (413)
+  [32mPASS[0m a refused upload leaves no spool file behind
+
+[6] Incoming offer: peer -> engine -> /api/state -> accept over HTTP
+  [32mPASS[0m the pending offer shows up in /api/state and /api/events
+  [32mPASS[0m the offer is served over HTTP too
+  [32mPASS[0m the offer carries the sender name
+  [32mPASS[0m the offer lists the file and its size
+  [32mPASS[0m accepting over HTTP succeeds
+  [32mPASS[0m the accepted file arrives
+  [32mPASS[0m the received content is intact
+  [32mPASS[0m the sending side reported success
+
+[流保活] 开着事件流就该一直算在线
+  [32mPASS[0m 事件流打开了
+  [32mPASS[0m 15 秒没发请求、流还开着 → 仍然算在线
+  [32mPASS[0m ...而且是刚碰过的那种在线（secondsAgo 在窗口内）
+  [32mPASS[0m 流关掉之后它才变成不在线
+
+[设备两段] 走过的设备要留在「离线」里
+  [32mPASS[0m 设备列表里每一台都带 online 标记
+  [32mPASS[0m 在线的那台（本机）online=True
+  [32mPASS[0m 离线设备仍然出现在设备列表里
+  [32mPASS[0m 它被标成 online=false
+  [32mPASS[0m 并带上「最后在线」秒数
+
+[设备两段] 离线名单要能一键清空
+  [32mPASS[0m 清空前它还在离线列表里
+  [32mPASS[0m 接口回了清掉几台
+  [32mPASS[0m 清空后列表里没有它了
+  [32mPASS[0m 本机（在线设备）不受影响
+
+[企业级 §3] 网页版的信息架构与文案
+  [32mPASS[0m 侧栏宽度是 288px（与电脑端同一个数，§2.3）
+  [32mPASS[0m 宽屏（≥721px）侧栏常驻、窄屏收成抽屉
+  [32mPASS[0m 窄屏左上角是 ☰（抽屉开关）
+  [32mPASS[0m 主区就是拖放目标（没有 .body 那一层多余包裹）
+  [32mPASS[0m 主区只有 会话/传输/设置 三页
+  [32mPASS[0m 主区顶部那套 [会话｜传输] 分段控件已经删掉（它是第二个入口）
+  [32mPASS[0m 侧栏底部保留「传输」与「设置」两个导航
+  [32mPASS[0m 导航是唯一的页面入口（switchView 只由侧栏与设备行触发）
+  [32mPASS[0m 包裹容器（div/section）最深 3 层以内
+  [32mPASS[0m 主区里的包裹容器不超过 3 层
+  [32mPASS[0m 行里（li / td）不再套 div 或 section
+  [32mPASS[0m 卡片标题是 <h2 class="card-title">（不再是 div.card-head > h2）
+  [32mPASS[0m 设备列表与消息列表都是 <ul>，行是 <li>
+  [32mPASS[0m app.js 引用的每个静态 id 都在页面上
+  [32mPASS[0m app.css 声明了深色画布 token（#0f0f11）
+  [32mPASS[0m app.css 声明了深色面 token（#151517）
+  [32mPASS[0m §2.1 的十五个 token 一个不少
+  [32mPASS[0m 浅色一套也在（html[data-theme="light"]）
+  [32mPASS[0m token 声明之外不再出现裸 hex
+  [32mPASS[0m 规则引用变量而不是写死颜色
+  [32mPASS[0m 八个冻结词都在页面上
+  [32mPASS[0m 筛选药丸用的是 全部/进行中/已完成/失败
+  [32mPASS[0m 侧栏四个入口的标签是纯文字（符号交给图标）
+  [32mPASS[0m 「刷新」并进了「扫描」（页面上没有第二个扫描/刷新按钮）
+  [32mPASS[0m 「手动添加 IP」收进扫描的下拉里
+  [32mPASS[0m 二维码只有一个入口（连接手机弹窗），下拉里的重复项已删
+  [32mPASS[0m 主题开关只在设置页（侧栏那颗 🌙 已删）
+  [32mPASS[0m PIN 输入框默认隐藏，只有对方要 PIN 时才出现
+  [32mPASS[0m 「和电脑聊天」按钮已去掉（它和设备行是同一个入口）
+  [32mPASS[0m 设备行按 identityKey 归并（同一台设备一行）
+  [32mPASS[0m 设备名用 CSS 省略号 + title 放全名
+  [32mPASS[0m 设备 > 6 台时才出现搜索框
+  [32mPASS[0m 传输页有搜索框
+  [32mPASS[0m 两张表都有空状态节点
+  [32mPASS[0m 两张表常驻 DOM，分段控件只切 class（不靠 hidden 顶开彼此）
+  [32mPASS[0m 空状态文案跟着筛选走
+  [32mPASS[0m 失败行给中文原因 + 原因码
+  [32mPASS[0m 失败原因不把英文原文直接摆上来（原文只在 title 里）
+  [32mPASS[0m 引擎已经给了中文原因时原样用（不再包一层「传输失败」）
+  [32mPASS[0m 行右键/长按 = 完整文件动作菜单
+  [32mPASS[0m 动作菜单里网页版该有的一样不少
+  [32mPASS[0m 「打开所在文件夹」写明不支持、换成「下载」
+  [32mPASS[0m 属性弹层写明没有路径与 SHA-256
+  [32mPASS[0m 网页版做不到的事写在设置页那张卡片里
+  [32mPASS[0m 能力边界卡片里写清了失败记录去哪儿看
+  [32mPASS[0m 已完成那一行的「来自」有出处，不留破折号
+  [32mPASS[0m 「来自」按证据说话：传输对端 / 分享方 / 上传记录 / 兜底本机
+  [32mPASS[0m 设备行副标题不放端口/平台（端口只出现在会话顶部详情行）
+  [32mPASS[0m 副标题的发现来源用短词（本机 / 网页 / 局域网 / 手动 / 扫描）
+  [32mPASS[0m 同端口的手动占位行被真实设备行吸收
+  [32mPASS[0m 被丢掉的是占位行自己的 id
+  [32mPASS[0m 同名设备给出编号（RealProbe / RealProbe #2）
+  [32mPASS[0m /api/state 的设备名不重复（去重 + 消歧在服务端就做完）
+  [32mPASS[0m 每条设备记录都带 identityKey 或 id
+
+[分享/下载] 手机取文件的整条路
+  [32mPASS[0m 发布一个文件进分享表
+  [32mPASS[0m /api/shares 返回分享表
+  [32mPASS[0m 分享条目带 size / sentBytes / downloaded
+  [32mPASS[0m 分享表里没有本机文件系统路径（只给不透明 id）
+  [32mPASS[0m 完整下载拿到 200
+  [32mPASS[0m 下载到的字节与源文件逐字节一致（sha256）
+  [32mPASS[0m 响应告诉手机可以续传（Accept-Ranges）
+  [32mPASS[0m Content-Disposition 带 UTF-8 文件名（手机存下来名字是中文也不乱）
+  [32mPASS[0m 取完之后回执是 downloaded=True
+  [32mPASS[0m 取完之后 sentBytes 等于文件大小
+  [32mPASS[0m Range 头拿到 206
+  [32mPASS[0m 206 带 Content-Range
+  [32mPASS[0m 只取了一半：进度涨到一半
+  [32mPASS[0m 只取了一半**不算取完**（downloaded 仍为 False）
+  [32mPASS[0m 续传剩下的一半也拿到 206
+  [32mPASS[0m 续传补齐后才算取完（downloaded=True）
+  [32mPASS[0m 续传后的进度是总体进度（等于文件大小，不是最后一段的大小）
+  [32mPASS[0m 进度只增不减（重试/重下不会倒退）
+  [32mPASS[0m 要不到的 Range 回 416
+  [32mPASS[0m 416 带 Content-Range: bytes */长度
+  [32mPASS[0m 416 的说明是中文（含真实长度）
+  [32mPASS[0m 多段 Range 被忽略、整文件照发（不再回 416）
+  [32mPASS[0m 不存在的分享 id 回 404
+  [32mPASS[0m 分享不存在时说的是「过期 / 让电脑重发」
+  [32mPASS[0m 文件被删掉时回 404
+  [32mPASS[0m 文件被删的说法与「分享不存在」不同（指出文件本身没了）
+  [32mPASS[0m 指定给别的设备的分享不出现（forKey 过滤）
+  [32mPASS[0m 没有指定接收方的分享所有人都能看到
+
+[分享/下载] 发布即通知（SSE）
+  [32mPASS[0m 事件流先给了 hello
+  [32mPASS[0m 发布之后事件流上出现 share_added
+  [32mPASS[0m share_added 带上文件名（手机能直接说清是什么）
+  [32mPASS[0m 取完之后事件流上出现 share_taken
+  [32mPASS[0m 重复回执不会再刷一条事件
+
+[分享/下载] 记录通道与分享通道是同一条路
+  [32mPASS[0m media_rel 为空时不再 404（按 media_source 找到分享）
+  [32mPASS[0m 走的是分享通道：字节与分享文件一致（sha256）
+  [32mPASS[0m 同一条路才有进度与回执：sentBytes 涨到文件大小
+  [32mPASS[0m 同一条路才有回执：downloaded=True
+  [32mPASS[0m 连 media_source 都没有时按 名字+大小 也能找到（1024 字节一致）
+  [32mPASS[0m 这条也记了进度
+  [32mPASS[0m 确实找不到的附件回 404
+  [32mPASS[0m 404 的 error 是中文、说清「没有可下载的附件」
+  [32mPASS[0m 404 带可执行的下一步（hint + shareId 字段）
+  [32mPASS[0m 老字段 error 还在（老客户端不受影响）
+  [32mPASS[0m 不存在的消息 id 也是中文 + hint
+
+==============================================================
+All 356 checks passed.

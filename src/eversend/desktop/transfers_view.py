@@ -54,7 +54,9 @@ from .widgets import SegmentedControl, file_actions_menu, icon_button
 
 #: 宪章 §3.2 的列
 SEND_COLUMNS = ("文件", "发给", "大小", "进度", "速度", "剩余", "状态", "操作")
-RECV_COLUMNS = ("文件", "来自", "大小", "时间", "状态", "操作")
+#: 接收方向同样要给出「进度 / 速度 / 剩余」：网页端与手机端一直有，桌面端只有
+#: 状态徽标时，用户完全不知道还要等多久（手机→电脑是最常用的方向）。
+RECV_COLUMNS = ("文件", "来自", "大小", "进度", "速度", "剩余", "时间", "状态", "操作")
 
 #: 筛选药丸（宪章 §3.2 顶部一行）
 FILTERS = (("all", "全部"), ("active", "进行中"), ("done", "已完成"), ("failed", "失败"))
@@ -247,6 +249,10 @@ class TransferItem:
         return max(0.0, min(100.0, 100.0 * self.progress))
 
     def progress_text(self) -> str:
+        # 已经结束的行一律 100%：历史行（收完的文件）没有进度事件，字段默认 0，
+        # 以前会显示成「0.0%」—— 一个已完成的文件写着 0% 比不显示更糟。
+        if self.kind == KIND_DONE and not self.is_phone():
+            return "100%"
         if self.is_phone():
             if self.phone_phase == PHONE_TAKEN:
                 return "100%"
@@ -258,7 +264,9 @@ class TransferItem:
             return "等待对方…"
         if self.is_phone() and self.total_bytes > 0:
             return f"{self.percent():.0f}%"
-        return f"{100.0 * max(0.0, min(1.0, self.progress)):.1f}%"
+        # 小数位与网页端一致（app.js 的 percent.toFixed(0)）：同一次传输两端都
+        # 写「63%」，不会一边 62.5% 一边 63%。
+        return f"{100.0 * max(0.0, min(1.0, self.progress)):.0f}%"
 
     def phone_total_text(self) -> str:
         """手机行「大小」列：已发出 / 总量。"""
@@ -812,10 +820,10 @@ class TransferTable(QTableView):
         # 状态列要放得下手机那条路的文案（「已交给手机，等它下载」/「手机正在取 42%」）——
         # 窄了就会被裁成「已交给手…」，用户看不懂在等谁。
         fixed = {
-            "状态": 128,
-            "操作": 76,
-            "时间": 64,
-            "来自": 104,
+            "状态": 128 if direction == "send" else 112,
+            "操作": 76 if direction == "send" else 72,
+            "时间": 64 if direction == "send" else 56,
+            "来自": 104 if direction == "send" else 92,
             "发给": 104,
             "大小": 132 if direction == "send" else 84,
         }
@@ -823,6 +831,13 @@ class TransferTable(QTableView):
             fixed["进度"] = 120
             fixed["速度"] = 64
             fixed["剩余"] = 60
+        else:
+            # 接收方向（G-B）：进度/速度/剩余三列与发送方向同语义。速度列要给
+            # 「185.78 MiB/s」留够宽度（60px 时实测被裁成「185.78 ⋯」）。
+            fixed["进度"] = 104
+            fixed["速度"] = 92
+            fixed["剩余"] = 60
+            fixed["时间"] = 52
         for column in range(len(self._model.columns)):
             name = self._model.column_name(column)
             if name in fixed:
@@ -959,6 +974,7 @@ class TransferTable(QTableView):
             status="已完成",
             kind=KIND_DONE,
             path=path,
+            progress=1.0,
         )
         effective = self._model.add(item, key=str(key or item.key))
         self.note_history_row(effective)
@@ -1460,8 +1476,11 @@ class TransferRow(QObject):
             item.size_text = f"{human_bytes(done)} / {human_bytes(total)}"
             item.size_bytes = total
         else:
-            item.size_text = human_bytes(done)
-            item.size_bytes = done
+            # 「大小」列是文件大小，不是"已经收了多少"：接收过程中它必须保持
+            # 不变（以前这里写 done，用户会看到 0 B→60 MB→64 MB 一路变，像是
+            # 文件越收越大）。已收多少看「进度」列的百分比/进度条。
+            item.size_text = human_bytes(total)
+            item.size_bytes = total
         self.touch()
 
     def set_status(self, text: str, color: str = "") -> None:

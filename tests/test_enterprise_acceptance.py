@@ -885,7 +885,7 @@ def c05(r: R) -> None:
         r.ok("C5.2 有搜索框", bool(searches), expected="≥1 个 QLineEdit",
              actual=f"{[w.placeholderText() for w in searches]}")
 
-        wanted_recv = ["文件", "来自", "大小", "时间", "状态", "操作"]
+        wanted_recv = ["文件", "来自", "大小", "进度", "速度", "剩余", "时间", "状态", "操作"]
         wanted_send = ["文件", "发给", "大小", "进度", "速度", "剩余", "状态", "操作"]
         for direction, wanted in (("recv", wanted_recv), ("send", wanted_send)):
             table = tv.table(direction)

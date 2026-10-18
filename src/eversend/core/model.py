@@ -653,8 +653,15 @@ def unique_path(path: str) -> str:
 
 
 def human_bytes(value: float) -> str:
-    """Format a byte count for display."""
-    units = ("B", "KB", "MB", "GB", "TB", "PB")
+    """Format a byte count for display.
+
+    The divisor is 1024, so the units must be the IEC ones (KiB/MiB/GiB…):
+    labelling 1024-based sizes as KB/MB under-reports every number by 4.6%
+    (512 MiB showed as "512.00 MB" where SI would be "536.87 MB").  All three
+    front ends share this one implementation (JS mirrors it in
+    ``web/assets/app.js``) so the number and the label always agree.
+    """
+    units = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
     size = float(value)
     for unit in units:
         if abs(size) < 1024.0 or unit == units[-1]:
@@ -662,7 +669,7 @@ def human_bytes(value: float) -> str:
                 return f"{int(size)} {unit}"
             return f"{size:.2f} {unit}"
         size /= 1024.0
-    return f"{size:.2f} PB"
+    return f"{size:.2f} PiB"
 
 
 def human_speed(bps: float) -> str:

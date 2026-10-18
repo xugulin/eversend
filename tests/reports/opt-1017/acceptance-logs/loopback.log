@@ -1,0 +1,68 @@
+EverSend core loopback tests
+============================================================
+
+[1] Basic transfer: single 8 MiB file
+  [32mPASS[0m send returned success
+  [32mPASS[0m file exists at destination
+  [32mPASS[0m size matches
+  [32mPASS[0m content matches (sha256)
+  [32mPASS[0m no leftover .part file
+  [32mPASS[0m nothing still holds the source file open
+
+[2] Directory transfer with mixed sizes
+  [32mPASS[0m directory send succeeded
+  [32mPASS[0m small.txt intact
+  [32mPASS[0m empty.dat intact
+  [32mPASS[0m sub/medium.bin intact
+  [32mPASS[0m sub/deep/large.bin intact
+
+[3] Resume: interrupt mid-transfer, then reconnect
+  [32mPASS[0m partial file was left behind
+  [32mPASS[0m journal was written
+  [32mPASS[0m resumed send succeeded
+  [32mPASS[0m file exists after resume
+  [32mPASS[0m size matches after resume
+  [32mPASS[0m content matches after resume
+  [32mPASS[0m part file cleaned up
+
+[4] Corruption repair: damage a received file, re-send, expect repair
+  [32mPASS[0m initial copy ok
+  [32mPASS[0m file was corrupted
+  [32mPASS[0m re-send reported success
+  [32mPASS[0m file repaired
+
+[5] Cancellation reclaims the preallocated space
+  [32mPASS[0m 接收中的 .part 被预分配成整个文件大小（这正是要能收回来的东西）
+  [32mPASS[0m 取消前这次接收是活跃的
+  [32mPASS[0m send stopped after cancel
+  [32mPASS[0m no final file written
+  [32mPASS[0m 取消后接收目录里没有这个文件的 .part / .journal
+  [32mPASS[0m 取消把占用的字节还回来了（回到取消前）
+      .part 峰值 192.0 MiB / 目录实占 192.0 MiB → 取消后 0.00 MiB
+
+[6] End-to-end throughput (64 MiB, 4 streams)
+      64 MiB in 1.17s = 54 MiB/s
+  [32mPASS[0m fast transfer succeeded
+  [32mPASS[0m throughput above the floor (5 MiB/s)
+
+[7] Manual accept: the offer is answered by the receiver
+  [32mPASS[0m the offer reaches the receiver and waits for an answer
+  [32mPASS[0m accepting the offer is accepted
+  [32mPASS[0m the sender reports success
+  [32mPASS[0m the file lands even though the transfer had to be accepted first
+  [32mPASS[0m content matches (sha256)
+  [32mPASS[0m nothing still holds the received file open (Windows needs this to rename it)
+
+[8] Identity file: a degraded key pair is detected and replaced
+  [32mPASS[0m the damaged identity does not look valid
+  [32mPASS[0m loading replaces it with a usable identity
+  [32mPASS[0m the device name is kept
+  [32mPASS[0m the replacement is persisted
+  [32mPASS[0m a good identity is left alone
+  [32mPASS[0m an encrypted transfer succeeds
+  [32mPASS[0m the bytes arrive intact
+
+============================================================
+All checks passed.
+警告：/home/xgl/我的项目/自制软件/韧传/eversend/.testscratch/run-615dm3oh/identity.json 公钥与私钥不匹配（这份身份是在缺少加密库时生成的），已重新生成身份。
+      本机设备号会变化，其他设备需要重新配对一次。

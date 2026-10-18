@@ -110,6 +110,7 @@ class Connection:
         "_bytes_received",
         "_encrypt_enabled",
         "_gather_ok",
+        "socket_buffers",
     )
 
     def __init__(
@@ -140,7 +141,11 @@ class Connection:
         self._bytes_sent = 0
         self._bytes_received = 0
 
-        tune_socket(sock, keepalive=True, nodelay=True)
+        #: Effective socket buffers as granted by the kernel (diagnostics; see
+        #: :func:`~eversend.core.sockutil.tune_socket`).  Read-only snapshot.
+        self.socket_buffers: dict[str, int] = dict(
+            tune_socket(sock, keepalive=True, nodelay=True) or {}
+        )
 
     # -- properties --------------------------------------------------------
 
@@ -187,6 +192,10 @@ class Connection:
             "ed25519": self._identity.ed25519_pub_b64,
             "nonce": crypto.b64e(nonce_i),
             "encrypt": self._encrypt_enabled,
+            # Optional (v1 backward-compatible) AEAD preference: lets two peers
+            # on different CPU architectures agree on one cipher.  Old peers
+            # ignore this field.
+            "cipher": crypto.preferred_algorithm(),
         }
         send_frame(self.sock, MSG_HELLO, json.dumps(hello).encode("utf-8"))
 
@@ -207,6 +216,11 @@ class Connection:
         peer_x25519 = str(ack.get("x25519", ""))
 
         encrypt = bool(ack.get("encrypt", False)) and self._encrypt_enabled
+
+        # One AEAD for both directions: adopt what the responder agreed to (it
+        # echoes our HELLO proposal, see crypto.negotiated_algorithm).  An old
+        # responder sends no "cipher" -> local fallback = old behaviour.
+        agreed_algorithm = crypto.negotiated_algorithm(ack.get("cipher"))
 
         # Verify the responder's signature over the transcript.
         authenticated = False
@@ -231,6 +245,7 @@ class Connection:
             initiator=True,
             encrypt=encrypt,
             authenticated=authenticated,
+            algorithm=agreed_algorithm,
         )
 
         # Prove our own identity.
@@ -279,6 +294,9 @@ class Connection:
         nonce_r = crypto.new_nonce()
 
         encrypt = bool(hello.get("encrypt", False)) and self._encrypt_enabled
+        # The initiator may advertise its AEAD preference; adopting it makes both
+        # ends agree on one cipher.  Old peers omit the field -> local fallback.
+        agreed_algorithm = crypto.negotiated_algorithm(hello.get("cipher"))
 
         self._install_session(
             peer_info,
@@ -288,6 +306,7 @@ class Connection:
             initiator=False,
             encrypt=encrypt,
             authenticated=False,
+            algorithm=agreed_algorithm,
         )
 
         sig_r = b""
@@ -309,6 +328,7 @@ class Connection:
             "ed25519": self._identity.ed25519_pub_b64,
             "nonce": crypto.b64e(nonce_r),
             "encrypt": self.encrypted,
+            "cipher": agreed_algorithm,
             "sig": crypto.b64e(sig_r),
         }
         send_frame(self.sock, MSG_HELLO_ACK, json.dumps(ack).encode("utf-8"))
@@ -348,6 +368,7 @@ class Connection:
         initiator: bool,
         encrypt: bool,
         authenticated: bool,
+        algorithm: str | None = None,
     ) -> None:
         if encrypt and peer_x25519:
             session = crypto.establish_session(
@@ -357,6 +378,7 @@ class Connection:
                 nonce_i,
                 nonce_r,
                 initiator=initiator,
+                algorithm=algorithm,
             )
         else:
             session = crypto.SessionCrypto(
@@ -584,7 +606,9 @@ class Connection:
                 )
             except Exception as exc:
                 raise ProtocolError(f"chunk authentication failed: {exc}") from exc
-            return ChunkFrame(seq, index, offset, memoryview(plain), crc)
+            return ChunkFrame(
+                seq, index, offset, memoryview(plain), crc, aead_verified=True
+            )
 
         return ChunkFrame(seq, index, offset, view[:data_len], crc)
 
@@ -624,6 +648,11 @@ class ChunkFrame:
     offset: int
     data: memoryview
     crc: int
+    #: True when this chunk arrived inside an encrypted frame, i.e. the AEAD
+    #: tag already authenticated every byte.  The receiver uses this to skip
+    #: the (now redundant) CRC32 recomputation on the encrypted path; it must
+    #: stay False on plain sessions so corruption in flight is still caught.
+    aead_verified: bool = False
 
     def __len__(self) -> int:
         return len(self.data)

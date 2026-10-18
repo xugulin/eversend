@@ -7,8 +7,10 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import org.json.JSONObject
@@ -61,9 +63,25 @@ class LinkService : Service() {
     private var introduced = false
 
     private var worker: Thread? = null
+    private var heartbeatWorker: Thread? = null
     @Volatile private var stopRequested = false
-    private var base: String = ""
-    private var token: String = ""
+    @Volatile private var base: String = ""
+    @Volatile private var token: String = ""
+
+    /**
+     * 熄屏、锁屏时保持 Wi-Fi 无线电和 CPU 醒着。
+     *
+     * 这是"前台服务保活"的前置条件：Android 的 Wi-Fi 省电（DTIM 拉长）会让
+     * 组播/事件流在熄屏后收不到；Doze 又会让 CPU 休眠。真机（MI9/crDroid 16）
+     * 实测：App 掉到后台/cached 时系统会 `InetDiagMessage: Destroyed live tcp
+     * sockets` 并让 UDP sendto 返 EPERM；而前台服务 + 这两个锁能让进程保持
+     * "前台服务"重要级（importance=125），不被当成 cached 处理。
+     *
+     * 代价是待机耗电会增加 —— 用户开「常驻连接」（设置页）就是明确要这个，
+     * 关掉开关服务会停、锁也释放。
+     */
+    private var wifiLock: WifiManager.WifiLock? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -84,6 +102,9 @@ class LinkService : Service() {
 
     private fun start(host: String) {
         startForegroundCompat()
+        // 前台服务是"掉后台不被系统掐网/销毁 socket"的唯一保险，再把 Wi-Fi/CPU
+        // 锁拿上，熄屏也保持可收可发。
+        acquireKeepAliveLocks()
         // 前台服务也把发现引擎拉起来：熄屏/切后台时电脑端仍然能"听到"这台手机
         // （每 15 秒一条公告），而手机这边也在继续听电脑的公告 —— 换 Wi-Fi、
         // 电脑换 IP 之后不用用户手动重连（C13 的"自动"要在这个场景下也成立）。
@@ -95,7 +116,16 @@ class LinkService : Service() {
         if (worker?.isAlive == true) return
         stopRequested = false
         running = true
+        base = host
         worker = Thread({ loop() }, "eversend-link").apply { isDaemon = true; start() }
+        // 心跳是独立线程：SSE 连上以后 loop() 会阻塞在 events() 里，
+        // 原来写在 loop 里的心跳就再也不跑了（见 heartbeatLoop 的注释）。
+        if (heartbeatWorker?.isAlive != true) {
+            heartbeatWorker = Thread({ heartbeatLoop() }, "eversend-heartbeat").apply {
+                isDaemon = true
+                start()
+            }
+        }
     }
 
     /**
@@ -128,7 +158,11 @@ class LinkService : Service() {
                     Thread.sleep(2000)
                     continue
                 }
-                if (token.isBlank()) token = ApiClient.fetchToken(base)
+                // **每次（重）连接都要重新取一张令牌**：电脑端每次重启都会换令牌，
+                // 而地址不变（同一台机同一端口）—— 只在 token.isBlank() 时取，会让
+                // 服务在电脑重启后一直拿着旧令牌，之后所有请求都被 403。
+                // 成本只是一次 GET（只在每轮重连时发生，不是每个事件）。
+                token = ApiClient.fetchToken(base)
                 if (token.isBlank()) {
                     lastState = "连不上（拿不到令牌）"
                     Thread.sleep(3000)
@@ -200,8 +234,10 @@ class LinkService : Service() {
             }
             if (stopRequested) break
             updateNotification(lastState)
+            // 真退避：以前写的是 minOf(backoff, 1000L) —— 永远只睡 1 秒，
+            // 指数退避形同虚设。电脑端重启/网络断掉时会变成每秒一次的重连风暴。
             try {
-                Thread.sleep(minOf(backoff, 1000L))
+                Thread.sleep(backoff)
             } catch (interrupted: InterruptedException) {
                 break
             }
@@ -300,7 +336,13 @@ class LinkService : Service() {
     private fun startForegroundCompat() {
         ensureChannel()
         val notification = buildNotification("正在连接电脑…")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // specialUse：Android 15 起 dataSync 类型的前台服务有「每 24 小时
+            // 累计 6 小时」的配额，到点系统强制 onTimeout 停服 —— 和"常驻连接"
+            // 的语义直接冲突。这是用户在设置页明确开启的局域网长连接，
+            // specialUse 才是准确的类型（无时长配额）。
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
             startForeground(NOTIFICATION_ID, notification)
@@ -357,9 +399,110 @@ class LinkService : Service() {
         manager.notify((System.currentTimeMillis() % 100000).toInt() + 2000, notification)
     }
 
+    /**
+     * 心跳线程：**独立于 SSE 循环**。
+     *
+     * 原实现把心跳写在「进入 events() 之前」那一段 —— 一旦 SSE 连上就阻塞在
+     * events() 里，心跳再也不发（注释写着"每 5 秒一次"，实际是"每次重连一次"）。
+     * 电脑端 15 秒没收到请求就把手机标成离线，用户看到"明明连着却掉线"。
+     * 现在拆成独立线程：SSE 通不通都每 5 秒一次 /api/state，顺带把电脑发布的
+     * 文件收进下载队列（熄屏时界面轮询停了，这里是唯一还在跑的地方 —— 762 MB
+     * 的文件就该在口袋里下完）。
+     */
+    private fun heartbeatLoop() {
+        var lastFailure = ""
+        while (!stopRequested) {
+            val host = currentHost()
+            try {
+                if (host.isNotBlank()) {
+                    if (token.isBlank()) token = ApiClient.fetchToken(host)
+                    if (token.isNotBlank()) {
+                        val state = ApiClient(host, token).getJson("/api/state")
+                        lastSeenAt = System.currentTimeMillis()
+                        offerShares(state)
+                        if (!running) running = true
+                        if (lastFailure.isNotEmpty()) {
+                            lastFailure = ""
+                            Log.d(TAG, "心跳恢复")
+                        }
+                    }
+                }
+            } catch (problem: Exception) {
+                val message = problem.javaClass.simpleName + ": " + (problem.message ?: "")
+                // 令牌过期（电脑端重启）时 /api/state 会被 403：立即换一张，
+                // 不要等下一次重连 —— 否则界面/服务会一直拿着旧令牌。
+                if (message.contains("令牌") || message.contains("403") || message.contains("防跨站")) {
+                    try {
+                        token = ApiClient.fetchToken(host)
+                        Log.d(TAG, "心跳 403 → 已换新令牌")
+                    } catch (ignored: Exception) {
+                    }
+                }
+                if (message != lastFailure) {
+                    lastFailure = message
+                    Log.d(TAG, "心跳失败: $message")
+                }
+            }
+            try {
+                Thread.sleep(HEARTBEAT_MS)
+            } catch (interrupted: InterruptedException) {
+                break
+            }
+        }
+    }
+
+    /**
+     * 拿 Wi-Fi 和 CPU 的保活锁。前台服务只保证进程重要性，不保证无线电/CPU
+     * 醒着 —— 熄屏后 Wi-Fi 会进省电（DTIM 拉长），Doze 会让 CPU 休眠，
+     * 长连接和文件传输都会变慢甚至断。用户开了「常驻连接」就是明确要这个。
+     */
+    private fun acquireKeepAliveLocks() {
+        try {
+            if (wifiLock == null) {
+                val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                wifiLock = wifi
+                    ?.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "eversend-link")
+                    ?.apply {
+                        setReferenceCounted(false)
+                        acquire()
+                    }
+                Log.d(TAG, "Wi-Fi 保活锁: ${if (wifiLock?.isHeld == true) "已拿到" else "没拿到"}")
+            }
+        } catch (problem: Exception) {
+            Log.d(TAG, "拿不到 Wi-Fi 锁: ${problem.message}")
+        }
+        try {
+            if (wakeLock == null) {
+                val power = getSystemService(Context.POWER_SERVICE) as? PowerManager
+                wakeLock = power?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "eversend-link")
+                    ?.apply {
+                        setReferenceCounted(false)
+                        acquire()
+                    }
+                Log.d(TAG, "CPU 唤醒锁: ${if (wakeLock?.isHeld == true) "已拿到" else "没拿到"}")
+            }
+        } catch (problem: Exception) {
+            Log.d(TAG, "拿不到 CPU 唤醒锁: ${problem.message}")
+        }
+    }
+
+    private fun releaseKeepAliveLocks() {
+        try {
+            wifiLock?.takeIf { it.isHeld }?.release()
+        } catch (ignored: Exception) {
+        }
+        wifiLock = null
+        try {
+            wakeLock?.takeIf { it.isHeld }?.release()
+        } catch (ignored: Exception) {
+        }
+        wakeLock = null
+    }
+
     override fun onDestroy() {
         stopRequested = true
         running = false
+        releaseKeepAliveLocks()
         super.onDestroy()
     }
 

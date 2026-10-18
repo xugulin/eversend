@@ -1,0 +1,46 @@
+
+[0] 能力宣告
+  [32mPASS[0m 0.1 /api/state 宣告 caps.uploadResume=true
+  [32mPASS[0m 0.2 宣告 caps.uploadMaxBytes 为正整数
+  [32mPASS[0m 0.3 旧字段还在（device/transfers/shares）
+
+[1] 分段续传 happy path
+  [32mPASS[0m 1.1 第一段返回 202 且未完成
+  [32mPASS[0m 1.2 服务端报告已收到 500KiB
+  [32mPASS[0m 1.3 第二段续传返回 202 且未完成
+  [32mPASS[0m 1.4 offset 单调递增
+  [32mPASS[0m 1.5 收满后返回完成
+  [32mPASS[0m 1.6 完成响应带 resumeId
+  [32mPASS[0m 1.7 文件落到接收目录
+  [32mPASS[0m 1.8 续传拼接后 sha256 与源一致
+  [32mPASS[0m 1.9 spool 已清理（resume- 开头文件不再占位）
+
+[2] 偏移不匹配的恢复
+  [32mPASS[0m 2.1 先传 300KiB
+  [32mPASS[0m 2.2 偏移不符返回 409
+  [32mPASS[0m 2.3 409 告诉客户端服务端真实偏移
+  [32mPASS[0m 2.4 按 409 的 offset 重发后完成
+  [32mPASS[0m 2.5 最终文件 sha256 一致
+
+[3] 完成后的幂等重放
+  [32mPASS[0m 3.1 重发返回完成
+  [32mPASS[0m 3.2 接收目录没有多出重复文件
+
+[4] 旧客户端回归（无 uploadId）
+  [32mPASS[0m 4.1 旧一次性上传仍成功
+  [32mPASS[0m 4.2 旧路径内容 sha256 一致
+  [32mPASS[0m 4.3 旧路径响应不带续传字段（不改变旧客户端语义）
+
+[5] 参数校验
+  [32mPASS[0m 5.1 非法 uploadId 返回 400
+  [32mPASS[0m 5.2 续传缺 X-EverSend-Total 返回 400
+  [32mPASS[0m 5.3 声明总长 < body 返回 400
+
+[6] /api/upload/status
+  [32mPASS[0m 6.1 状态查询返回服务端已有字节
+  [32mPASS[0m 6.2 未完成时 complete=false
+  [32mPASS[0m 6.3 已完成的 uploadId 查得到完成态
+  [32mPASS[0m 6.4 未知 uploadId 返回 offset=0
+
+============================================================
+[32mPASS[0m 全部通过

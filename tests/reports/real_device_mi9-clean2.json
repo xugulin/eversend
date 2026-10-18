@@ -1,0 +1,167 @@
+{
+  "label": "mi9-clean2",
+  "when": "2026-10-17 22:27:35",
+  "repo": {
+    "when": "2026-10-17 22:27:35",
+    "loadavg": [
+      4.63,
+      4.69,
+      4.98
+    ],
+    "cpu_count": 16,
+    "head": "e18c079",
+    "dirty_count": 6,
+    "dirty": [
+      "tests/reports/opt-1017/",
+      "tests/reports/real_device_1017-2223.json",
+      "tests/reports/real_device_1017-2223.md",
+      "tests/reports/real_device_mi9-clean1.json",
+      "tests/reports/real_device_mi9-clean1.md",
+      "tests/test_real_device.py"
+    ],
+    "mtimes": {
+      "tests/reports/real_device_1017-2223.json": 1792246984.0,
+      "tests/reports/real_device_1017-2223.md": 1792246984.0,
+      "tests/reports/real_device_mi9-clean1.json": 1792247248.9,
+      "tests/reports/real_device_mi9-clean1.md": 1792247248.9,
+      "tests/test_real_device.py": 1792246958.0
+    },
+    "note": "仓库处于写入中"
+  },
+  "adb_serial": "2430d3c",
+  "phone_online": true,
+  "summary": {
+    "A7": "FAIL",
+    "A8": "PASS"
+  },
+  "results": [
+    {
+      "id": "A7",
+      "title": "手机发文件给电脑 → 电脑接收目录 + sha256",
+      "status": "FAIL",
+      "error": "",
+      "subs": [
+        {
+          "name": "A7.digest",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "A7-手机发来.png 370 KiB sha256=18214f0c7b8e8f5f…"
+        },
+        {
+          "name": "A7.a 测试文件已经在手机上（adb push）",
+          "ok": true,
+          "expected": "/sdcard/Download/A7-手机发来.png",
+          "actual": "True",
+          "note": ""
+        },
+        {
+          "name": "A7.prepare",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "已清上一轮的测试文件"
+        },
+        {
+          "name": "A7.b0 App 在会话页（底部有「📎 传输文件」）",
+          "ok": true,
+          "expected": "会话页",
+          "actual": "界面文本=['💻', 'QA-真机验收', 'linux · 192.168.110.41:52119 · 发现方式：组播', '在线', '已信任', '打开接收文件夹', '⋯', 'QA-真机验收']",
+          "note": ""
+        },
+        {
+          "name": "A7.b App 里点开了「传输文件」",
+          "ok": true,
+          "expected": "底部工具栏那个「📎 传输文件」",
+          "actual": "候选=['点「📎 传输文件」选要发的文件：方块排在这里，点方块可以先看一眼。', '📎 传输文件']",
+          "note": ""
+        },
+        {
+          "name": "A7.c 在选择器里选中了这个文件",
+          "ok": true,
+          "expected": "列表里出现 A7-手机发来.png",
+          "actual": "界面文本=['💻', 'QA-真机验收', 'linux · 192.168.110.41:52119 · 发现方式：组播', '在线', '已信任', '打开接收文件夹', '⋯', '已选 1 个文件，点「发送」发给 QA-真机验收']",
+          "note": ""
+        },
+        {
+          "name": "A7.d 文件进了待发区（回到 App 了）",
+          "ok": true,
+          "expected": "界面上出现 A7-手机发来.png",
+          "actual": "['✕', 'A7-手机发来.png', '共 1 项 · 370.9 KB', '📎 传输文件', '😊', '🎤', '说点什么…', '发送']",
+          "note": ""
+        },
+        {
+          "name": "A7.e 设备勾选",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "已勾选；行=['☑ QA-真机验收', '☐ xgl']"
+        },
+        {
+          "name": "A7.f 点了「发送」",
+          "ok": true,
+          "expected": "",
+          "actual": "找到并点击「发送」",
+          "note": ""
+        },
+        {
+          "name": "A7.phone_status",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "['发送失败：QA-真机验收：缺少或错误的防跨站令牌，请刷新页面', '发送失败：QA-真机验收：缺少或错误的防跨站令牌，请刷新页面']"
+        },
+        {
+          "name": "A7.g 电脑接收目录里真的出现了这个文件",
+          "ok": false,
+          "expected": "/home/xgl/qa-real/received/A7-手机发来*.png",
+          "actual": "目录里现有 []",
+          "note": ""
+        },
+        {
+          "name": "~耗时",
+          "ok": true,
+          "expected": "",
+          "actual": "222.0s",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "A8",
+      "title": "双向中文 + emoji 消息，两端都能看到",
+      "status": "PASS",
+      "error": "",
+      "subs": [
+        {
+          "name": "A8.1 电脑发的中文+emoji 消息出现在手机界面上",
+          "ok": true,
+          "expected": "手机界面含 'QA 真机消息 🚀 中文+emoji 47481'",
+          "actual": "手机界面片段=['💻', 'QA-真机验收', 'linux · 192.168.110.41:52119 · 发现方式：组播', '在线', '已信任', '打开接收文件夹', '⋯', '发送失败：QA-真机验收：缺少或错误的防跨站令牌，请刷新页面', 'QA-真机验收', '与 00254c4971c16f15c4bcd7982900f3cb 的对话（这台设备现在不在列表里）', '← 会话', 'QA-真机验收 · 22:31']",
+          "note": ""
+        },
+        {
+          "name": "A8.desktop_rows",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "电脑端会话行数=1"
+        },
+        {
+          "name": "A8.phone_shot",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "/home/xgl/qa-real/shots/A8-phone-message.png"
+        },
+        {
+          "name": "~耗时",
+          "ok": true,
+          "expected": "",
+          "actual": "10.2s",
+          "note": ""
+        }
+      ]
+    }
+  ]
+}

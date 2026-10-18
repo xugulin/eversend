@@ -1,0 +1,54 @@
+EverSend chat tests
+============================================================
+
+[1] The store: conversations, messages, attachments, unread
+  [32mPASS[0m a 1:1 id is the same from both sides
+  [32mPASS[0m the conversation is stored
+  [32mPASS[0m members survive
+  [32mPASS[0m a member id containing '|' stays one member
+  [32mPASS[0m both messages are there, oldest first
+  [32mPASS[0m an incoming message counts as unread
+  [32mPASS[0m the list preview shows the attachment
+  [32mPASS[0m marking read clears the badge
+  [32mPASS[0m the attachment folder is filesystem safe
+  [32mPASS[0m the same conversation always maps to the same folder
+  [32mPASS[0m a nasty file name is sanitised the receiver's way
+  [32mPASS[0m groups are separate conversations
+  [32mPASS[0m the newest conversation comes first
+
+[2] Two computers, one conversation
+  [32mPASS[0m 甲 sees 乙
+  [32mPASS[0m the message was delivered
+  [32mPASS[0m delivery state is 'sent'
+  [32mPASS[0m 乙 received it
+  [32mPASS[0m text arrived intact with the emoji
+  [32mPASS[0m it arrives as incoming
+  [32mPASS[0m the sender name came along
+  [32mPASS[0m the conversation exists on both sides
+  [32mPASS[0m an unreachable member is reported as failed
+
+[3] An attachment lands where the message says it does
+  [32mPASS[0m the message carries a relative media path
+  [32mPASS[0m the file exists at that path
+  [32mPASS[0m the bytes are identical
+  [32mPASS[0m 乙's copy of the message points at the same path
+  [32mPASS[0m the receiver knows the size and mime
+  [32mPASS[0m a voice note carries its duration
+
+[4] Group chat: one message, every member
+  [32mPASS[0m both members got it
+  [32mPASS[0m 乙 learned the group
+  [32mPASS[0m 丙 learned the group
+  [32mPASS[0m 乙 has the message
+  [32mPASS[0m 丙 has the message
+  [32mPASS[0m the group keeps its name on the receivers
+  [32mPASS[0m everyone is listed as a member
+
+[未读] 幂等 + 有上限
+  [32mPASS[0m 第一条收到的消息算 1 条未读
+  [32mPASS[0m 同一条消息重发不会把未读加第二遍
+  [32mPASS[0m 正常收消息仍然照常累加
+  [32mPASS[0m 裁剪之后未读不超过剩下的消息条数
+
+============================================================
+All chat checks passed.

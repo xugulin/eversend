@@ -1,0 +1,151 @@
+{
+  "runs": [
+    {
+      "kind": "evsd-cpu-split",
+      "size_mib": 8.0,
+      "size_bytes": 8388608,
+      "streams": 2,
+      "path": "/dev/shm/perf-bench-compat/perf-bench-20261017-233333-6f12a2",
+      "wall_s": 0.310192,
+      "mib_per_s": 25.79,
+      "total_cpu_s": 0.1,
+      "cpu_s_per_mib": 0.0125,
+      "ok": true,
+      "sha_ok": true,
+      "tx_rss_hwm_kb": 61644,
+      "loadavg_before": [
+        19.81,
+        16.42,
+        14.97
+      ],
+      "loadavg_after": [
+        19.81,
+        16.42,
+        14.97
+      ],
+      "profile": {
+        "total_cpu_s": 0.1,
+        "accounted_cpu_s": 0.073157,
+        "stages": {
+          "other": {
+            "cpu_s": 0.026843,
+            "calls": 0,
+            "pct_of_total": 26.84
+          },
+          "hash": {
+            "cpu_s": 0.023721,
+            "calls": 18,
+            "pct_of_total": 23.72
+          },
+          "aead": {
+            "cpu_s": 0.02205,
+            "calls": 66,
+            "pct_of_total": 22.05
+          },
+          "connection": {
+            "cpu_s": 0.011865,
+            "calls": 69,
+            "pct_of_total": 11.87
+          },
+          "crc32": {
+            "cpu_s": 0.00785,
+            "calls": 16,
+            "pct_of_total": 7.85
+          },
+          "socket_recv": {
+            "cpu_s": 0.004165,
+            "calls": 46,
+            "pct_of_total": 4.17
+          },
+          "disk_write": {
+            "cpu_s": 0.002939,
+            "calls": 8,
+            "pct_of_total": 2.94
+          },
+          "chunkstore": {
+            "cpu_s": 0.000499,
+            "calls": 9,
+            "pct_of_total": 0.5
+          },
+          "disk_sync": {
+            "cpu_s": 6.6e-05,
+            "calls": 10,
+            "pct_of_total": 0.07
+          }
+        },
+        "bucket_labels": {
+          "aead": "AEAD (seal/open)",
+          "hash": "hash (blake2b/file digest)",
+          "crc32": "crc32",
+          "socket_send": "socket send",
+          "socket_recv": "socket recv",
+          "disk_write": "磁盘写 (pwrite/write_at)",
+          "disk_sync": "磁盘同步 (fdatasync/fsync)",
+          "chunkstore": "chunkstore 自身 (journal/锁)",
+          "framing": "framing 自身 (组/拆帧)",
+          "connection": "connection 自身 (协议调度)"
+        }
+      },
+      "note": "同进程双 Engine；thread_time 自时间归因，other=进程总 CPU-已归因"
+    }
+  ],
+  "summaries": [],
+  "config": {
+    "command": "cpu-split",
+    "size_mib": 8,
+    "streams": 2,
+    "repeats": 1,
+    "json": "/tmp/compat-old-cpu.json",
+    "md": "/tmp/compat-old-cpu.md",
+    "label": "",
+    "keep": false,
+    "scratch": "/dev/shm/perf-bench-compat"
+  },
+  "generated_at": "2026-10-17T23:33:35+0800",
+  "label": "",
+  "command": "tools/bench_transfer.py cpu-split --size-mib 8 --streams 2 --repeats 1 --scratch /dev/shm/perf-bench-compat --json /tmp/compat-old-cpu.json --md /tmp/compat-old-cpu.md",
+  "host": {
+    "git_state": {
+      "head": "e18c0797c5fba9db248a2ba58f7e379a3a8e42c6",
+      "dirty_files": [
+        "?? tools/bench_transfer.py"
+      ],
+      "md5": {
+        "src/eversend/core/chunkstore.py": "0c12a3cdf2500a69890de2e10e25aeff",
+        "src/eversend/core/crypto.py": "23844ff4f29d9088b8c33f4a208843b6",
+        "src/eversend/core/framing.py": "7ff9d00037ce3dde74b41fd35f2dbfb1",
+        "src/eversend/core/hashing.py": "e2d1e97326eec6df549401913683bb60",
+        "src/eversend/core/transfer.py": "818fdff22eb38bf46ab6b56b90899b64",
+        "src/eversend/core/engine.py": "388515824e7e7d9e3df3200621e2dbe4",
+        "src/eversend/web/server.py": "b71669fb8562e971120631eebf14bf2f",
+        "tools/bench_transfer.py": "d90e8f7968ad8839457cde4e5d69ffbf"
+      }
+    },
+    "nproc": 16,
+    "kernel": "7.2.8-1-cachyos",
+    "machine": "x86_64",
+    "python": "3.14.7",
+    "git_head": "e18c0797c5fba9db248a2ba58f7e379a3a8e42c6",
+    "cwd": "/home/xgl/qa-real/baseline-tree",
+    "cpu_model": "AMD Ryzen 7 2700X Eight-Core Processor",
+    "mem_total": "16311796 kB",
+    "mem_available_at_start": "9580452 kB",
+    "scratch_df": "tmpfs          tmpfs 8155896  2116 8153780    1% /dev/shm",
+    "home_df": "/dev/sdc3      btrfs 932046848 230925960 700437320   25% /home",
+    "loadavg_at_start": [
+      19.81,
+      16.42,
+      14.97
+    ],
+    "mib_definition": "1 MiB = 1048576 bytes",
+    "disk_probe": {
+      "size_mib": 64.0,
+      "preallocate_s": 0.0773,
+      "write_cache_s": 0.0629,
+      "write_cache_mib_s": 1017.8,
+      "fdatasync_s": 0.0,
+      "fdatasync_mib_s": 1648634.8,
+      "note": "preallocate+write+fdatasync 模拟接收端 finalize 的落盘路径"
+    }
+  }
+}

@@ -218,6 +218,9 @@ class MainWindow(QMainWindow):
         )
         # 「重新发送」要从文件动作矩阵里真的发得出去（见 desktop-chat 的约定）。
         self.transfers_view.recv_table.resend_handler = self._resend_file
+        # 接收记录要能跨重启（G-12）：会话库里有每个收到文件的记录，启动时把
+        # 文件还在的那些恢复成历史行；以前传输页重启后永远是空的。
+        self._restore_received_history()
 
         self.session_view = SessionView(self.chat_view, self.transfers_view)
         self.session_view.paths_dropped.connect(self._add_paths)
@@ -1558,6 +1561,53 @@ class MainWindow(QMainWindow):
             subtitle_parts.append("#" + short)
         return title, " · ".join(part for part in subtitle_parts if part)
 
+    def _known_peer_name(self, conv_id: str) -> str:
+        """按会话成员设备号反查一个可读名字（页头别把内部 id 露给用户）。
+
+        「会话标题其实是 device_id」时，页头以前直接写「未知设备 #hash」，
+        而同一屏的消息卡片署名却是真名 —— 同一台设备两套名字。这里按可靠度
+        依次查：设备表 → 传输事件缓存 → 手机（浏览器）客户端记录 → 会话里
+        最后一条消息的署名。全都查不到才回退短号。
+        """
+        conversation = self.chat_view.conversation(conv_id) or {}
+        self_id = str(self.engine.info.device_id)
+        candidates: list[str] = []
+        for member in [str(m) for m in (conversation.get("members") or []) if m]:
+            raw = member[4:] if member.startswith("web:") else member
+            if raw and raw != self_id and raw not in candidates:
+                candidates.append(raw)
+        if not candidates:
+            tail = conv_id.split(":")[-1]
+            raw = tail[4:] if tail.startswith("web:") else tail
+            if raw and raw != self_id:
+                candidates.append(raw)
+        for device_id in candidates:
+            peer = self._peer_by_device_id(device_id)
+            if peer is not None and str(peer.info.name or "").strip():
+                return str(peer.info.name).strip()
+            for cached_id, cached_name in self._transfer_devices.values():
+                if cached_id == device_id and cached_name:
+                    return str(cached_name).strip()
+        ui = getattr(self, "_web_ui", None)
+        if ui is not None:
+            try:
+                for client in ui.known_clients():
+                    if not any(device_id in str(client) for device_id in candidates):
+                        continue
+                    label = str(client.get("label") or client.get("name") or "").strip()
+                    if label and not self._looks_like_an_id(label):
+                        return label
+            except Exception:
+                pass
+        try:
+            for message in reversed(self.engine.chat.messages(conv_id, limit=40)):
+                name = str(message.get("senderName") or "").strip()
+                if name and not self._looks_like_an_id(name):
+                    return name
+        except Exception:
+            pass
+        return ""
+
     @staticmethod
     def _looks_like_an_id(text: str) -> bool:
         """``deadbeefca`` / ``g:1a2b3c`` 这种"其实是 id"的标题。"""
@@ -1609,9 +1659,11 @@ class MainWindow(QMainWindow):
             # 一对一会话，但对端已经不在设备列表里了（只认记录）：
             # 这不是群聊，别给它挂「群聊」药丸。
             short = conv_id.split(":")[-1][:8]
+            known = self._known_peer_name(conv_id)
+            subtitle = "这台设备现在不在设备列表里；会话记录还在，它在的时候还会回到这一行。"
             self.session_view.header.set_conversation(
-                f"未知设备 #{short}",
-                "这台设备现在不在设备列表里；会话记录还在，它在的时候还会回到这一行。",
+                known or f"未知设备 #{short}",
+                subtitle,
                 avatar="💬",
                 pill="记录",
                 pill_state="offline",
@@ -2729,12 +2781,18 @@ class MainWindow(QMainWindow):
                 )
             row = self._transfers.get(transfer.transfer_id)
             if row is None:
-                label = ("发送到 " if transfer.direction == "send" else "接收自 ") + transfer.peer.name
+                # 引擎方向词汇是 ``receive``/``send``，桌面表用 ``recv``/``send``
+                # （见 transfers_view 的 RECV_COLUMNS、_recv_from、_finish_row
+                # 的方向判断）。直接透传引擎词汇会让「收尾行隐藏」「_recv_from
+                # 记录来源」等一整套逻辑静默失效——每次接收完都会多留一行
+                # 「完成」，而且断线/失败时找不到来源设备。
+                direction = "send" if transfer.direction == "send" else "recv"
+                label = ("发送到 " if direction == "send" else "接收自 ") + transfer.peer.name
                 row = self._adopt_pending_row(
-                    transfer.transfer_id, label, transfer.direction
-                ) or self._add_transfer_row(transfer.transfer_id, label, transfer.direction)
+                    transfer.transfer_id, label, direction
+                ) or self._add_transfer_row(transfer.transfer_id, label, direction)
                 row.set_status("传输中")
-                started = transfer.direction
+                started = direction
             names = [
                 os.path.basename(str(getattr(item.entry, "name", "") or item.path or ""))
                 for item in transfer.items.values()
@@ -2747,6 +2805,19 @@ class MainWindow(QMainWindow):
             total = max(1, stats.total_bytes)
             row.set_total(total)
             row.update_progress(done, total, stats.instant_speed_bps, stats.eta_seconds)
+            # 字节已满但传输还没结束 = 落盘/摘要校验的收尾阶段（实测 512MiB 在
+            # 100% 之后还停留 1.5~7.6s，越闲越久）。这段时间继续显示「传输中」
+            # 并把窗口内均值速度（从 320MB/s 一路衰减到 55MB/s）摆出来是在说
+            # 假话：明确标「校验中…」，速度/剩余置空，结束事件会再覆盖成终态。
+            if (
+                stats.total_bytes > 0
+                and done >= stats.total_bytes
+                and not getattr(row, "_finished", False)
+            ):
+                row.set_status("校验中…")
+                row.item.speed_bps = 0.0
+                row.item.eta = None
+                row.touch()
         self._last_tick = now
         self.sidebar.set_transfer_count(
             len([t for t in active if t.transfer_id not in self._finished_ids])
@@ -2900,6 +2971,75 @@ class MainWindow(QMainWindow):
             return
         self._send()
 
+    def _restore_received_history(self) -> None:
+        """启动时把已经收完的文件恢复到「传输 → 接收」表（G-12）。
+
+        接收行以前只由运行时事件创建（``add_history_row`` 的唯一调用点是
+        ``_add_history``），重启后传输页一片空白；而会话库里其实留着每个收到
+        文件的记录（``mediaName`` / ``mediaRel`` / 发送者 / 时间）。这里按会话
+        最近消息把**文件仍在接收目录**的那些恢复成历史行，行上的「预览 /
+        另存为 / 重新发送」才有意义。恢复失败绝不影响窗口启动。
+        """
+        try:
+            receive_dir = os.path.realpath(self.engine.config.receive_dir)
+            table = self.transfers_view.recv_table
+            seen: set[str] = set()
+            restored = 0
+            for conversation in self.engine.chat.conversations()[:50]:
+                conv_id = str(conversation.get("id") or "")
+                if not conv_id:
+                    continue
+                try:
+                    messages = self.engine.chat.messages(conv_id, limit=80)
+                except Exception:
+                    continue
+                for message in reversed(messages):
+                    if str(message.get("direction") or "") != "in":
+                        continue
+                    name = str(message.get("mediaName") or "")
+                    rel = str(message.get("mediaRel") or "")
+                    if not name and not rel:
+                        continue
+                    path = os.path.realpath(os.path.join(receive_dir, rel or name))
+                    if path in seen or not os.path.isfile(path):
+                        continue
+                    seen.add(path)
+                    timestamp = float(message.get("ts") or 0) or 0.0
+                    when = (
+                        time.strftime("%H:%M", time.localtime(timestamp))
+                        if timestamp
+                        else ""
+                    )
+                    sender = str(message.get("senderName") or "").strip()
+                    if not sender or self._looks_like_an_id(sender):
+                        sender = self._known_peer_name(conv_id) or "—"
+                    try:
+                        size_text = human_bytes(os.path.getsize(path))
+                    except OSError:
+                        size_text = ""
+                    key = str(message.get("recordKey") or "") or f"restore:{path}"
+                    try:
+                        table.add_history_row(
+                            name or os.path.basename(path),
+                            path,
+                            sender,
+                            size_text,
+                            when,
+                            key=key,
+                        )
+                        restored += 1
+                    except Exception:
+                        continue
+                    if restored >= 200:
+                        break
+                if restored >= 200:
+                    break
+            if restored:
+                self.transfers_view.refresh_empty()
+        except Exception:
+            # 恢复是"锦上添花"：数据目录被删/会话库损坏都不能挡住窗口启动。
+            pass
+
     def _add_history(
         self,
         name: str,
@@ -2947,6 +3087,15 @@ class MainWindow(QMainWindow):
             key=record_key,
         )
         self._history_transfers.add(transfer_id)
+        # 安全网：结束事件比 file_done 先到时，_finish_row 那一刻还看不到历史行，
+        # live 行不会被收起。这里补一刀，保证任何事件顺序下「一个文件只有一行」。
+        live = self._transfers.get(transfer_id)
+        if (
+            live is not None
+            and str(getattr(live, "direction", "")) == "recv"
+            and getattr(live, "_finished", False)
+        ):
+            live.hide()
         self._announce_received_file(transfer_id, name, path)
         self.transfers_view.refresh_empty()
 
@@ -3134,6 +3283,11 @@ class MainWindow(QMainWindow):
         device_id, sender_name = self._transfer_peer_info(transfer_id)
         found = self._peer_by_device_id(device_id)
         conv_id = self._conversation_for_peer(found) if found is not None else ""
+        # 这条兜底必须**先定义**：下面「会话已经存在」时不会进 if 分支，而收尾
+        # 还有一处 ``if not other_member`` 要读它。以前只有分支内赋值，于是每收
+        # 一个文件就在 Qt 槽里抛 UnboundLocalError（Qt 打印 traceback 后吞掉），
+        # 表现是会话里没有文件卡片、页头一直「未知设备 #hash」。
+        other_member = ""
         if not conv_id:
             # 还没跟这台设备说过话？那就现开一个会话 —— 传输页一清空就什么都不剩，
             # 会话记录是用户唯一还能翻到"谁给我发过什么"的地方。

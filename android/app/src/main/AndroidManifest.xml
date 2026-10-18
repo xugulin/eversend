@@ -14,6 +14,13 @@
     <!-- 前台服务：熄屏、切后台也保持连接，这正是做原生 App 的原因。 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!--
+        常驻长连接用 specialUse 类型。原因：Android 15 起 dataSync 类型的前台
+        服务有「每 24 小时累计 6 小时」配额，到点系统强制 onTimeout 停服 ——
+        和"只有手动断开才断"的产品语义直接冲突（真机是 Android 16，会命中）。
+        specialUse 无时长配额，对"用户显式开启的局域网长连接"也更准确。
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 语音消息。 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -46,7 +53,12 @@
         <service
             android:name=".LinkService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="dataSync|specialUse">
+            <!-- specialUse 类型必须声明用途（Android 14+ 的清单要求）。 -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="用户在设置页开启的局域网常驻连接：熄屏/切后台时保持与电脑的消息长连接与文件传输" />
+        </service>
 
         <provider
             android:name="androidx.core.content.FileProvider"

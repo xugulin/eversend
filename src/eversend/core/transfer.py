@@ -54,6 +54,7 @@ from .constants import (
     MSG_CANCEL,
     CHUNK_DEADLINE_FLOOR_BPS,
     CHUNK_REQUEST_TIMEOUT,
+    chunk_range,
     MSG_CHUNK_REQ,
     MSG_DIGEST_REQ,
     MSG_ERROR,
@@ -1181,14 +1182,20 @@ class ReceiveSession:
         self, part: PartFile, item: TransferItem, file_index: int, frame: ChunkFrame
     ) -> None:
         """Verify and persist one received chunk."""
-        actual_crc = crc32(frame.data)
-        if actual_crc != frame.crc:
-            # Corruption in flight (only reachable without AEAD, since the
-            # AEAD tag already covers this).  Re-queue rather than write.
-            raise ProtocolError(
-                f"{item.entry.name}: chunk {frame.index} failed CRC "
-                f"({actual_crc:#010x} != {frame.crc:#010x})"
-            )
+        # On an encrypted session the AEAD tag has already authenticated every
+        # byte we are about to write, so recomputing CRC32 here is pure CPU for
+        # zero extra detection power (2 GiB costs ~0.8 CPU-s on the receive
+        # side).  The wire CRC is still recorded in the journal, so corruption
+        # that appears on disk later is still localised by the repair scan.
+        if not frame.aead_verified:
+            actual_crc = crc32(frame.data)
+            if actual_crc != frame.crc:
+                # Corruption in flight (only reachable without AEAD).  Re-queue
+                # rather than write.
+                raise ProtocolError(
+                    f"{item.entry.name}: chunk {frame.index} failed CRC "
+                    f"({actual_crc:#010x} != {frame.crc:#010x})"
+                )
         if frame.offset != frame.index * part.chunk_size:
             raise ProtocolError(
                 f"{item.entry.name}: chunk {frame.index} claims offset {frame.offset}"
@@ -1732,6 +1739,10 @@ class SendSession:
         self.items: dict[int, TransferItem] = {
             e.index: TransferItem(entry=e, path=sources.get(e.index, "")) for e in entries
         }
+        #: FileEntry by file index.  The chunk-serving hot path used to do a
+        #: linear ``next(... for e in self.entries ...)`` scan once per chunk
+        #: (O(chunks x files)); this dict makes it O(1).
+        self._entry_by_index: dict[int, FileEntry] = {e.index: e for e in entries}
         self.peer = control.peer.info if control.peer else DeviceInfo("", "unknown")
         self.accepted: list[int] = []
         self.rejected: list[tuple[int, str]] = []
@@ -2204,7 +2215,7 @@ class SendSession:
         if known:
             return known
 
-        entry = next((e for e in self.entries if e.index == file_index), None)
+        entry = self._entry_by_index.get(file_index)
         if entry is None:
             return ""
         source = self.sources.get(file_index, "")
@@ -2280,7 +2291,7 @@ class SendSession:
                 return
             reader = self._readers.get(file_index)
             if reader is None:
-                entry = next((e for e in self.entries if e.index == file_index), None)
+                entry = self._entry_by_index.get(file_index)
                 source = self.sources.get(file_index)
                 if entry is None or not source:
                     return
@@ -2291,8 +2302,9 @@ class SendSession:
                     return
                 self._readers[file_index] = reader
 
-        entry = next(e for e in self.entries if e.index == file_index)
-        from .constants import chunk_range
+        entry = self._entry_by_index.get(file_index)
+        if entry is None:  # cannot happen: accepted[] is built from entries
+            return
 
         _offset, length = chunk_range(chunk_index, entry.chunk_size, entry.size)
         try:

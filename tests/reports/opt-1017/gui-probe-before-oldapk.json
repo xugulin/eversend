@@ -1,0 +1,435 @@
+{
+  "label": "before-oldapk",
+  "only": "A2",
+  "interval": 1.2,
+  "when": "2026-10-17 22:59:47",
+  "env": {
+    "adb": "2430d3c",
+    "work": "/home/xgl/qa-real",
+    "loadavg": [
+      12.8837890625,
+      12.73876953125,
+      12.2802734375
+    ]
+  },
+  "harness_exit": 0,
+  "harness_report": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/real_device_probe-before-oldapk.md",
+  "harness_summary": "| A2 | 电脑发中等文件（约 100 MB）→ 手机磁盘 + sha256 | ✅ PASS | — |\n",
+  "samples": [
+    {
+      "t": 0.0,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0000.png",
+      "truth": null
+    },
+    {
+      "t": 1.5,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0001.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 3.0,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0002.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 4.49,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0003.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 5.98,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0004.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 7.47,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0005.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 8.96,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0006.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 10.45,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0007.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 11.94,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0008.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 13.43,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0009.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 14.91,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0010.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 16.4,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0011.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 17.88,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0012.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 19.37,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0013.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 20.85,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0014.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 22.35,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0015.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 23.83,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0016.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 25.31,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0017.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 26.8,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0018.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 28.28,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0019.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 29.77,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0020.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 31.26,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0021.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 32.75,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0022.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 34.24,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0023.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 50.93,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0024.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 52.42,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0025.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 53.91,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0026.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 55.39,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0027.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 56.88,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0028.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 58.36,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0029.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 59.85,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0030.png",
+      "truth": {
+        "shares": [],
+        "transfers": []
+      }
+    },
+    {
+      "t": 61.33,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0031.png",
+      "truth": null
+    },
+    {
+      "t": 64.31,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0032.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": false
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 65.81,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0033.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": false
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 67.31,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0034.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 1572864,
+            "size": 104857600,
+            "downloaded": false
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 68.83,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0035.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 21495808,
+            "size": 104857600,
+            "downloaded": false
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 70.32,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0036.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 43778048,
+            "size": 104857600,
+            "downloaded": false
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 71.81,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0037.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 65273856,
+            "size": 104857600,
+            "downloaded": false
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 73.29,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0038.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 85196800,
+            "size": 104857600,
+            "downloaded": false
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 74.78,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0039.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 98828288,
+            "size": 104857600,
+            "downloaded": false
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 76.27,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0040.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 104857600,
+            "size": 104857600,
+            "downloaded": true
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 78.07,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0041.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 104857600,
+            "size": 104857600,
+            "downloaded": true
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 80.0,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/before-oldapk/0042.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 104857600,
+            "size": 104857600,
+            "downloaded": true
+          }
+        ],
+        "transfers": []
+      }
+    }
+  ]
+}

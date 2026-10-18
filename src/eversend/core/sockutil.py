@@ -391,12 +391,21 @@ def tune_socket(
     buffers: int = SOCKET_BUFFER_SIZE,
     keepalive: bool = True,
     nodelay: bool = True,
-) -> None:
+) -> dict[str, int]:
     """Apply throughput- and reliability-oriented options to ``sock``.
 
     Must be called *before* ``connect()`` on the client side for the send
     buffer to take effect on Linux: once the connection is established the
     kernel freezes the autotuning ceiling at whatever it decided.
+
+    Returns a diagnostic record of what the kernel actually granted::
+
+        {"requested": 8388608, "sndbuf": ..., "rcvbuf": ..., "capped": bool}
+
+    ``socket.socket`` has no ``__dict__`` (attributes cannot be attached to it),
+    so callers that care -- :class:`~eversend.core.connection.Connection` does --
+    keep the returned dict.  A kernel cap is *not* an error: a default Linux
+    install caps the request at ~208 KiB and the connection still works.
     """
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, buffers)
@@ -419,6 +428,30 @@ def tune_socket(
         sock.settimeout(None)
     except OSError:
         pass
+
+    # Read back what the kernel actually *granted*.  On a default Linux install
+    # `net.core.wmem_max` is ~208 KiB, so the multi-megabyte request above is
+    # silently capped; without this readback that shows up only as "single
+    # stream throughput is mysteriously stuck around 100 Mbps".  Diagnostic
+    # only: a cap is not an error and must never stop a connection working.
+    snd, rcv = actual_socket_buffers(sock)
+    record = {
+        "requested": int(buffers),
+        "sndbuf": int(snd),
+        "rcvbuf": int(rcv),
+        "capped": bool(snd and snd < buffers) or bool(rcv and rcv < buffers),
+    }
+    if os.environ.get("EVERSEND_DEBUG"):
+        print(
+            "[eversend] socket buffers:"
+            f" requested={record['requested']}"
+            f" actual snd={record['sndbuf']} rcv={record['rcvbuf']}"
+            + ("  (kernel-capped; raise net.core.wmem_max/rmem_max if this"
+               " matters for high-RTT links)" if record["capped"] else ""),
+            file=sys.stderr,
+            flush=True,
+        )
+    return record
 
 
 def enable_keepalive(sock: socket.socket) -> None:
