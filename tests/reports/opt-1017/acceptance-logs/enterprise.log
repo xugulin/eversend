@@ -1,5 +1,5 @@
-企业级验收 v1.0 · label=opt-final2
-仓库快照：HEAD=0346e2a 变更文件=26 （仓库处于写入中）· load average=[0.89, 0.82, 0.89] · 核数=16
+企业级验收 v1.0 · label=opt-final4
+仓库快照：HEAD=8bd847c 变更文件=30 （仓库处于写入中）· load average=[1.44, 1.67, 1.43] · 核数=16
 
 === C1 控件去重（一个意图一个入口，三端一致） ===
 --- C1: PASS ---
@@ -36,12 +36,6 @@
     [FAIL] C11.8g 原始大小模式下「原始大小」药丸亮着
            期望: actual=checked, fit=unchecked
            实际: actual=False fit=True
-    [FAIL] C11.8c →（右方向键）真的切到下一张
-           期望: 从 /home/xgl/我的项目/自制软件/韧传/eversend/.testscratch/qa-acc-twc7_l0w/c11-small.png 切走
-           实际: /home/xgl/我的项目/自制软件/韧传/eversend/.testscratch/qa-acc-twc7_l0w/c11-small.png
-    [FAIL] C11.8d ←（左方向键）真的切回上一张
-           期望: 回到 /home/xgl/我的项目/自制软件/韧传/eversend/.testscratch/qa-acc-twc7_l0w/c11-small.png
-           实际: /home/xgl/我的项目/自制软件/韧传/eversend/.testscratch/qa-acc-twc7_l0w/c11-big.png
 
 === C12 网页版：同一套 IA 与 token、无三层嵌套、两次点击可达 ===
 --- C12: PASS ---
@@ -53,11 +47,7 @@
 --- C14: PASS ---
 
 === E4 无回归：宪章 §8 的现有测试继续全绿 ===
---- E4: FAIL ---
-    [FAIL] E4 test_gui_actions 退出码 0（696.5s）
-           期望: exit 0
-           实际: exit=-15；末尾输出：[32mPASS[0m 两台各有一张传输卡片 /  / [6] 侧栏设备列表：名字 + 未读 + 置顶 + 群聊
-           备注: 宪章 E4 + §8 验收命令
+--- E4: PASS ---
 
 === E5 性能：窗口冷启动 ≤1.5s、1000 条传输记录滚动流畅 ===
 --- E5: PASS ---
@@ -80,10 +70,10 @@
   C12   PASS  网页版：同一套 IA 与 token、无三层嵌套、两次点击可达
   C13   PASS  自动发现：≤5s 零手动、扫描兜底、跨网段覆盖、bye 即时离线
   C14   PASS  消息必达：ACK、待重发队列、重连补投、失败原因码
-  E4    FAIL  无回归：宪章 §8 的现有测试继续全绿
+  E4    PASS  无回归：宪章 §8 的现有测试继续全绿
   E5    PASS  性能：窗口冷启动 ≤1.5s、1000 条传输记录滚动流畅
   E6    PASS  交付质量：README 里每一条截图引用都能打开
 ==============================================================
-  15/17 项通过（其中 1 条子断言因机器负载高而未判定：['E4 test_loopback 的吞吐地板（默认 60 MiB/s）']）
+  16/17 项通过（其中 1 条子断言因机器负载高而未判定：['E4 test_loopback 的吞吐地板（默认 60 MiB/s）']）
 
-报告已写入 /home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-final2.md 与 .json
+报告已写入 /home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-final4.md 与 .json

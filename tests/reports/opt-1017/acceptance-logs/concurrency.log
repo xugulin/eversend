@@ -5,7 +5,7 @@ EverSend 并发与短写正确性测试
   [32mPASS[0m 全部帧都被解密（没有 authentication failed）
   [32mPASS[0m 收到的帧数正确
   [32mPASS[0m 每个载荷都完整且唯一（无 nonce 复用导致的丢失）
-      400 帧 / 8 线程，用时 0.01s
+      400 帧 / 8 线程，用时 0.02s
 
 [2] Cipher 本身：并发 seal 不产生重复 nonce
   [32mPASS[0m 密文数量正确

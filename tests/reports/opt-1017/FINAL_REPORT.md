@@ -467,6 +467,22 @@ http-resume（28 项）/ web（356 项）/ gui-render / gui-actions（190.9s）�
 见 §5.6.3。`tests/test_http_resume.py` 扩到 **28 项全绿**；`web selftest 356`、`share persistence 18`
 回归全绿。
 
+### 5.7.2 第 6 轮：验收编排收口（A9 可选项 / C11 异步状态 / E4 去重）
+本轮把验收编排的两个"结构性假红"修掉，并重跑 final3 / final4 两轮全量验收（各 ~10.1–10.4 分钟，
+较 final2 的 21.4 分钟减半）：
+
+| 项 | 之前 | 修复后 |
+|---|---|---|
+| E4 重复执行整套 gui_actions | enterprise 809.7s，第二次跑 Qt 点击套件挂住 11+ 分钟 → E4 假红 | 编排器传 `EVERSEND_SKIP_LEGACY_GUI=1`，E4 不再重复；enterprise **163.9s PASS** |
+| realdevice 被 A9 可选项拖红 | A9（1 GiB，需 `EVERSEND_REAL_BIG=1`）未跑记 UNDECIDED → 整步 exit=1 | 默认 `--only A0,A1,A2,A6,A7,A8`；A9 需要时单独另跑 |
+| C11 药丸状态断言 | Ctrl+1 后"原始大小/适应窗口"药丸由信号**异步**刷新，高负载下一次 processEvents 不够 → 期望 actual=checked 实际 fit=True（假红） | 断言前泵事件直到状态一致（≤1.5s）；C11 单跑 **PASS**（`c11-recheck.md`） |
+
+两轮结果（同一冻结树 `8bd847c`）：
+- **final3 = 10/11**：enterprise **PASS**；realdevice 红仅因 A9 未判定（A0–A8 实际全 PASS）。
+- **final4 = 10/11**：realdevice **PASS 6/6**；enterprise 16/17、红仅 C11（已修并单跑 PASS）。
+- 已登记的环境级长尾：同一台机器连续多轮跑 Qt/GUI 套件时偶发某 GUI 步骤长时间挂住（本轮 enterprise
+  卡在 C7 10+ 分钟），与产品逻辑无关，单跑即恢复（历史多轮 PASS）；不影响功能验收结论。
+
 ## 6. 兼容性 / 安全 / 边界
 
 - **协议兼容**：EVSD cipher 协商不升版本，旧对端忽略未知字段；HTTP 上传续传无 uploadId 走旧路径，旧客户端无感；
@@ -542,7 +558,7 @@ bash tests/reports/opt-1017/ab-run.sh
 | 测试设施修正 | `tests/test_real_device.py`（ADB 自适应、A7.j 泵事件循环、端口探测 SO_REUSEADDR、抽屉页导航）、`tools/realdevice_probe.py`（同端口修复）、`tests/test_gui_actions.py`（列下标→列名） |
 | 收尾轮新增报告 | `real_device_v8-final.md`、`gui-probe-after-v{5,6,7,8}.md`、`resume-probe-v{4,8}.md`、`bench-before-after.md` |
 | 最终 APK（v11） | `android/app/build/outputs/apk/debug/app-arm64-v8a-debug.apk`，72,262,603 B，sha256 `3a0ef6495c94f10f37ee1b7845bbda3c7078d97730f33adabf4d21a1b4c9aea0` |
-| 报告 | `tests/reports/opt-1017/` 全部；最终验收 `acceptance-final2.md` + 复验 `opt-recheck.md`/`real_device_a8-recheck.md`；APK sha256 见 §5 |
+| 报告 | `tests/reports/opt-1017/` 全部；验收 `acceptance-final2.md`/`final3`/`final4` + 复验 `opt-recheck.md`、`c11-recheck.md`、`real_device_a8-recheck.md`；APK sha256 见 §5 |
 
 ---
 

@@ -1686,12 +1686,24 @@ def c11(r: R) -> None:
         app.processEvents()
         _key_click(key_dialog, _Qt.Key_1, _Qt.ControlModifier)
         app.processEvents()
+        # 药丸（工具栏缩放模式按钮）由缩放信号**异步**刷新：高负载时一次
+        # processEvents 不够，实测全量验收里 C11.8g 偶发 actual=False fit=True
+        # （缩放值已变、药丸还停在上一个模式）。这里泵事件直到状态一致，
+        # 最多等 1.5s —— 等的是"视觉状态跟上"，不是放宽判定。
+        actual_button = getattr(key_dialog, "actual_button", None)
+        fit_button = getattr(key_dialog, "fit_button", None)
+        if hasattr(canvas, "scale_factor") and actual_button is not None and fit_button is not None:
+            deadline = time.monotonic() + 1.5
+            while time.monotonic() < deadline:
+                app.processEvents()
+                if abs(canvas.scale_factor() - 1.0) < 0.001 \
+                        and bool(actual_button.isChecked()) and not bool(fit_button.isChecked()):
+                    break
+                time.sleep(0.02)
         if hasattr(canvas, "scale_factor"):
             r.ok("C11.8a Ctrl+1 → 原始大小（100%）",
                  abs(canvas.scale_factor() - 1.0) < 0.001,
                  expected="scale=1.0", actual=f"scale={canvas.scale_factor():.3f}")
-            actual_button = getattr(key_dialog, "actual_button", None)
-            fit_button = getattr(key_dialog, "fit_button", None)
             if actual_button is not None and fit_button is not None:
                 r.ok("C11.8g 原始大小模式下「原始大小」药丸亮着",
                      bool(actual_button.isChecked()) and not bool(fit_button.isChecked()),

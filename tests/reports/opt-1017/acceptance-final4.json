@@ -1,0 +1,284 @@
+{
+  "freeze": {
+    "when": "2026-10-18 03:02:51",
+    "head": "8bd847c opt-1017 round5: 续传完成快照落盘（跨重启幂等）+ 最终全量验收（含逐项复验）",
+    "changed_count": 30,
+    "changed": [
+      "M tests/reports/opt-1017/acceptance-logs/concurrency.log",
+      " M tests/reports/opt-1017/acceptance-logs/enterprise.log",
+      " M tests/reports/opt-1017/acceptance-logs/loopback.log",
+      " M tests/reports/opt-1017/acceptance-logs/realdevice.log",
+      " M tests/reports/opt-1017/acceptance-logs/resilience.log",
+      " M tests/screenshots/01-session.png",
+      " M tests/screenshots/02-transfers.png",
+      " M tests/screenshots/03-receive.png",
+      " M tests/screenshots/04-settings.png",
+      " M tests/screenshots/06-chat.png",
+      " M tests/screenshots/07-preview.png",
+      " M tests/screenshots/08-preview-image.png",
+      " M tests/screenshots/09-emoji-and-sections.png",
+      " M tests/screenshots/10-offline-devices.png",
+      " M tests/screenshots/11-sections-collapsed.png",
+      " M tests/screenshots/12-emoji-in-bubble.png",
+      " M tests/screenshots/12-transfers-failed.png",
+      " M tests/screenshots/13-one-row-per-file.png",
+      " M tests/screenshots/13-settings-top.png",
+      " M tests/screenshots/14-transfer-record-in-chat.png",
+      " M tests/screenshots/15-settings-maintenance.png",
+      " M tests/screenshots/16-one-phone-one-row.png",
+      " M tests/screenshots/conversation-list.png",
+      " M tools/acceptance_opt1017.py",
+      "?? tests/reports/opt-1017/acceptance-final3.json",
+      "?? tests/reports/opt-1017/acceptance-final3.md",
+      "?? tests/reports/opt-final3.json",
+      "?? tests/reports/opt-final3.md",
+      "?? tests/reports/real_device_opt-final3.json",
+      "?? tests/reports/real_device_opt-final3.md"
+    ],
+    "tracked_mtimes": {
+      "tests/reports/opt-1017/acceptance-logs/enterprise.log": "2026-10-18 03:00:22",
+      "tests/reports/opt-1017/acceptance-logs/loopback.log": "2026-10-18 02:52:38",
+      "tests/reports/opt-1017/acceptance-logs/realdevice.log": "2026-10-18 03:02:31",
+      "tests/reports/opt-1017/acceptance-logs/resilience.log": "2026-10-18 02:53:00",
+      "tests/screenshots/01-session.png": "2026-10-18 02:58:27",
+      "tests/screenshots/02-transfers.png": "2026-10-18 02:58:28",
+      "tests/screenshots/03-receive.png": "2026-10-18 02:58:28",
+      "tests/screenshots/04-settings.png": "2026-10-18 02:58:28",
+      "tests/screenshots/06-chat.png": "2026-10-18 02:58:29",
+      "tests/screenshots/07-preview.png": "2026-10-18 02:58:34",
+      "tests/screenshots/08-preview-image.png": "2026-10-18 02:58:34",
+      "tests/screenshots/09-emoji-and-sections.png": "2026-10-18 02:58:29",
+      "tests/screenshots/10-offline-devices.png": "2026-10-18 02:58:30",
+      "tests/screenshots/11-sections-collapsed.png": "2026-10-18 02:58:30",
+      "tests/screenshots/12-emoji-in-bubble.png": "2026-10-18 02:58:30",
+      "tests/screenshots/12-transfers-failed.png": "2026-10-18 02:58:32",
+      "tests/screenshots/13-one-row-per-file.png": "2026-10-18 02:58:31",
+      "tests/screenshots/13-settings-top.png": "2026-10-18 02:58:33",
+      "tests/screenshots/14-transfer-record-in-chat.png": "2026-10-18 02:58:31",
+      "tests/screenshots/15-settings-maintenance.png": "2026-10-18 02:58:31",
+      "tests/screenshots/16-one-phone-one-row.png": "2026-10-18 02:58:32",
+      "tests/screenshots/conversation-list.png": "2026-10-18 02:54:53",
+      "tools/acceptance_opt1017.py": "2026-10-18 03:02:47"
+    },
+    "loadavg": [
+      1.1171875,
+      1.451171875,
+      1.251953125
+    ],
+    "python": "3.14.7",
+    "label": "final4",
+    "cmdline": [
+      "/usr/bin/python3",
+      "/home/xgl/我的项目/自制软件/韧传/eversend/tools/acceptance_opt1017.py",
+      "--label",
+      "final4"
+    ],
+    "changed_after": [
+      "M tests/reports/opt-1017/acceptance-logs/concurrency.log",
+      " M tests/reports/opt-1017/acceptance-logs/enterprise.log",
+      " M tests/reports/opt-1017/acceptance-logs/loopback.log",
+      " M tests/reports/opt-1017/acceptance-logs/realdevice.log",
+      " M tests/reports/opt-1017/acceptance-logs/resilience.log",
+      " M tests/screenshots/01-session.png",
+      " M tests/screenshots/02-transfers.png",
+      " M tests/screenshots/03-receive.png",
+      " M tests/screenshots/04-settings.png",
+      " M tests/screenshots/06-chat.png",
+      " M tests/screenshots/07-preview.png",
+      " M tests/screenshots/08-preview-image.png",
+      " M tests/screenshots/09-emoji-and-sections.png",
+      " M tests/screenshots/10-offline-devices.png",
+      " M tests/screenshots/11-sections-collapsed.png",
+      " M tests/screenshots/12-emoji-in-bubble.png",
+      " M tests/screenshots/12-transfers-failed.png",
+      " M tests/screenshots/13-one-row-per-file.png",
+      " M tests/screenshots/13-settings-top.png",
+      " M tests/screenshots/14-transfer-record-in-chat.png",
+      " M tests/screenshots/15-settings-maintenance.png",
+      " M tests/screenshots/16-one-phone-one-row.png",
+      " M tests/screenshots/conversation-list.png",
+      " M tools/acceptance_opt1017.py",
+      "?? tests/reports/opt-1017/acceptance-final3.json",
+      "?? tests/reports/opt-1017/acceptance-final3.md",
+      "?? tests/reports/opt-final3.json",
+      "?? tests/reports/opt-final3.md",
+      "?? tests/reports/opt-final4.json",
+      "?? tests/reports/opt-final4.md",
+      "?? tests/reports/real_device_opt-final3.json",
+      "?? tests/reports/real_device_opt-final3.md",
+      "?? tests/reports/real_device_opt-final4.json",
+      "?? tests/reports/real_device_opt-final4.md"
+    ],
+    "duration_s": 660.0
+  },
+  "results": [
+    {
+      "name": "compile",
+      "title": "编译检查（src/tests/tools 顶层）",
+      "argv": [
+        "/usr/bin/python3",
+        "-m",
+        "compileall",
+        "-q",
+        "src",
+        "tests"
+      ],
+      "exit": 0,
+      "elapsed": 0.1,
+      "log": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/acceptance-logs/compile.log",
+      "tail": "",
+      "passed": true,
+      "expected": ""
+    },
+    {
+      "name": "loopback",
+      "title": "内核 e2e（loopback，含 2GiB 吞吐）",
+      "argv": [
+        "/usr/bin/python3",
+        "tests/test_loopback.py"
+      ],
+      "exit": 0,
+      "elapsed": 13.5,
+      "log": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/acceptance-logs/loopback.log",
+      "tail": "  \u001b[32mPASS\u001b[0m the file lands even though the transfer had to be accepted first\n  \u001b[32mPASS\u001b[0m content matches (sha256)\n  \u001b[32mPASS\u001b[0m nothing still holds the received file open (Windows needs this to rename it)\n[8] Identity file: a degraded key pair is detected and replaced\n  \u001b[32mPASS\u001b[0m the damaged identity does not look valid\n  \u001b[32mPASS\u001b[0m loading replaces it with a usable identity\n  \u001b[32mPASS\u001b[0m the device name is kept\n  \u001b[32mPASS\u001b[0m the replacement is persisted\n  \u001b[32mPASS\u001b[0m a good identity is left alone\n  \u001b[32mPASS\u001b[0m an encrypted transfer succeeds\n  \u001b[32mPASS\u001b[0m the bytes arrive intact\n============================================================\nAll checks passed.\n警告：/home/xgl/我的项目/自制软件/韧传/eversend/.testscratch/run-r1xngjki/identity.json 公钥与私钥不匹配（这份身份是在缺少加密库时生成的），已重新生成身份。\n      本机设备号会变化，其他设备需要重新配对一次。",
+      "passed": true,
+      "expected": "test result"
+    },
+    {
+      "name": "resilience",
+      "title": "恶劣网络/中断恢复",
+      "argv": [
+        "/usr/bin/python3",
+        "tests/test_resilience.py"
+      ],
+      "exit": 0,
+      "elapsed": 22.2,
+      "log": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/acceptance-logs/resilience.log",
+      "tail": "[7] 启动清理：扫接收目录和 data_dir，但不碰还能续传的残片\n  \u001b[32mPASS\u001b[0m 启动清理收掉了接收目录里的陈年残片（.part 和 journal 一起）\n  \u001b[32mPASS\u001b[0m 启动清理也扫 data_dir\n  \u001b[32mPASS\u001b[0m 没有 journal 的孤立 .part 也收掉（它本来就续不了）\n  \u001b[32mPASS\u001b[0m 刚暂停、还能续传的残片必须留着\n  \u001b[32mPASS\u001b[0m 拿 data_dir 建索引也能扫到接收目录的 journal\n[8] 「打开」失败能被调用方知道（并拿到给用户看的理由）\n  \u001b[32mPASS\u001b[0m xdg-open 退出码 3 时 open_path 返回 False（不再谎报成功）\n  \u001b[32mPASS\u001b[0m 失败原因可读（含退出码/错误行）\n  \u001b[32mPASS\u001b[0m 装了 handler 后失败消息交给它 —— 前端据此在状态行提示用户\n  \u001b[32mPASS\u001b[0m open_path_report 给出 (False, 原因)\n  \u001b[32mPASS\u001b[0m 能打开的路径仍然返回 True（不是无脑 False）\n  \u001b[32mPASS\u001b[0m 文件不在时返回 False 且有原因\n==================================================================\nAll resilience checks passed.",
+      "passed": true,
+      "expected": "test result"
+    },
+    {
+      "name": "concurrency",
+      "title": "并发传输",
+      "argv": [
+        "/usr/bin/python3",
+        "tests/test_concurrency.py"
+      ],
+      "exit": 0,
+      "elapsed": 9.6,
+      "log": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/acceptance-logs/concurrency.log",
+      "tail": "EverSend 并发与短写正确性测试\n==================================================================\n[1] 多线程在同一条连接上并发发送（nonce 顺序必须与上线顺序一致）\n  \u001b[32mPASS\u001b[0m 全部帧都被解密（没有 authentication failed）\n  \u001b[32mPASS\u001b[0m 收到的帧数正确\n  \u001b[32mPASS\u001b[0m 每个载荷都完整且唯一（无 nonce 复用导致的丢失）\n      400 帧 / 8 线程，用时 0.02s\n[2] Cipher 本身：并发 seal 不产生重复 nonce\n  \u001b[32mPASS\u001b[0m 密文数量正确\n  \u001b[32mPASS\u001b[0m 密文无重复（nonce 未被复用）\n[3] 小块发送缓冲 + socket 超时下，整帧必须写完\n  \u001b[32mPASS\u001b[0m 没有异常\n  \u001b[32mPASS\u001b[0m 整块都收到了（没有被静默截断）\n==================================================================\n全部通过。",
+      "passed": true,
+      "expected": "test result"
+    },
+    {
+      "name": "chat",
+      "title": "聊天/记录模型",
+      "argv": [
+        "/usr/bin/python3",
+        "tests/test_chat.py"
+      ],
+      "exit": 0,
+      "elapsed": 5.0,
+      "log": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/acceptance-logs/chat.log",
+      "tail": "[4] Group chat: one message, every member\n  \u001b[32mPASS\u001b[0m both members got it\n  \u001b[32mPASS\u001b[0m 乙 learned the group\n  \u001b[32mPASS\u001b[0m 丙 learned the group\n  \u001b[32mPASS\u001b[0m 乙 has the message\n  \u001b[32mPASS\u001b[0m 丙 has the message\n  \u001b[32mPASS\u001b[0m the group keeps its name on the receivers\n  \u001b[32mPASS\u001b[0m everyone is listed as a member\n[未读] 幂等 + 有上限\n  \u001b[32mPASS\u001b[0m 第一条收到的消息算 1 条未读\n  \u001b[32mPASS\u001b[0m 同一条消息重发不会把未读加第二遍\n  \u001b[32mPASS\u001b[0m 正常收消息仍然照常累加\n  \u001b[32mPASS\u001b[0m 裁剪之后未读不超过剩下的消息条数\n============================================================\nAll chat checks passed.",
+      "passed": true,
+      "expected": "test result"
+    },
+    {
+      "name": "http-resume",
+      "title": "可续传上传（opt-1017 新增）",
+      "argv": [
+        "/usr/bin/python3",
+        "tests/test_http_resume.py"
+      ],
+      "exit": 0,
+      "elapsed": 1.6,
+      "log": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/acceptance-logs/http-resume.log",
+      "tail": "  \u001b[32mPASS\u001b[0m 6.1 状态查询返回服务端已有字节\n  \u001b[32mPASS\u001b[0m 6.2 未完成时 complete=false\n  \u001b[32mPASS\u001b[0m 6.3 已完成的 uploadId 查得到完成态\n  \u001b[32mPASS\u001b[0m 6.4 未知 uploadId 返回 offset=0\n[7] 进程重启后的幂等重放（完成快照落盘）\n  \u001b[32mPASS\u001b[0m 7.1 重启前完成上传\n  \u001b[32mPASS\u001b[0m 7.2 重启前文件已落地且 sha256 一致\n  \u001b[32mPASS\u001b[0m 7.3 重启后重放最后一段仍返回完成\n  \u001b[32mPASS\u001b[0m 7.4 重启后重放不再落重复文件（不出现 (1)）\n  \u001b[32mPASS\u001b[0m 7.5 重启后仍查得到已收字节\n  \u001b[32mPASS\u001b[0m 7.6 重启后用旧偏移续传返回 409\n  \u001b[32mPASS\u001b[0m 7.7 重启后按正确 offset 续传完成且 sha256 一致\n  \u001b[32mPASS\u001b[0m 7.8 完成快照已落盘（下次重启仍可幂等重放）\n============================================================\n\u001b[32mPASS\u001b[0m 全部通过",
+      "passed": true,
+      "expected": "全部通过"
+    },
+    {
+      "name": "web",
+      "title": "网页版 356 项自检",
+      "argv": [
+        "/usr/bin/python3",
+        "-u",
+        "src/eversend/web/selftest.py"
+      ],
+      "exit": 0,
+      "elapsed": 51.6,
+      "log": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/acceptance-logs/web.log",
+      "tail": "  \u001b[32mPASS\u001b[0m 重复回执不会再刷一条事件\n[分享/下载] 记录通道与分享通道是同一条路\n  \u001b[32mPASS\u001b[0m media_rel 为空时不再 404（按 media_source 找到分享）\n  \u001b[32mPASS\u001b[0m 走的是分享通道：字节与分享文件一致（sha256）\n  \u001b[32mPASS\u001b[0m 同一条路才有进度与回执：sentBytes 涨到文件大小\n  \u001b[32mPASS\u001b[0m 同一条路才有回执：downloaded=True\n  \u001b[32mPASS\u001b[0m 连 media_source 都没有时按 名字+大小 也能找到（1024 字节一致）\n  \u001b[32mPASS\u001b[0m 这条也记了进度\n  \u001b[32mPASS\u001b[0m 确实找不到的附件回 404\n  \u001b[32mPASS\u001b[0m 404 的 error 是中文、说清「没有可下载的附件」\n  \u001b[32mPASS\u001b[0m 404 带可执行的下一步（hint + shareId 字段）\n  \u001b[32mPASS\u001b[0m 老字段 error 还在（老客户端不受影响）\n  \u001b[32mPASS\u001b[0m 不存在的消息 id 也是中文 + hint\n==============================================================\nAll 356 checks passed.",
+      "passed": true,
+      "expected": "All .* checks passed"
+    },
+    {
+      "name": "gui-render",
+      "title": "Qt 离屏渲染",
+      "argv": [
+        "/usr/bin/python3",
+        "tests/test_gui_render.py"
+      ],
+      "exit": 0,
+      "elapsed": 35.0,
+      "log": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/acceptance-logs/gui-render.log",
+      "tail": "wrote /home/xgl/我的项目/自制软件/韧传/eversend/tests/screenshots/06-chat.png\nwrote /home/xgl/我的项目/自制软件/韧传/eversend/tests/screenshots/09-emoji-and-sections.png\nwrote /home/xgl/我的项目/自制软件/韧传/eversend/tests/screenshots/11-sections-collapsed.png\nwrote /home/xgl/我的项目/自制软件/韧传/eversend/tests/screenshots/10-offline-devices.png\nwrote /home/xgl/我的项目/自制软件/韧传/eversend/tests/screenshots/12-emoji-in-bubble.png\nwrote /home/xgl/我的项目/自制软件/韧传/eversend/tests/screenshots/13-one-row-per-file.png\nwrote /home/xgl/我的项目/自制软件/韧传/eversend/tests/screenshots/14-transfer-record-in-chat.png\nwrote /home/xgl/我的项目/自制软件/韧传/eversend/tests/screenshots/15-settings-maintenance.png\nwrote /home/xgl/我的项目/自制软件/韧传/eversend/tests/screenshots/16-one-phone-one-row.png\nwrote /home/xgl/我的项目/自制软件/韧传/eversend/tests/screenshots/12-transfers-failed.png\nwrote /home/xgl/我的项目/自制软件/韧传/eversend/tests/screenshots/13-settings-top.png\nwrote /home/xgl/我的项目/自制软件/韧传/eversend/tests/screenshots/05-qr.png: True\nwrote /home/xgl/我的项目/自制软件/韧传/eversend/tests/screenshots/07-preview.png: True\nwrote /home/xgl/我的项目/自制软件/韧传/eversend/tests/screenshots/08-preview-image.png: True\nrendered 44 screenshot(s) into /home/xgl/我的项目/自制软件/韧传/eversend/tests/screenshots",
+      "passed": true,
+      "expected": ""
+    },
+    {
+      "name": "gui-actions",
+      "title": "Qt 真点击交互",
+      "argv": [
+        "/usr/bin/python3",
+        "tests/test_gui_actions.py"
+      ],
+      "exit": 0,
+      "elapsed": 188.5,
+      "log": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/acceptance-logs/gui-actions.log",
+      "tail": "  \u001b[32mPASS\u001b[0m 没有一行一个控件（E5）\n  \u001b[32mPASS\u001b[0m 加到 2000 行控件数仍然不涨\n[26] 取消是事实：空原因的收尾也要说「已取消」\n  \u001b[32mPASS\u001b[0m 受理后卡片先写「正在取消…」\n  \u001b[32mPASS\u001b[0m 空原因的收尾也显示「已取消」（不是「失败」）\n  \u001b[32mPASS\u001b[0m 操作格给的是「重试」而不是「移除」\n  \u001b[32mPASS\u001b[0m 这一行不再是进行中\n  \u001b[32mPASS\u001b[0m 占位名收尾时同样认得出「已取消」\n  \u001b[32mPASS\u001b[0m 没人点过取消的静默失败仍然是「失败」\n  \u001b[32mPASS\u001b[0m 而且失败要留下原因（不许静默）\n  \u001b[32mPASS\u001b[0m 引擎说 cancelled 时同样是「已取消」\n============================================================\n桌面交互全部通过。\n/home/xgl/我的项目/自制软件/韧传/eversend/tests/test_gui_actions.py:1091: DeprecationWarning: Function: 'QMouseEvent.QMouseEvent(QEvent.Type type, const QPointF &localPos, Qt.MouseButton button, QFlags<Qt.MouseButton> buttons, QFlags<Qt.KeyboardModifier> modifiers, const QPointingDevice *device)' is marked as deprecated, please check the documentation for more information.\n  QMouseEvent(etype, pos, button, buttons, Qt.KeyboardModifier.NoModifier),",
+      "passed": true,
+      "expected": ""
+    },
+    {
+      "name": "enterprise",
+      "title": "企业级验收 C1-C14",
+      "argv": [
+        "/usr/bin/python3",
+        "tests/test_enterprise_acceptance.py",
+        "--label",
+        "opt-final4"
+      ],
+      "exit": 1,
+      "elapsed": 159.1,
+      "log": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/acceptance-logs/enterprise.log",
+      "tail": "  C6    PASS  文件动作矩阵：四处入口同一套动作 + 属性齐全\n  C7    PASS  记录卫生：按身份去重、保留策略、清空一次清干净、无孤儿\n  C8    PASS  记录去重：同一 (方向, 对端, 内容) 只占一行并累加状态\n  C9    PASS  设备信息：同一事实不在标题/副标题/详情里重复\n  C10   PASS  全中文：Qt 系统对话框不再出现英文文案\n  C11   FAIL  预览：类型矩阵、工具栏、图片适应窗口不放大、文本等宽、二进制不装\n  C12   PASS  网页版：同一套 IA 与 token、无三层嵌套、两次点击可达\n  C13   PASS  自动发现：≤5s 零手动、扫描兜底、跨网段覆盖、bye 即时离线\n  C14   PASS  消息必达：ACK、待重发队列、重连补投、失败原因码\n  E4    PASS  无回归：宪章 §8 的现有测试继续全绿\n  E5    PASS  性能：窗口冷启动 ≤1.5s、1000 条传输记录滚动流畅\n  E6    PASS  交付质量：README 里每一条截图引用都能打开\n==============================================================\n  16/17 项通过（其中 1 条子断言因机器负载高而未判定：['E4 test_loopback 的吞吐地板（默认 60 MiB/s）']）\n报告已写入 /home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-final4.md 与 .json",
+      "passed": false,
+      "expected": ""
+    },
+    {
+      "name": "realdevice",
+      "title": "MI9 真机 A0-A8（APK↔Linux；A9 1GiB 为可选项另跑）",
+      "argv": [
+        "/usr/bin/python3",
+        "tests/test_real_device.py",
+        "--only",
+        "A0,A1,A2,A6,A7,A8",
+        "--label",
+        "opt-final4"
+      ],
+      "exit": 0,
+      "elapsed": 173.7,
+      "log": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/acceptance-logs/realdevice.log",
+      "tail": "=== A7 手机发文件给电脑 → 电脑接收目录 + sha256 ===\n--- A7: PASS ---\n=== A8 双向中文 + emoji 消息，两端都能看到 ===\n--- A8: PASS ---\n==============================================================\n  A0   PASS      现场：真机在线、三个端口空闲、测试目录就绪\n  A1   PASS      电脑发小文件（<1 MB）→ 手机磁盘 + sha256\n  A2   PASS      电脑发中等文件（约 100 MB）→ 手机磁盘 + sha256\n  A6   PASS      反作弊：界面说「已收到」时手机磁盘必须真的有（否则判红）\n  A7   PASS      手机发文件给电脑 → 电脑接收目录 + sha256\n  A8   PASS      双向中文 + emoji 消息，两端都能看到\n==============================================================\n  6/6 项通过\n报告已写入 /home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/real_device_opt-final4.md 与 .json\n192.168.110.158 - Request timed out: TimeoutError('timed out')",
+      "passed": true,
+      "expected": ""
+    }
+  ],
+  "passed": 10,
+  "failed": 1,
+  "total": 11
+}
