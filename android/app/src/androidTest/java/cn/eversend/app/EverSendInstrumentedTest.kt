@@ -226,6 +226,11 @@ class EverSendInstrumentedTest {
                 // 并且第一次点击没反应就再点一次（模拟器偶发丢帧/点击未落到控件上）。
                 // 重试时**重新找一遍控件**：第一次点击若已打开弹层，旧 UiObject2 会
                 // stale，直接再 click 会抛 StaleObjectException（CI 实测）。
+                //
+                // 判据不能用弹层底部的「关闭」：按钮行是 horizontalScroll，320dp 宽
+                // 的模拟器上第三个按钮（关闭）还没被组合出来，uiautomator 自然找不到
+                // —— CI 真机模拟器实测就是这样假失败的。改成等弹层**标题**（文件名
+                // 只出现在弹层标题里，聊天气泡里图片没有文字），跨屏宽都稳定。
                 var viewer = false
                 repeat(2) { attempt ->
                     val target = if (attempt == 0) {
@@ -243,7 +248,9 @@ class EverSendInstrumentedTest {
                         }
                     }
                     viewer = device.wait(
-                        androidx.test.uiautomator.Until.hasObject(androidx.test.uiautomator.By.text("关闭")),
+                        androidx.test.uiautomator.Until.hasObject(
+                            androidx.test.uiautomator.By.textContains("ui-图片.png")
+                        ),
                         20_000,
                     )
                     if (viewer || attempt == 1) return@repeat
