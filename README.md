@@ -183,6 +183,17 @@ python3 -m venv .venv
 PYTHONPATH=src .venv/bin/python -m eversend
 ```
 
+想在**应用菜单 / 桌面**里点击启动（Linux）：
+
+```bash
+python3 tools/install_desktop_entry.py             # 装 desktop 项 + 图标 + 桌面快捷方式
+python3 tools/install_desktop_entry.py --uninstall # 全部撤销
+```
+
+图标由程序自己的绘制代码（`eversend.desktop.theme.app_icon`）在安装时渲染成多尺寸 PNG，
+不依赖二进制资源；启动器会把 `EVERSEND_HOME` 固定到 `~/.local/share/eversend`，
+所以从菜单启动时数据/接收目录不会散落到 `$HOME` 或 `/`。
+
 **命令行**（无图形界面的服务器也能用）：
 
 ```bash

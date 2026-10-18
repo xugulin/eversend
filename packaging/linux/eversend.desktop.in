@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=韧传
+Name[en]=EverSend
+GenericName=局域网文件互传
+GenericName[en]=LAN file transfer
+Comment=大文件互传：断了能续传，坏了只补坏的那几块
+Comment[en]=Large-file transfer: resumes after a drop and repairs only the damaged chunks
+Exec=@EXEC@
+TryExec=@TRYEXEC@
+Icon=@ICON@
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=transfer;file;lan;局域网;互传;续传;eversend;
+StartupNotify=true
+StartupWMClass=@WMCLASS@
