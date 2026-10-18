@@ -5,6 +5,12 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!--
+        组播/广播收包的总开关：没有它，安卓的 Wi-Fi 省电逻辑会把"目的地址不是本机"
+        的组播/广播帧直接丢掉 —— 电脑端每 30 秒一次的公告根本进不来，只能靠 TCP 主动
+        扫描兜底。这是"安卓端不能自动发现"的第二个原因（第一个是启动时压根没扫）。
+    -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <!-- 前台服务：熄屏、切后台也保持连接，这正是做原生 App 的原因。 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />

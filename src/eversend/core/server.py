@@ -27,6 +27,7 @@ from .constants import (
     LISTEN_BACKLOG,
     MAX_PENDING_HANDSHAKES,
     MSG_ATTACH,
+    MSG_BYE,
     MSG_CHAT,
     MSG_OFFER,
     MSG_PING,
@@ -50,6 +51,7 @@ class TransferServer:
         encrypt: bool = True,
         bind_host: str = "0.0.0.0",
         on_chat: Callable[[Connection, dict[str, Any]], None] | None = None,
+        on_bye: Callable[[DeviceInfo, str], None] | None = None,
     ) -> None:
         self.identity = identity
         self.device_info = device_info
@@ -57,6 +59,9 @@ class TransferServer:
         self.on_attach = on_attach
         #: Optional: older callers (tests) may not care about chat.
         self.on_chat = on_chat or (lambda conn, payload: None)
+        #: Optional: called when a peer says goodbye, so its device row can go
+        #: offline at once instead of waiting out the TTL.
+        self.on_bye = on_bye
         self.events = events
         self.encrypt = encrypt
         self.bind_host = bind_host
@@ -183,6 +188,16 @@ class TransferServer:
                 return
 
             if frame.type == MSG_PING:
+                return
+
+            if frame.type == MSG_BYE:
+                # 对端明确说"我走了"：设备行立刻转离线，不等 90 秒 TTL。
+                self.events.emit("peer_bye", peer=peer.info, address=addr[0])
+                if self.on_bye is not None:
+                    try:
+                        self.on_bye(peer.info, addr[0])
+                    except Exception:
+                        pass
                 return
 
             self.events.emit("peer_rejected", address=addr[0], reason="unexpected first message")

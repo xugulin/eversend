@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _scratch import peak_rss_mib, scratch, use_utf8_console  # noqa: E402
 
+from eversend.core.chunkstore import ResumeIndex  # noqa: E402
 from eversend.core.engine import Engine, EngineConfig  # noqa: E402
 from eversend.core.model import Peer  # noqa: E402
 
@@ -64,6 +65,27 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: fh.read(4 * 1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def disk_usage(path: Path) -> int:
+    """Bytes a directory really occupies (allocated blocks, not apparent size).
+
+    The bug being measured is a preallocated ``.eversend.part``: its *size* is
+    the whole file from the start, and so is the space it occupies, so only a
+    block-based figure can show the space coming back.
+    """
+    total = 0
+    if not path.exists():
+        return 0
+    for entry in path.rglob("*"):
+        try:
+            if not entry.is_file():
+                continue
+            info = entry.stat()
+        except OSError:
+            continue
+        total += (info.st_blocks * 512) if info.st_blocks else info.st_size
+    return total
 
 
 class HostileProxy:
@@ -523,6 +545,193 @@ def test_large_file() -> None:
             rig.close()
 
 
+def test_cancel_reclaims_disk() -> None:
+    """Audit #3, reproduced at the audit's own timing.
+
+    A cancelled receive must not leave the preallocated part file behind: the
+    part is the size of the *whole* file from the first moment, so cancelling a
+    10 GB transfer used to eat 10 GB that no screen ever showed.
+    """
+    print("\n[6] Cancelling a 200 MiB receive gives the disk back")
+    with scratch() as root:
+        rig = Rig(root, streams=4)
+        recv_dir = root / "B" / "recv"
+        try:
+            source = root / "A" / "大文件.bin"
+            size = 200 * 1024 * 1024
+            with open(source, "wb") as fh:
+                fh.truncate(size)  # sparse: the content is irrelevant here
+            before = disk_usage(recv_dir)
+            part = recv_dir / "大文件.bin.eversend.part"
+
+            result: list[bool] = []
+            peer = Peer(info=rig.engine_b.info, address="127.0.0.1", port=rig.engine_b.port)
+            thread = threading.Thread(
+                target=lambda: result.append(rig.engine_a.send(peer, [str(source)])),
+                daemon=True,
+            )
+            thread.start()
+
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline and not (
+                part.exists() and rig.engine_b.active_transfers()
+            ):
+                time.sleep(0.02)
+            reserved = 0
+            if part.exists():
+                info = part.stat()
+                reserved = (info.st_blocks * 512) if info.st_blocks else info.st_size
+            active = rig.engine_b.active_transfers()
+            check("取消时接收正在跑，.part 已按整份文件预分配", bool(active) and reserved >= size // 2,
+                  f"active={bool(active)} 实占={reserved / 1048576:.0f} MiB")
+            if active:
+                rig.engine_b.cancel(active[0].transfer_id, "复核：用户取消")
+            thread.join(timeout=20)
+
+            # The audit looked 1.2 s after the cancel and still found a full-size
+            # part file; that window is the assertion.
+            time.sleep(1.2)
+            leftovers = sorted(
+                p.name for p in recv_dir.iterdir()
+                if p.name.endswith((".eversend.part", ".eversend.journal"))
+            )
+            after = disk_usage(recv_dir)
+            check("取消后接收目录里没有满尺寸 .part 残片",
+                  not [name for name in leftovers if name.endswith(".eversend.part")],
+                  f"目录={leftovers}")
+            check("取消后目录占用回到取消前",
+                  after <= before + 1024 * 1024,
+                  f"取消前 {before} 字节 → 峰值 {reserved} → 1.2s 后 {after} 字节")
+            print(
+                f"      实测：.part 实占 {reserved / 1048576:.0f} MiB，"
+                f"取消 1.2s 后目录占用 {after / 1048576:.2f} MiB（取消前 {before} 字节）"
+            )
+
+            # And the engine's own start-up cleanup must reclaim anything a
+            # crash does leave behind, in the receive folder *and* the data dir.
+            guarded = recv_dir / "崩溃遗留.bin.eversend.part"
+            guarded.write_bytes(b"\0" * (16 * 1024 * 1024))
+            (recv_dir / "崩溃遗留.bin.eversend.journal").write_bytes(b"SWDJ")
+            old = time.time() - 30 * 24 * 3600
+            os.utime(guarded, (old, old))
+            os.utime(recv_dir / "崩溃遗留.bin.eversend.journal", (old, old))
+            swept = ResumeIndex(str(rig.engine_b.config.data_dir)).sweep(max_age_seconds=0)
+            check("sweep 能收掉接收目录里的 .part/.journal（不是只扫 data_dir）",
+                  not guarded.exists() and any("接收" in p or "recv" in p for p in swept),
+                  f"删除={swept}")
+        finally:
+            rig.close()
+
+
+def test_leftovers_are_swept_not_resumed_away() -> None:
+    """The cleanup must scan both folders, and must not eat a resumable file."""
+    print("\n[7] 启动清理：扫接收目录和 data_dir，但不碰还能续传的残片")
+    with scratch() as root:
+        data_dir = root / "state"
+        recv_dir = root / "recv"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        recv_dir.mkdir(parents=True, exist_ok=True)
+        month_ago = time.time() - 30 * 24 * 3600
+
+        def leftover(directory: Path, name: str, age: float) -> tuple[Path, Path]:
+            part = directory / (name + ".eversend.part")
+            journal = directory / (name + ".eversend.journal")
+            # Real allocation, like a preallocated part file.
+            part.write_bytes(b"\0" * (8 * 1024 * 1024))
+            journal.write_bytes(b"SWDJ")
+            os.utime(part, (age, age))
+            os.utime(journal, (age, age))
+            return part, journal
+
+        stale_recv = leftover(recv_dir, "上个月取消的.bin", month_ago)
+        stale_data = leftover(data_dir, "数据目录里的幽灵.bin", month_ago)
+        fresh_recv = leftover(recv_dir, "暂停后要继续的.bin", time.time())
+        orphan = recv_dir / "孤立.bin.eversend.part"
+        orphan.write_bytes(b"\0" * (4 * 1024 * 1024))
+        os.utime(orphan, (month_ago, month_ago))
+
+        engine = Engine(
+            EngineConfig(
+                data_dir=str(data_dir),
+                receive_dir=str(recv_dir),
+                name="清理机",
+                tcp_port=0,
+                discovery_port=free_port(),
+                auto_accept_all=True,
+                enable_broadcast=False,
+                enable_mdns=False,
+                enable_web=False,
+            )
+        )
+        engine.start()
+        try:
+            check("启动清理收掉了接收目录里的陈年残片（.part 和 journal 一起）",
+                  not stale_recv[0].exists() and not stale_recv[1].exists(),
+                  str([p.name for p in stale_recv if p.exists()]))
+            check("启动清理也扫 data_dir",
+                  not stale_data[0].exists() and not stale_data[1].exists(),
+                  str([p.name for p in stale_data if p.exists()]))
+            check("没有 journal 的孤立 .part 也收掉（它本来就续不了）",
+                  not orphan.exists(), str(orphan))
+            check("刚暂停、还能续传的残片必须留着",
+                  fresh_recv[0].exists() and fresh_recv[1].exists(),
+                  str([p.name for p in fresh_recv if not p.exists()]))
+
+            # A bare ResumeIndex(data_dir) -- what the start-up path and the
+            # audit's recheck both use -- must know about the receive folder.
+            ghost = recv_dir / "幽灵.bin.eversend.journal"
+            ghost.write_bytes(b"x")
+            removed = ResumeIndex(str(data_dir)).sweep(max_age_seconds=0)
+            check("拿 data_dir 建索引也能扫到接收目录的 journal",
+                  not ghost.exists(), f"sweep 删除={removed}")
+        finally:
+            engine.stop()
+
+
+def test_open_failure_is_visible() -> None:
+    """Audit #4: an opener that fails must not look like a success."""
+    print("\n[8] 「打开」失败能被调用方知道（并拿到给用户看的理由）")
+    from eversend.core import platform_open as po
+
+    if not po.IS_LINUX:
+        print("      (not Linux: xdg-open stub does not apply)")
+        return
+    with scratch() as root:
+        stub_dir = root / "bin"
+        stub_dir.mkdir(parents=True, exist_ok=True)
+        stub = stub_dir / "xdg-open"
+        stub.write_text("#!/bin/sh\necho 'no method available' >&2\nexit 3\n", encoding="utf-8")
+        stub.chmod(0o755)
+        probe = root / "未知类型.zzz"
+        probe.write_bytes(b"hello")
+
+        old_path = os.environ.get("PATH", "")
+        shown: list[str] = []
+        po.set_failure_handler(shown.append)
+        try:
+            os.environ["PATH"] = f"{stub_dir}{os.pathsep}{old_path}"
+            ok = po.open_path(str(probe))
+            check("xdg-open 退出码 3 时 open_path 返回 False（不再谎报成功）", ok is False, f"返回={ok}")
+            check("失败原因可读（含退出码/错误行）",
+                  "退出码 3" in po.last_open_error(), repr(po.last_open_error()))
+            check("装了 handler 后失败消息交给它 —— 前端据此在状态行提示用户",
+                  bool(shown) and "退出码 3" in shown[-1], str(shown[-1:]))
+            ok2, why = po.open_path_report(str(probe))
+            check("open_path_report 给出 (False, 原因)", ok2 is False and bool(why), f"{ok2!r} {why!r}")
+
+            stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            check("能打开的路径仍然返回 True（不是无脑 False）",
+                  po.open_path(str(probe)) is True, repr(po.last_open_error()))
+
+            gone = root / "已经被移走的文件.zzz"
+            check("文件不在时返回 False 且有原因",
+                  po.open_path(str(gone)) is False and bool(po.last_open_error()),
+                  repr(po.last_open_error()))
+        finally:
+            os.environ["PATH"] = old_path
+            po.set_failure_handler(None)
+
+
 def main() -> int:
     use_utf8_console()
     print("EverSend resilience tests")
@@ -533,6 +742,9 @@ def main() -> int:
         test_throttled_link,
         test_large_file,
         test_peer_vanishes_before_answering,
+        test_cancel_reclaims_disk,
+        test_leftovers_are_swept_not_resumed_away,
+        test_open_failure_is_visible,
     ]
     for test in tests:
         try:

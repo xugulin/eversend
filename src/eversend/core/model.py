@@ -297,9 +297,298 @@ def new_transfer_id(files: list[FileEntry], sender_id: str) -> str:
     return hasher.hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# Device identity records (``web_clients.json`` / ``known_devices.json``)
+# ---------------------------------------------------------------------------
+#
+# Charter C4: 同一台物理设备在列表里永远只有一行。  The registries these files
+# hold are keyed by *whatever spelling of an identity the build of the day
+# used* -- ``android:<deviceId>``, ``web:<deviceId>``, the bare device id, or a
+# legacy ``<address>|<ua-digest>`` -- so one phone could be written twice (the
+# real ``data/web_clients.json`` in this repo has exactly that: an
+# ``android:instrumented`` record *and* an ``android:<uuid>`` record that the
+# first one already lists as its own alias).
+#
+# The helpers below decide, from the records alone, which spellings denote one
+# device, and fold a list of records into one row per device while keeping
+# every old spelling -- and the name it displayed back then -- reachable
+# (``aliases`` / ``aliasLabels``), because conversations are stored under the
+# spelling that was current when they were written.
+
+#: Prefixes a client key may carry.
+DEVICE_KEY_PREFIXES = ("web:", "android:")
+
+#: How many old identities one record keeps (the same bound ``web/server.py``
+#: uses; a record must not grow without bound).
+DEVICE_ALIAS_LIMIT = 8
+
+#: Fallback display names, only used when a record carries no name at all and
+#: none of its aliases remembers one.  The wording matches the three clients.
+_DEVICE_KIND_LABELS = {
+    "app": "安卓 App",
+    "android": "安卓 App",
+    "mobile": "安卓 App",
+    "browser": "浏览器",
+    "web": "浏览器",
+    "desktop": "电脑端",
+    "pc": "电脑端",
+}
+
+#: What a device with no name at all is called (same words ``chat.py`` uses).
+UNKNOWN_DEVICE_LABEL = "未知设备"
+
+
+def bare_device_id(value: Any) -> str:
+    """``web:<id>`` / ``android:<id>`` -> ``<id>`` (anything else unchanged)."""
+    text = str(value or "").strip()
+    for prefix in DEVICE_KEY_PREFIXES:
+        if text.startswith(prefix) and len(text) > len(prefix):
+            return text[len(prefix):]
+    return text
+
+
+def device_record_names(record: dict[str, Any]) -> list[str]:
+    """Every spelling of one device's identity that this record knows about."""
+    values: list[Any] = [record.get("key"), record.get("deviceId")]
+    aliases = record.get("aliases")
+    if isinstance(aliases, (list, tuple, set)):
+        values.extend(aliases)
+    remembered = record.get("aliasLabels")
+    if isinstance(remembered, dict):
+        values.extend(remembered.keys())
+    # ``known_devices.json`` snapshots spell the id with an underscore.
+    values.append(record.get("device_id"))
+    out: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def device_record_tokens(record: dict[str, Any]) -> set[str]:
+    """The identity tokens that say "this is the same device".
+
+    A token is a *stable identity*, never an address: the same address can be
+    two browsers (or a phone behind ``adb reverse``), and folding those
+    together is the opposite bug (two devices shown as one).
+    """
+    tokens: set[str] = set()
+    for name in device_record_names(record):
+        bare = bare_device_id(name)
+        tokens.add(name)
+        if bare:
+            tokens.add(bare)
+            for prefix in DEVICE_KEY_PREFIXES:
+                tokens.add(prefix + bare)
+    return tokens
+
+
+def device_record_identity(record: dict[str, Any]) -> str:
+    """The canonical identity of a device record (for reports and dedup)."""
+    device_id = bare_device_id(record.get("deviceId") or record.get("device_id") or "")
+    if device_id:
+        return f"dev:{device_id}"
+    key = str(record.get("key") or "").strip()
+    if key:
+        return f"key:{bare_device_id(key)}"
+    return ""
+
+
+def device_record_aliases(record: dict[str, Any]) -> list[str]:
+    """The old spellings a record already carries (tolerating a bad field)."""
+    bucket = record.get("aliases")
+    if not isinstance(bucket, (list, tuple)):
+        return []
+    out: list[str] = []
+    for alias in bucket:
+        text = str(alias or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def device_record_label(record: dict[str, Any]) -> str:
+    """The name to show for a record -- never empty (charter C4/C7).
+
+    Order: the record's own name, then the name it displayed under an older
+    spelling (``aliasLabels``), then a name derived from its kind, and only
+    then 「未知设备」.  An empty name is what the user sees as a blank device
+    row, so this function is deliberately incapable of returning ``""``.
+    """
+    for field in ("label", "name"):
+        text = str(record.get(field) or "").strip()
+        if text:
+            return text
+    remembered = record.get("aliasLabels")
+    if isinstance(remembered, dict):
+        newest = ""
+        for info in remembered.values():
+            if isinstance(info, dict):
+                text = str(info.get("label") or "").strip()
+                if text:
+                    newest = text
+        if newest:
+            return newest
+    kind = str(record.get("kind") or record.get("platform") or "").strip().lower()
+    return _DEVICE_KIND_LABELS.get(kind, UNKNOWN_DEVICE_LABEL)
+
+
+def _record_time(record: dict[str, Any], field: str) -> float:
+    try:
+        return float(record.get(field) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _carry_alias(dst: dict[str, Any], alias: str, source: dict[str, Any] | None = None) -> None:
+    """Remember ``alias`` on ``dst``, together with the name it showed then."""
+    text = str(alias or "").strip()
+    if not text or text == str(dst.get("key") or ""):
+        return
+    bucket = dst.get("aliases")
+    if not isinstance(bucket, list):
+        bucket = []
+        dst["aliases"] = bucket
+    if text not in bucket:
+        bucket.append(text)
+        del bucket[: -DEVICE_ALIAS_LIMIT]
+    if source is None:
+        return
+    remembered = dst.get("aliasLabels")
+    if not isinstance(remembered, dict):
+        remembered = {}
+        dst["aliasLabels"] = remembered
+    remembered.setdefault(
+        text,
+        {
+            "label": str(source.get("label") or source.get("name") or ""),
+            "kind": str(source.get("kind") or ""),
+            "version": str(source.get("version") or ""),
+            "address": str(source.get("address") or ""),
+        },
+    )
+    while len(remembered) > DEVICE_ALIAS_LIMIT:
+        remembered.pop(next(iter(remembered)))
+
+
+def merge_device_records(
+    records: Iterable[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Fold a device registry into one record per device.
+
+    Returns ``(records, report)``.  The rules, in the order they matter:
+
+    * two records belong to the same device when they share any stable
+      identity token (:func:`device_record_tokens`) -- same device id in any
+      spelling, or one listing the other's key as an alias;
+    * the survivor is the record seen most recently (it knows the current
+      address and name); ``firstSeen`` keeps the *earliest* of the group and
+      ``lastSeen`` the latest, so merging never makes a device look older or
+      more offline than it is;
+    * the survivor shows the newest name; if it has none it inherits one, and
+      every folded-away record's key is stored in ``aliases`` with its
+      then-current label in ``aliasLabels`` -- old conversations keep their
+      title (charter C4: aliases 保留可回溯);
+    * a record with no name at all still gets one (:func:`device_record_label`),
+      so no empty device row can come out of here.
+
+    ``report`` counts what happened: ``records``, ``kept``, ``merged`` (how many
+    records were folded away), ``renamed`` and ``groups``.
+    """
+    items = [dict(record) for record in records if isinstance(record, dict)]
+    report: dict[str, Any] = {"records": len(items), "kept": len(items), "merged": 0, "groups": []}
+    if not items:
+        return [], report
+
+    parent = list(range(len(items)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        root_left, root_right = find(left), find(right)
+        if root_left != root_right:
+            parent[max(root_left, root_right)] = min(root_left, root_right)
+
+    owner: dict[str, int] = {}
+    for index, record in enumerate(items):
+        for token in device_record_tokens(record):
+            if token in owner:
+                union(owner[token], index)
+            else:
+                owner[token] = index
+
+    groups: dict[int, list[int]] = {}
+    for index in range(len(items)):
+        groups.setdefault(find(index), []).append(index)
+
+    merged_rows: list[dict[str, Any]] = []
+    for members in groups.values():
+        if len(members) == 1:
+            row = items[members[0]]
+        else:
+            newest = max(
+                members,
+                key=lambda i: (_record_time(items[i], "lastSeen"), _record_time(items[i], "firstSeen")),
+            )
+            row = dict(items[newest])
+            names: list[tuple[float, dict[str, Any]]] = []
+            for index in members:
+                source = items[index]
+                if index != newest:
+                    _carry_alias(row, str(source.get("key") or ""), source)
+                    for alias in device_record_aliases(source):
+                        _carry_alias(row, alias)
+                    remembered = source.get("aliasLabels")
+                    if isinstance(remembered, dict):
+                        for alias, info in remembered.items():
+                            if isinstance(info, dict):
+                                _carry_alias(row, str(alias), info)
+                    for field in ("label", "name", "kind", "version", "address", "agent",
+                                  "deviceId", "device_id"):
+                        if not str(row.get(field) or "").strip() and str(source.get(field) or "").strip():
+                            row[field] = source[field]
+                    if source.get("talked"):
+                        row["talked"] = True
+                    if source.get("trusted"):
+                        row["trusted"] = True
+                if str(source.get("label") or source.get("name") or "").strip():
+                    names.append((_record_time(source, "lastSeen"), source))
+            firsts = [t for t in (_record_time(items[i], "firstSeen") for i in members) if t]
+            lasts = [t for t in (_record_time(items[i], "lastSeen") for i in members) if t]
+            if firsts:
+                row["firstSeen"] = min(firsts)
+            if lasts:
+                row["lastSeen"] = max(lasts)
+            # One name for the row: the newest record that had one (a record that
+            # was renamed by a merge elsewhere must not end up half-named).
+            if names and not str(row.get("label") or "").strip():
+                names.sort(key=lambda item: item[0])
+                row["label"] = str(names[-1][1].get("label") or names[-1][1].get("name") or "")
+            report["merged"] += len(members) - 1
+            report["groups"].append(
+                [str(items[i].get("key") or device_record_identity(items[i])) for i in members]
+            )
+        label = device_record_label(row)
+        if str(row.get("label") or "") != label:
+            report["renamed"] = int(report.get("renamed") or 0) + 1
+        row["label"] = label
+        if not str(row.get("name") or "").strip():
+            row["name"] = label
+        merged_rows.append(row)
+
+    merged_rows.sort(key=lambda row: _record_time(row, "lastSeen"), reverse=True)
+    report["kept"] = len(merged_rows)
+    report["groups"] = [g for g in report["groups"]]
+    return merged_rows, report
+
+
 def safe_join(root: str, rel_dir: str, name: str) -> str:
     """Join ``name`` under ``root/rel_dir`` refusing to escape ``root``.
-
     A malicious or buggy sender must never be able to write outside the
     chosen destination directory, so every path component is sanitised and
     the result is verified to stay inside ``root``.
@@ -393,19 +682,278 @@ def human_duration(seconds: float | None) -> str:
     return f"{hours}h{minutes:02d}m"
 
 
+# ---------------------------------------------------------------------------
+# Name disambiguation and ghost-device reclamation (charter C4 / C7)
+# ---------------------------------------------------------------------------
+#
+# Two laptops can honestly be called "xgl-pc", and one machine can honestly
+# produce several rows: reinstall it, or start a second instance with a
+# temporary data directory, and a brand-new ``deviceId`` appears while the old
+# record is still on disk.  The first is a *display* problem (three rows all
+# saying "RealProbe" is what the user reports as 设备重复显示), the second is a
+# *garbage* problem.  Both are solved here, once, so the desktop, the web page
+# and the Android app show the same names and drop the same ghosts.
+
+#: How a disambiguated name is spelled (``RealProbe #2``).
+DISAMBIGUATED_NAME = "{name} #{index}"
+
+#: The ordering fields a device may expose, in the spellings used across the
+#: three clients (``Peer``/``DeviceInfo`` objects and plain dicts alike).
+_ID_FIELDS = ("device_id", "deviceId", "id", "key")
+_NAME_FIELDS = ("name", "label")
+_ADDRESS_FIELDS = ("address", "ip", "host")
+_PORT_FIELDS = ("port", "tcp_port", "tcpPort")
+_PLATFORM_FIELDS = ("platform", "kind")
+_SEEN_FIELDS = ("lastSeen", "last_seen")
+_ONLINE_FIELDS = ("online",)
+
+
+def device_value(device: Any, fields: Iterable[str], default: Any = None) -> Any:
+    """Read one field from a device dict, a ``Peer`` or a ``DeviceInfo``.
+
+    The three clients hand this module three different shapes, so the lookup is
+    deliberately tolerant: ``Peer.info`` is consulted first (that is where a
+    peer's id and name really live), then the object or dict itself.
+    """
+    sources: list[Any] = []
+    info = getattr(device, "info", None)
+    if info is not None:
+        sources.append(info)
+    sources.append(device)
+    for source in sources:
+        for field in fields:
+            if isinstance(source, dict):
+                value = source.get(field)
+            else:
+                value = getattr(source, field, None)
+            if value not in (None, ""):
+                return value
+    return default
+
+
+def _device_number(device: Any, fields: Iterable[str]) -> float:
+    try:
+        return float(device_value(device, fields, 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def device_stable_id(device: Any) -> str:
+    """The id to key a device row by (never a display name, never an address)."""
+    return str(device_value(device, _ID_FIELDS, "") or "").strip()
+
+
+def device_display_name(device: Any) -> str:
+    """The device's own name -- never empty (charter C4)."""
+    return str(device_value(device, _NAME_FIELDS, "") or "").strip() or UNKNOWN_DEVICE_LABEL
+
+
+def device_is_online(device: Any) -> bool:
+    """Whether a device is reachable right now."""
+    value = device_value(device, _ONLINE_FIELDS, None)
+    if value is None:
+        caps = device_value(device, ("capabilities", "caps"), None) or {}
+        if isinstance(caps, dict):
+            value = caps.get("online")
+        elif hasattr(caps, "get"):
+            value = caps.get("online")
+    return bool(value)
+
+
+def disambiguate_names(devices: Iterable[Any]) -> dict[str, str]:
+    """A display name for every device, with duplicates numbered.
+
+    ``{"dev-a": "RealProbe", "dev-b": "RealProbe #2", "dev-c": "RealProbe #3"}``
+
+    The *primary* -- the one that keeps the plain name -- is the device a user
+    is most likely to mean: online first, then most recently seen, then the
+    lowest id (so the answer never depends on iteration order).  Devices whose
+    names already differ are returned unchanged, and one device appearing twice
+    in the input keeps exactly one name.  Everything is keyed by stable id, so
+    callers can look a row up without re-deriving anything.
+    """
+    entries: dict[str, dict[str, Any]] = {}
+    for device in devices:
+        device_id = device_stable_id(device)
+        if not device_id:
+            continue
+        candidate = {
+            "name": device_display_name(device),
+            "online": device_is_online(device),
+            "seen": _device_number(device, _SEEN_FIELDS),
+        }
+        current = entries.get(device_id)
+        if current is None or (candidate["online"], candidate["seen"]) > (
+            current["online"],
+            current["seen"],
+        ):
+            entries[device_id] = candidate
+
+    by_name: dict[str, list[str]] = {}
+    for device_id, entry in entries.items():
+        by_name.setdefault(entry["name"], []).append(device_id)
+
+    names: dict[str, str] = {}
+    for name, device_ids in by_name.items():
+        if len(device_ids) == 1:
+            names[device_ids[0]] = name
+            continue
+        ordered = sorted(
+            device_ids,
+            key=lambda d: (
+                not entries[d]["online"],
+                -entries[d]["seen"],
+                d,
+            ),
+        )
+        for index, device_id in enumerate(ordered, start=1):
+            names[device_id] = name if index == 1 else DISAMBIGUATED_NAME.format(
+                name=name, index=index
+            )
+    return names
+
+
+def prune_device_records(
+    records: Iterable[dict[str, Any]],
+    *,
+    now: float = 0.0,
+    offline_ttl: float = 0.0,
+    limit: int = 0,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Reclaim device rows that are provably ghosts of a machine we still have.
+
+    A record is dropped only when *another* record proves it is the same
+    machine, so two devices behind one NAT address survive together:
+
+    * **same address and same port**: nothing else can be listening there, so
+      the older row is the previous instance (reinstall, temporary data
+      directory) -- dropped once it is offline;
+    * **same address and same platform** (both non-empty) and offline for
+      longer than ``offline_ttl``: the classic "the new instance reports a new
+      deviceId, the old row lingers" ghost;
+    * **no identity at all** (no key, no device id): un-addressable garbage;
+    * beyond ``limit`` rows, the oldest *offline* ones fall off.
+
+    A record is never dropped while it is recent, and a record whose platform
+    differs from its neighbour is never treated as the same host -- two
+    different machines on one address keep both rows, which is the
+    over-merging mistake this rule is written to avoid.  Returns
+    ``(kept, report)`` where the report names every drop and its survivor.
+    """
+    items = [dict(record) for record in records if isinstance(record, dict)]
+    moment = float(now or 0.0)
+    ttl = float(offline_ttl or 0.0)
+
+    def stale(record: dict[str, Any]) -> bool:
+        if ttl <= 0 or moment <= 0:
+            return True
+        return moment - _record_time(record, "lastSeen") > ttl
+
+    def identity(record: dict[str, Any]) -> str:
+        return device_record_identity(record) or str(record.get("key") or "")
+
+    dropped: list[dict[str, Any]] = []
+    kept: list[dict[str, Any]] = []
+    for index, record in enumerate(items):
+        if not identity(record):
+            dropped.append({"key": str(record.get("key") or ""), "reason": "记录没有可寻址的身份"})
+            continue
+        if is_pending_record(record):
+            dropped.append({"key": str(record.get("key") or ""), "reason": "__pending__ 占位记录"})
+            continue
+        address = str(record.get("address") or "").strip()
+        port = str(record.get("port") or "").strip()
+        # Only ``platform`` -- never ``kind``: every browser record on a machine
+        # has the same ``kind`` ("browser") and shares 127.0.0.1, so keying the
+        # "same host" rule off the kind folded two different browsers into one
+        # (measured on this repo's own ``data/web_clients.json``).  A record
+        # without a platform is left alone.
+        platform = str(record.get("platform") or "").strip().lower()
+        reason = ""
+        survivor = ""
+        for other in items:
+            if other is record or not address:
+                continue
+            other_address = str(other.get("address") or "").strip()
+            if other_address != address or identity(other) == identity(record):
+                continue
+            if _record_time(other, "lastSeen") < _record_time(record, "lastSeen"):
+                continue
+            other_port = str(other.get("port") or "").strip()
+            other_platform = str(other.get("platform") or "").strip().lower()
+            if (
+                port
+                and other_port
+                and port == other_port
+                # A conflicting platform is evidence that these are *not* the
+                # same machine (our data is then inconsistent, which is not a
+                # reason to delete someone's device row): keep both.  Only a
+                # matching or unknown platform may be reclaimed.
+                and (not platform or not other_platform or platform == other_platform)
+                and stale(record)
+            ):
+                reason = "同一地址+端口被新实例接管"
+            elif platform and platform == other_platform and stale(record):
+                reason = "同一台机器的新身份（同地址同平台，旧行已离线）"
+            if reason:
+                survivor = str(other.get("key") or identity(other))
+                break
+        if reason:
+            dropped.append(
+                {"key": str(record.get("key") or ""), "reason": reason, "survivor": survivor}
+            )
+            continue
+        kept.append(record)
+
+    if limit and len(kept) > limit:
+        kept.sort(key=lambda row: _record_time(row, "lastSeen"), reverse=True)
+        for record in kept[limit:]:
+            dropped.append({"key": str(record.get("key") or ""), "reason": f"超过 {limit} 条上限"})
+        kept = kept[:limit]
+
+    report = {"records": len(items), "kept": len(kept), "dropped": len(dropped), "reasons": dropped}
+    return kept, report
+
+
+def is_pending_record(record: dict[str, Any]) -> bool:
+    """Whether a record is the desktop's ``__pending__`` placeholder."""
+    for field in ("key", "deviceId", "device_id", "name", "label"):
+        if "__pending__" in str(record.get(field) or ""):
+            return True
+    return False
+
+
 __all__ = [
+    "DEVICE_ALIAS_LIMIT",
+    "DEVICE_KEY_PREFIXES",
+    "DISAMBIGUATED_NAME",
     "DeviceInfo",
     "FileEntry",
     "Peer",
     "TransferItem",
     "TransferStats",
+    "UNKNOWN_DEVICE_LABEL",
+    "bare_device_id",
     "default_device_name",
+    "device_display_name",
+    "device_is_online",
     "device_kind",
+    "device_record_aliases",
+    "device_record_identity",
+    "device_record_label",
+    "device_record_names",
+    "device_record_tokens",
+    "device_stable_id",
+    "device_value",
+    "disambiguate_names",
     "human_bytes",
     "human_duration",
     "human_speed",
+    "is_pending_record",
+    "merge_device_records",
     "new_transfer_id",
     "platform_tag",
+    "prune_device_records",
     "safe_join",
     "sanitize_component",
     "unique_path",

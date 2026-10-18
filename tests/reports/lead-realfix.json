@@ -1,0 +1,700 @@
+{
+  "label": "lead-realfix",
+  "version": "1.0",
+  "when": "2026-09-25 21:48:52",
+  "repo": {
+    "when": "2026-09-25 21:48:52",
+    "loadavg": [
+      6.4,
+      3.96,
+      2.58
+    ],
+    "cpu_count": 8,
+    "head": "c3245e6",
+    "dirty_count": 161,
+    "dirty": [
+      "README.md",
+      "android/app/src/androidTest/java/cn/eversend/app/DiscoveryAndActionsTest.kt",
+      "android/app/src/androidTest/java/cn/eversend/app/EverSendInstrumentedTest.kt",
+      "android/app/src/main/AndroidManifest.xml",
+      "android/app/src/main/java/cn/eversend/app/ApiClient.kt",
+      "android/app/src/main/java/cn/eversend/app/Discovery.kt",
+      "android/app/src/main/java/cn/eversend/app/EverSendApp.kt",
+      "android/app/src/main/java/cn/eversend/app/LinkService.kt",
+      "android/app/src/main/java/cn/eversend/app/MainActivity.kt",
+      "docs/ENTERPRISE_CHARTER.md",
+      "docs/PROTOCOL.md",
+      "docs/UI_LAYOUT.md",
+      "docs/screenshots/01-send.png",
+      "docs/screenshots/01-session.png",
+      "docs/screenshots/02-transfers.png",
+      "docs/screenshots/03-receive.png",
+      "docs/screenshots/04-settings.png",
+      "docs/screenshots/05-qr.png",
+      "docs/screenshots/06-chat.png",
+      "docs/screenshots/07-preview.png",
+      "docs/screenshots/08-preview-image.png",
+      "docs/screenshots/09-emoji-and-sections.png",
+      "docs/screenshots/10-offline-devices.png",
+      "docs/screenshots/11-sections-collapsed.png",
+      "docs/screenshots/12-emoji-in-bubble.png",
+      "docs/screenshots/12-transfers-failed.png",
+      "docs/screenshots/13-one-row-per-file.png",
+      "docs/screenshots/13-settings-top.png",
+      "docs/screenshots/14-transfer-record-in-chat.png",
+      "docs/screenshots/15-settings-maintenance.png",
+      "docs/screenshots/16-one-phone-one-row.png",
+      "docs/screenshots/android-app-auto-discovery-drawer.png",
+      "docs/screenshots/android-app-auto-discovery.png",
+      "docs/screenshots/android-app-chat.png",
+      "docs/screenshots/android-app-clear-offline-empty.png",
+      "docs/screenshots/android-app-clear-offline.png",
+      "docs/screenshots/android-app-composer-tiles.png",
+      "docs/screenshots/android-app-conversation.png",
+      "docs/screenshots/android-app-device-sections-offline.png",
+      "docs/screenshots/android-app-device-sections.png",
+      "docs/screenshots/android-app-emoji-message.png",
+      "docs/screenshots/android-app-emoji-pad.png",
+      "docs/screenshots/android-app-file-actions.png",
+      "docs/screenshots/android-app-image-viewer.png",
+      "docs/screenshots/android-app-one-device-one-row.png",
+      "docs/screenshots/android-app-one-row-per-file.png",
+      "docs/screenshots/android-app-preview-image.png",
+      "docs/screenshots/android-app-preview-text.png",
+      "docs/screenshots/android-app-preview-video.png",
+      "docs/screenshots/android-app-sections-collapsed.png",
+      "docs/screenshots/android-app-settings.png",
+      "docs/screenshots/android-app-sidebar.png",
+      "docs/screenshots/android-app-transfer-row-actions.png",
+      "docs/screenshots/android-app-transfers-send.png",
+      "docs/screenshots/android-app-transfers.png",
+      "docs/screenshots/android-app-wide-sidebar.png",
+      "docs/screenshots/android-instrumented.txt",
+      "docs/screenshots/archive-preoverhaul/",
+      "docs/screenshots/before-after-01-session-before.jpg",
+      "docs/screenshots/before-after-02-transfers-before.jpg",
+      "docs/screenshots/before-after-03-session-after.jpg",
+      "docs/screenshots/qa-web-mobile.png",
+      "docs/screenshots/qa-web-settings.png",
+      "docs/screenshots/qa-web-transfers.png",
+      "docs/screenshots/qa-web-wide.png",
+      "docs/screenshots/web-01-session-wide.png",
+      "docs/screenshots/web-02-transfers-wide.png",
+      "docs/screenshots/web-03-session-narrow.png",
+      "docs/screenshots/web-04-transfers-narrow.png",
+      "docs/screenshots/web-05-drawer-narrow.png",
+      "docs/screenshots/web-06-settings-wide.png",
+      "docs/screenshots/web-07-file-menu-wide.png",
+      "docs/screenshots/web-08-failed-transfer-wide.png",
+      "docs/screenshots/web-09-connect-phone-qr.png",
+      "docs/screenshots/web-10-upload-in-progress-wide.png",
+      "docs/screenshots/web-11-settings-light.png",
+      "src/eversend/core/chat.py",
+      "src/eversend/core/chunkstore.py",
+      "src/eversend/core/constants.py",
+      "src/eversend/core/discovery.py",
+      "src/eversend/core/engine.py",
+      "src/eversend/core/hashing.py",
+      "src/eversend/core/model.py",
+      "src/eversend/core/platform_open.py",
+      "src/eversend/core/server.py",
+      "src/eversend/core/transfer.py",
+      "src/eversend/desktop/app.py",
+      "src/eversend/desktop/chat_view.py",
+      "src/eversend/desktop/i18n.py",
+      "src/eversend/desktop/icons.py",
+      "src/eversend/desktop/main_window.py",
+      "src/eversend/desktop/peer_header.py",
+      "src/eversend/desktop/preview.py",
+      "src/eversend/desktop/session_view.py",
+      "src/eversend/desktop/sidebar.py",
+      "src/eversend/desktop/theme.py",
+      "src/eversend/desktop/transfers_view.py",
+      "src/eversend/desktop/widgets.py",
+      "src/eversend/web/assets/app.css",
+      "src/eversend/web/assets/app.js",
+      "src/eversend/web/assets/index.html",
+      "src/eversend/web/assets/theme.js",
+      "src/eversend/web/selftest.py",
+      "src/eversend/web/server.py",
+      "tests/reports/",
+      "tests/screenshots/01-send.png",
+      "tests/screenshots/01-session.png",
+      "tests/screenshots/02-transfers-send.png",
+      "tests/screenshots/02-transfers.png",
+      "tests/screenshots/03-receive.png",
+      "tests/screenshots/03-transfers-receive.png",
+      "tests/screenshots/04-settings.png",
+      "tests/screenshots/05-qr.png",
+      "tests/screenshots/06-chat.png",
+      "tests/screenshots/07-preview.png",
+      "tests/screenshots/08-preview-image.png",
+      "tests/screenshots/09-emoji-and-sections.png",
+      "tests/screenshots/10-offline-devices.png",
+      "tests/screenshots/11-sections-collapsed.png",
+      "tests/screenshots/12-emoji-in-bubble.png",
+      "tests/screenshots/12-transfers-failed.png",
+      "tests/screenshots/13-one-row-per-file.png",
+      "tests/screenshots/13-settings-bottom.png",
+      "tests/screenshots/13-settings-top.png",
+      "tests/screenshots/14-transfer-record-in-chat.png",
+      "tests/screenshots/15-settings-maintenance.png",
+      "tests/screenshots/16-one-phone-one-row.png",
+      "tests/screenshots/20-preview-image.png",
+      "tests/screenshots/20b-preview-image-actual.png",
+      "tests/screenshots/21-preview-text.png",
+      "tests/screenshots/22-preview-binary.png",
+      "tests/screenshots/23-session-bubbles-and-queue.png",
+      "tests/screenshots/24-staged-tiles.png",
+      "tests/screenshots/25-bubble-file-menu.png",
+      "tests/screenshots/26-file-properties.png",
+      "tests/screenshots/27-device-list-names.png",
+      "tests/screenshots/27-device-rows.png",
+      "tests/screenshots/conversation-list.png",
+      "tests/screenshots/qa-01-device-list.png",
+      "tests/screenshots/qa-02-transfers.png",
+      "tests/screenshots/qa-03-transfers-fail-before.png",
+      "tests/screenshots/qa-03-transfers-fail.png",
+      "tests/screenshots/qa-04-settings-diag.png",
+      "tests/screenshots/qa-05-preview-image.png",
+      "tests/screenshots/qa-06-preview-text.png",
+      "tests/screenshots/qa-07-preview-binary.png",
+      "tests/screenshots/qa-08-chat-pending.png",
+      "tests/test_chat.py",
+      "tests/test_enterprise_acceptance.py",
+      "tests/test_gui_actions.py",
+      "tests/test_gui_render.py",
+      "tests/test_loopback.py",
+      "tests/test_resilience.py",
+      "tools/cdp_shot.py",
+      "tools/ci_android_interop.py",
+      "tools/clean_test_data.py",
+      "tools/manual_scan_veth.py",
+      "tools/qa_cold_start.py",
+      "tools/qa_screenshots.py",
+      "tools/qa_web_server.py",
+      "tools/records_data_check.py"
+    ],
+    "mtimes": {
+      "README.md": 1790336052.1,
+      "android/app/src/androidTest/java/cn/eversend/app/DiscoveryAndActionsTest.kt": 1790335265.7,
+      "android/app/src/androidTest/java/cn/eversend/app/EverSendInstrumentedTest.kt": 1790270744.9,
+      "android/app/src/main/AndroidManifest.xml": 1790332972.7,
+      "android/app/src/main/java/cn/eversend/app/ApiClient.kt": 1790343114.2,
+      "android/app/src/main/java/cn/eversend/app/Discovery.kt": 1790343054.9,
+      "android/app/src/main/java/cn/eversend/app/EverSendApp.kt": 1790343109.0,
+      "android/app/src/main/java/cn/eversend/app/LinkService.kt": 1790333301.9,
+      "android/app/src/main/java/cn/eversend/app/MainActivity.kt": 1790335368.9,
+      "docs/ENTERPRISE_CHARTER.md": 1790336981.5,
+      "docs/PROTOCOL.md": 1790336992.8,
+      "docs/UI_LAYOUT.md": 1790334541.2,
+      "docs/screenshots/01-session.png": 1790339437.6,
+      "docs/screenshots/02-transfers.png": 1790339437.9,
+      "docs/screenshots/03-receive.png": 1790339438.3,
+      "docs/screenshots/04-settings.png": 1790339438.6,
+      "docs/screenshots/05-qr.png": 1790339443.1,
+      "docs/screenshots/06-chat.png": 1790339438.9,
+      "docs/screenshots/07-preview.png": 1790339443.6,
+      "docs/screenshots/08-preview-image.png": 1790339444.2,
+      "docs/screenshots/09-emoji-and-sections.png": 1790339439.4,
+      "docs/screenshots/10-offline-devices.png": 1790339440.1,
+      "docs/screenshots/11-sections-collapsed.png": 1790339439.8,
+      "docs/screenshots/12-emoji-in-bubble.png": 1790339440.5,
+      "docs/screenshots/12-transfers-failed.png": 1790339442.2,
+      "docs/screenshots/13-one-row-per-file.png": 1790339440.8,
+      "docs/screenshots/13-settings-top.png": 1790339442.5,
+      "docs/screenshots/14-transfer-record-in-chat.png": 1790339441.2,
+      "docs/screenshots/15-settings-maintenance.png": 1790339441.6,
+      "docs/screenshots/16-one-phone-one-row.png": 1790339441.9,
+      "docs/screenshots/android-app-auto-discovery-drawer.png": 1790335641.2,
+      "docs/screenshots/android-app-auto-discovery.png": 1790335641.2,
+      "docs/screenshots/android-app-chat.png": 1790238185.5,
+      "docs/screenshots/android-app-clear-offline-empty.png": 1790264997.1,
+      "docs/screenshots/android-app-clear-offline.png": 1790264752.5,
+      "docs/screenshots/android-app-composer-tiles.png": 1790242478.9,
+      "docs/screenshots/android-app-conversation.png": 1790238185.5,
+      "docs/screenshots/android-app-device-sections-offline.png": 1790248099.9,
+      "docs/screenshots/android-app-device-sections.png": 1790247973.3,
+      "docs/screenshots/android-app-emoji-message.png": 1790252983.7,
+      "docs/screenshots/android-app-emoji-pad.png": 1790252983.7,
+      "docs/screenshots/android-app-file-actions.png": 1790259919.2,
+      "docs/screenshots/android-app-image-viewer.png": 1790238185.5,
+      "docs/screenshots/android-app-one-device-one-row.png": 1790269453.8,
+      "docs/screenshots/android-app-one-row-per-file.png": 1790258587.8,
+      "docs/screenshots/android-app-preview-image.png": 1790242254.6,
+      "docs/screenshots/android-app-preview-text.png": 1790242254.6,
+      "docs/screenshots/android-app-preview-video.png": 1790242254.6,
+      "docs/screenshots/android-app-sections-collapsed.png": 1790251487.4,
+      "docs/screenshots/android-app-settings.png": 1790237766.9,
+      "docs/screenshots/android-app-sidebar.png": 1790245996.7,
+      "docs/screenshots/android-app-transfer-row-actions.png": 1790258301.8,
+      "docs/screenshots/android-app-transfers-send.png": 1790237766.9,
+      "docs/screenshots/android-app-transfers.png": 1790237766.9,
+      "docs/screenshots/android-app-wide-sidebar.png": 1790248642.2,
+      "docs/screenshots/android-instrumented.txt": 1790270881.8,
+      "docs/screenshots/before-after-01-session-before.jpg": 1790339554.7,
+      "docs/screenshots/before-after-02-transfers-before.jpg": 1790339554.7
+    },
+    "note": "仓库处于写入中"
+  },
+  "summary": {
+    "C4": "PASS",
+    "C12": "PASS",
+    "C13": "PASS",
+    "C14": "PASS"
+  },
+  "results": [
+    {
+      "id": "C4",
+      "title": "设备列表：同一物理设备一行、名字不断词、副标题不重复事实",
+      "status": "PASS",
+      "error": "",
+      "subs": [
+        {
+          "name": "C4.1 同一 device_id 只有一行（改名/换地址都不新增）",
+          "ok": true,
+          "expected": "1",
+          "actual": "1",
+          "note": "store 里 upsert 两次；新增前的行数=1"
+        },
+        {
+          "name": "C4.2 设备列表里同一身份只有一行",
+          "ok": true,
+          "expected": "1",
+          "actual": "1",
+          "note": "把两行同 device_id 的记录交给 Sidebar.set_devices"
+        },
+        {
+          "name": "C4.3 省略号出现在末尾，名字不被切在奇怪的位置",
+          "ok": true,
+          "expected": "以 … 结尾（按字素省略）：'Android 上的 Chrome 浏览器（客厅那台联想拯救者）'",
+          "actual": "'Android 上的 Chr…'",
+          "note": ""
+        },
+        {
+          "name": "C4.3b 省略后的名字不出现半个词（'C...' 那种断词）",
+          "ok": true,
+          "expected": "不出现 ASCII 省略号断词",
+          "actual": "'Android 上的 Chr…'",
+          "note": ""
+        },
+        {
+          "name": "C4.4 设备行里地址只出现一次",
+          "ok": true,
+          "expected": "≤1 次",
+          "actual": "'192.168.1.42 | 书房台式机 | 在线 | 🪟'",
+          "note": "C9：同一个事实不在标题、副标题、详情行里写三遍"
+        },
+        {
+          "name": "C4.4b 设备行里设备名只出现一次",
+          "ok": true,
+          "expected": "≤1 次",
+          "actual": "'192.168.1.42 | 书房台式机 | 在线 | 🪟'",
+          "note": ""
+        },
+        {
+          "name": "C4.4c 名字被省略时，悬停能看到全名",
+          "ok": true,
+          "expected": "tooltip 或行内可看到全名",
+          "actual": "tips='书房台式机\\n电脑 · windows · ID qa-sub\\n192.168.1.42:52117 · 组播发现 | 书房台式机 | 在线'",
+          "note": ""
+        },
+        {
+          "name": "~耗时",
+          "ok": true,
+          "expected": "",
+          "actual": "1.2s",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "C12",
+      "title": "网页版：同一套 IA 与 token、无三层嵌套、两次点击可达",
+      "status": "PASS",
+      "error": "",
+      "subs": [
+        {
+          "name": "C12.1 宽屏侧栏固定 288px",
+          "ok": true,
+          "expected": "--sidebar-w: 288px",
+          "actual": "288px in css=True",
+          "note": ""
+        },
+        {
+          "name": "C12.2 窄屏（≤720px）是抽屉 + ☰",
+          "ok": true,
+          "expected": "721px 断点 + drawer + ☰",
+          "actual": "721=True drawer=True menu=True",
+          "note": ""
+        },
+        {
+          "name": "C12.3 主区只有 会话 / 传输 / 设置 三种内容",
+          "ok": true,
+          "expected": "三种内容都在",
+          "actual": "ok",
+          "note": ""
+        },
+        {
+          "name": "C12.3b 侧栏导航项只有 传输/设置（+ 会话由设备行进入）",
+          "ok": true,
+          "expected": "不超过三种",
+          "actual": "['transfers', 'settings']",
+          "note": ""
+        },
+        {
+          "name": "C12.4 主区没有嵌套三层以上的容器",
+          "ok": true,
+          "expected": "<main> 往下的容器层数 ≤3",
+          "actual": "3 层：<main> > div > section > ul",
+          "note": "容器 = div/section/ul/li/form/header/aside 等结构性元素"
+        },
+        {
+          "name": "C12.5 文案冻结词逐字一致",
+          "ok": true,
+          "expected": "[]",
+          "actual": "[]",
+          "note": "§7：设备列表/会话/传输/接收/发送/设置/连接手机/扫描"
+        },
+        {
+          "name": "C12.6 没有重复的 DOM id（重复入口的技术征兆）",
+          "ok": true,
+          "expected": "[]",
+          "actual": "[]",
+          "note": ""
+        },
+        {
+          "name": "C12.7 网页版复用桌面端的深色 token 值",
+          "ok": true,
+          "expected": "{}",
+          "actual": "{}",
+          "note": "网页版自己的取值：{'surface': '#ffffff', 'text': '#18181b'}；宪章 §2.2 要求三方抄同一组值（E1）"
+        },
+        {
+          "name": "~耗时",
+          "ok": true,
+          "expected": "",
+          "actual": "0.0s",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "C13",
+      "title": "自动发现：≤5s 零手动、扫描兜底、跨网段覆盖、bye 即时离线",
+      "status": "PASS",
+      "error": "",
+      "subs": [
+        {
+          "name": "C13.1a 两端 ≤5s 自动互相出现（零手动操作）",
+          "ok": true,
+          "expected": "两边都在 5s 内看到对方",
+          "actual": "a->b=True b->a=True 用时 0.40s",
+          "note": "负载高时这条可能假红（见报告头的 load average）"
+        },
+        {
+          "name": "C13.1b 发现来源被记下来（组播/广播/扫描）",
+          "ok": true,
+          "expected": "peer.source 有值",
+          "actual": "'mdns'",
+          "note": "E2：诊断卡片要显示发现通道"
+        },
+        {
+          "name": "C13.1c 诊断给出五个通道的统计（E2）",
+          "ok": true,
+          "expected": "channels ⊇ {multicast, broadcast, scan}",
+          "actual": "['broadcast', 'manual', 'mdns', 'multicast', 'scan']",
+          "note": ""
+        },
+        {
+          "name": "C13.1d scan 通道统计含 attempts/successes/errors/healthy",
+          "ok": true,
+          "expected": "四个键齐全",
+          "actual": "['attempts', 'enabled', 'errors', 'healthy', 'label', 'lastError', 'lastErrorAt', 'lastErrorText', 'lastPeer', 'lastSuccessAt', 'name', 'received', 'sent', 'successes']",
+          "note": "设置页「诊断」卡片直接读它"
+        },
+        {
+          "name": "C13.1e 给得出「为什么看不到对方」的中文排查清单",
+          "ok": true,
+          "expected": "非空 suggestions",
+          "actual": "[{'code': 'ok', 'text': '已发现 1 台设备：QA-B。'}]",
+          "note": ""
+        },
+        {
+          "name": "C13.1f 启动公告首包 ≤300ms（§5.1）",
+          "ok": true,
+          "expected": "0..300ms",
+          "actual": "0.2",
+          "note": ""
+        },
+        {
+          "name": "C13.7 关闭方发 bye，对端 ≤1s 转离线（不等 TTL）",
+          "ok": true,
+          "expected": "≤1s 内从在线列表里消失",
+          "actual": "0.00s",
+          "note": "§5.2：离开即公告；DEVICE_TTL=90s"
+        },
+        {
+          "name": "C13.7b 有 device_lost 事件（界面能立刻改状态）",
+          "ok": true,
+          "expected": "device_lost 事件",
+          "actual": "['device_lost']",
+          "note": ""
+        },
+        {
+          "name": "C13.6a /24 覆盖整个网段 253 台，且不探自己",
+          "ok": true,
+          "expected": "253 个候选、不含 10.0.0.5",
+          "actual": "253 个候选，含自己=False",
+          "note": ""
+        },
+        {
+          "name": "C13.6b 每个探测都绑定本网卡（多网卡机必须）",
+          "ok": true,
+          "expected": "local 全是 10.0.0.5",
+          "actual": "['10.0.0.5']",
+          "note": ""
+        },
+        {
+          "name": "C13.6c /16：对端所在的陌生 /24 也在候选里，而且排在很靠前",
+          "ok": true,
+          "expected": "10.0.7.9 出现在前 400 个候选里（决定 ≤5s）",
+          "actual": "位置=357，共 1369 个候选",
+          "note": ""
+        },
+        {
+          "name": "C13.6d /16 有硬预算（不刷爆交换机）",
+          "ok": true,
+          "expected": "≤ SCAN_TIGHT_BUDGET=2500",
+          "actual": "1369",
+          "note": ""
+        },
+        {
+          "name": "C13.6e /16 是分段抽样（覆盖多个 /24，不是只扫自己那段）",
+          "ok": true,
+          "expected": ">1 个 /24 段",
+          "actual": "256 个段",
+          "note": ""
+        },
+        {
+          "name": "C13.6f /8 不许逐台扫（候选仍是预算级，不是 1600 万）",
+          "ok": true,
+          "expected": "≤2500",
+          "actual": "1381",
+          "note": ""
+        },
+        {
+          "name": "C13.6g 多网卡：每个网段都被覆盖",
+          "ok": true,
+          "expected": "两个网卡的 local 都出现，且各自网段有候选",
+          "actual": "locals=['10.0.0.5', '192.168.1.7']",
+          "note": ""
+        },
+        {
+          "name": "C13.6h 环回不扫（扫到自己没有意义）",
+          "ok": true,
+          "expected": "无 127.*",
+          "actual": "[]",
+          "note": ""
+        },
+        {
+          "name": "C13.5a 公告通道全断时确实看不到对方（模拟的前提）",
+          "ok": true,
+          "expected": "看不到",
+          "actual": "[]",
+          "note": ""
+        },
+        {
+          "name": "C13.5b 桩命中走完 [命中 → 握手 → 注册] 并出现在设备列表里",
+          "ok": true,
+          "expected": "device_id=f7f33e0365b70de1a6df6fa7903d828c 出现在 a.devices()",
+          "actual": "registered=['QA-B'] probe_peer 调用=[('172.20.90.177', 39747, '172.20.90.180')]",
+          "note": ""
+        },
+        {
+          "name": "C13.5c 扫描出来的设备带真实 device_id（不是按 IP 造的行）",
+          "ok": true,
+          "expected": "port=39747、真实身份",
+          "actual": "id=f7f33e0365b70de1a6df6fa7903d828c port=39747",
+          "note": ""
+        },
+        {
+          "name": "C13.5d 清空后确实看不见（端到端测试的前提）",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": ""
+        },
+        {
+          "name": "C13.5e 只靠主动扫描，≤5s 内自动出现（零手输 IP）",
+          "ok": true,
+          "expected": "≤5s 出现在设备列表",
+          "actual": "0.26s（devices=['QA-B']）",
+          "note": "用户原话：PC 与安卓不能自动扫描连上，要手动输 IP；高负载下这条可能假红"
+        },
+        {
+          "name": "C13.5f 发现来源标成「扫描」",
+          "ok": true,
+          "expected": "source='scan'",
+          "actual": "'scan'",
+          "note": ""
+        },
+        {
+          "name": "C13.5g 再扫一次不产生第二行（同身份只占一行）",
+          "ok": true,
+          "expected": "≤1 行",
+          "actual": "1 行",
+          "note": "C4：一台设备一行"
+        },
+        {
+          "name": "C13.5h 扫描通道开关可关（自动轮次停掉）",
+          "ok": true,
+          "expected": "关→channel_enabled=False 且诊断卡片同值；开→True",
+          "actual": "关=False（诊断 False）开=True",
+          "note": ""
+        },
+        {
+          "name": "C13.5h2 自动扫描关掉后，手动「扫描」仍然能发现对端",
+          "ok": true,
+          "expected": "手动扫描仍命中并登记",
+          "actual": "found=1 devices=['QA-B']",
+          "note": "§5.3：扫描按钮是加速手段/兜底，不应被设置开关废掉"
+        },
+        {
+          "name": "C13.5i 扫描通道的 attempts/successes 真的被记了账",
+          "ok": true,
+          "expected": "attempts≥1 且 successes≥1",
+          "actual": "{'name': 'scan', 'label': '主动扫描', 'enabled': True, 'attempts': 1270, 'successes': 5, 'errors': 0, 'sent': 0, 'received': 0, 'lastError': '', 'lastErrorText': '', 'lastErrorAt': 0.0, 'lastSuccessAt': 1790344138.8689787, 'lastPeer': 'QA-B (172.20.90.177)', 'healthy': True}",
+          "note": ""
+        },
+        {
+          "name": "~耗时",
+          "ok": true,
+          "expected": "",
+          "actual": "5.6s",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "C14",
+      "title": "消息必达：ACK、待重发队列、重连补投、失败原因码",
+      "status": "PASS",
+      "error": "",
+      "subs": [
+        {
+          "name": "C14.1a 对方在线时消息真的到达（不是「发出去就算成功」）",
+          "ok": true,
+          "expected": "B 的存储里有这条消息",
+          "actual": "['必达-1']",
+          "note": ""
+        },
+        {
+          "name": "C14.1b 在线投递后状态是 sent",
+          "ok": true,
+          "expected": "state=sent",
+          "actual": "sent",
+          "note": ""
+        },
+        {
+          "name": "C14.2a 离线时状态是 queued（不是 sent，也不是静默丢弃）",
+          "ok": true,
+          "expected": "state=queued, delivered=0, queued≥1",
+          "actual": "state=queued delivered=0 queued=1",
+          "note": ""
+        },
+        {
+          "name": "C14.2b 给出了中文原因（界面直接显示）",
+          "ok": true,
+          "expected": "含「对方不在线 / 等待对方上线 / 重发队列」",
+          "actual": "'已进入重发队列（1 个对端），对方上线后自动补投'",
+          "note": ""
+        },
+        {
+          "name": "C14.2c 存储里的 state 也变成 queued（气泡时钟角标靠它）",
+          "ok": true,
+          "expected": "存储 state=queued",
+          "actual": "['queued']",
+          "note": ""
+        },
+        {
+          "name": "C14.2d 队列可见并含这条消息（界面画红标 + 重试）",
+          "ok": true,
+          "expected": "chat_queue() 含 2c0e00dd4747452d80f3",
+          "actual": "[{'messageId': '2c0e00dd4747452d80f3', 'conv': 'd:3a6ff4a614e618af29711e228037b88d|7337ad9b54ceecc3935ca4a216ef0b68', 'peer': '3a6ff4a614e618af29711e228037b88d', 'peerName': 'QA-B', 'state': 'queued', 'attempts': 0, 'maxAttempts': 5, 'nextRetryIn': 1.0, 'reason': '对方没有确认收到，已进入重发队列', 'lastError': '',",
+          "note": ""
+        },
+        {
+          "name": "C14.2e 有 chat_queued 事件",
+          "ok": true,
+          "expected": "chat_queued 事件",
+          "actual": "['chat_sent', 'announced', 'chat_failed', 'chat_queued', 'chat_sent']",
+          "note": ""
+        },
+        {
+          "name": "C14.2f 从未见过的设备立刻 failed（不是静默 false）",
+          "ok": true,
+          "expected": "state=failed",
+          "actual": "state=failed reason='qa-never-see：对方不在线：从未发现过这台设备'",
+          "note": ""
+        },
+        {
+          "name": "C14.3a 重连后「必达-2-离线」最终到达对端（自动补投）",
+          "ok": true,
+          "expected": "38s 内 B 的存储里出现这条消息（= 退避表 (1.0, 2.0, 4.0, 8.0, 8.0) 之和 + 15s 余量）",
+          "actual": "['必达-1', '必达-2-离线']",
+          "note": "§5.5：无 ACK 进重发队列（指数退避），重连后自动补投"
+        },
+        {
+          "name": "C14.3b A 侧状态收敛成已送达",
+          "ok": true,
+          "expected": "state ∈ {sent, delivered}",
+          "actual": "{'state': 'sent', 'reason': '', 'attempts': 0, 'nextRetryIn': 0.0}",
+          "note": ""
+        },
+        {
+          "name": "C14.3c 队列在补投成功后清空",
+          "ok": true,
+          "expected": "队列里不再有它",
+          "actual": "[]",
+          "note": ""
+        },
+        {
+          "name": "C14.3d 有 chat_delivered 事件",
+          "ok": true,
+          "expected": "chat_delivered 事件",
+          "actual": "['chat_sent', 'announced', 'chat_failed', 'chat_queued', 'chat_sent', 'chat_sent', 'device_updated', 'chat_delivered']",
+          "note": ""
+        },
+        {
+          "name": "C14.4a 失败事件带英文原因码",
+          "ok": true,
+          "expected": "§5.6 的取值之一",
+          "actual": "error_code='connection_refused'",
+          "note": ""
+        },
+        {
+          "name": "C14.4b 原因给的是中文（界面直接显示）",
+          "ok": true,
+          "expected": "含汉字",
+          "actual": "'连接被拒（对方没在监听，可能已经退出或被防火墙拦了）：cannot reach 打不通的设备 (127.0.0.1:1): cannot connect to 127.0.0.1:1: [Errno 111] 连接被拒绝'",
+          "note": ""
+        },
+        {
+          "name": "C14.5 重发退避是 1/2/4/8（上限 5 次）",
+          "ok": true,
+          "expected": "CHAT_RETRY_DELAYS=(1,2,4,8,…)，CHAT_MAX_ATTEMPTS=5",
+          "actual": "delays=(1.0, 2.0, 4.0, 8.0, 8.0) cap=5",
+          "note": ""
+        },
+        {
+          "name": "~耗时",
+          "ok": true,
+          "expected": "",
+          "actual": "2.2s",
+          "note": ""
+        }
+      ]
+    }
+  ]
+}

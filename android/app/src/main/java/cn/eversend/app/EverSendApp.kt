@@ -15,6 +15,7 @@ import androidx.emoji2.text.DefaultEmojiCompatConfig
 class EverSendApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        instance = this
         try {
             // 有可用的字体配置就初始化；没有（比如没有 Google Play 服务又没内置
             // 字体）就跳过，系统自己的 emoji 字体照样能用。
@@ -22,5 +23,17 @@ class EverSendApp : Application() {
         } catch (problem: Exception) {
             Log.d("EverSend", "EmojiCompat 初始化跳过: ${problem.message}")
         }
+    }
+
+    companion object {
+        /**
+         * 进程级的 Application 引用。
+         *
+         * `ApiClient` 的静态发现函数（`discoverByTcp` / `probeTargets`）没有 Context，
+         * 但它们要问 `ConnectivityManager`"现在走的是哪块网卡" —— 真机上少了这一步
+         * 就会扫错网段（见 `ApiClient.subnets` 的说明）。
+         */
+        lateinit var instance: EverSendApp
+            private set
     }
 }

@@ -444,9 +444,11 @@ def main() -> int:
 
         # The two controls the phone needs: a way to keep the link alive with
         # the screen off, and a way to hang up on purpose.
+        #
+        # 新布局（docs/UI_LAYOUT.md）：设置不是顶部的页签，而是侧栏底部那一项 ——
+        # 点它把主区换成设置页，侧栏还在，所以选择器用 id。
         devtools.evaluate(
-            "(function(){var t=[...document.querySelectorAll('.tab')]"
-            ".find(x=>/设置/.test(x.textContent));if(t)t.click();return !!t;})()"
+            "(function(){var b=document.querySelector('#nav-settings');if(b)b.click();return !!b;})()"
         )
         time.sleep(1)
         keep = devtools.evaluate(
@@ -464,10 +466,10 @@ def main() -> int:
         )
         shot_settings = adb("exec-out", "screencap", "-p", binary=True, timeout=120)
         (shots / "01b-android-settings.png").write_bytes(shot_settings)
-        # Back to the send view for the steps below.
+        # Back to the session page: the file picker and the composer live there.
         devtools.evaluate(
-            "(function(){var t=[...document.querySelectorAll('.tab')]"
-            ".find(x=>/发送/.test(x.textContent));if(t)t.click();return !!t;})()"
+            "(function(){var b=document.querySelector('#view-seg [data-view=\"session\"]');"
+            "if(b)b.click();return !!b;})()"
         )
         time.sleep(1)
 
@@ -552,12 +554,9 @@ def main() -> int:
 
         # The page's <input type=file> is what a person taps to pick a file.
         #
-        # Picking *is* the upload here: the page queues the file and starts the
-        # HTTP upload to the selected device straight away
-        # (``enqueueFiles`` -> ``pump``).  The 「发送」 button belongs to the
-        # other flow -- the peer-to-peer protocol transfer -- so waiting for it
-        # to light up would be testing a path this page never uses for
-        # uploads.  What a person sees is the upload card.
+        # 新布局（docs/UI_LAYOUT.md §3 输入区）：选文件只是把它排进输入区上方那一行
+        # chip，点「发送」才开始传（``stageFiles`` -> ``sendPicked`` -> ``pump``）。
+        # 所以要在这里再点一下 #btn-send，之后进度出现在「传输 → 发送」的上传区。
         uploaded_name = f"upload-{name}"
         node_id = devtools.file_input_node()
         if check("页面上找到文件选择框", bool(node_id)):
@@ -567,6 +566,18 @@ def main() -> int:
                 if not node_id:
                     break
                 devtools.call("DOM.setFileInputFiles", files=[remote], nodeId=node_id)
+                time.sleep(1)
+                staged = devtools.evaluate(
+                    "(function(){var l=document.querySelector('#file-list');"
+                    "return {chips:(l?l.children.length:0),"
+                    "total:(document.querySelector('#file-total')||{}).textContent||'',"
+                    "send:document.querySelector('#btn-send')?document.querySelector('#btn-send').disabled:null};})()"
+                ) or {}
+                print(f"      选完文件后待发区：{staged}")
+                devtools.evaluate(
+                    "(function(){var b=document.querySelector('#btn-send');"
+                    "if(b && !b.disabled)b.click();return !!b;})()"
+                )
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
                     state = devtools.evaluate(
@@ -600,9 +611,10 @@ def main() -> int:
     # -- 3b. 聊天：手机上打字，电脑端收到 -------------------------------------
     print("\n[3b] 聊天：手机上发病消息，电脑端收到")
     if cdp_ok:
+        # 聊天在「会话」页：顶部 [会话｜传输] 分段控件的左边那一半。
         devtools.evaluate(
-            "(function(){var t=[...document.querySelectorAll('.tab')]"
-            ".find(x=>/聊天/.test(x.textContent));if(t)t.click();return !!t;})()"
+            "(function(){var b=document.querySelector('#view-seg [data-view=\"session\"]');"
+            "if(b)b.click();return !!b;})()"
         )
         time.sleep(1)
         chat_text = "来自安卓手机的问候 " + time.strftime("%H:%M:%S")
@@ -636,9 +648,11 @@ def main() -> int:
                 pass
             time.sleep(2)
         check("电脑端收到了手机发的消息", bool(seen), chat_text)
+        # 电脑 → 手机的交接在「传输 → 接收」那一页上。
         devtools.evaluate(
-            "(function(){var t=[...document.querySelectorAll('.tab')]"
-            ".find(x=>/发送|Send/.test(x.textContent));if(t)t.click();return !!t;})()"
+            "(function(){var b=document.querySelector('#nav-transfers');if(b)b.click();"
+            "var t=document.querySelector('#transfer-seg [data-transfer=\"receive\"]');"
+            "if(t)t.click();return !!b;})()"
         )
         time.sleep(1)
 

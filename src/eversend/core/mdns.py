@@ -217,6 +217,9 @@ def announcement_from_txt(rdata: bytes, address: str):
         port=int(fields.get("port", 0) or 0),
         web_port=int(fields.get("web", 0) or 0),
         timestamp=time.time(),
+        # "rx=0" means the device has no receiving service (a browser client);
+        # absent means an old peer, which is presumed able to receive.
+        accepts_files=fields.get("rx", "1") not in ("0", "false", "False", ""),
     )
 
 

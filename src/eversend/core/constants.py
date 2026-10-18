@@ -299,10 +299,15 @@ OFFER_TIMEOUT = 300.0
 #: Announcement burst offsets (seconds).  Repeated sends make discovery
 #: survive a single lost datagram and give peers that just booted time to
 #: start listening.
-ANNOUNCE_DELAYS = (0.0, 0.25, 1.0, 2.5)
+#:
+#: Charter §5.1: the first packet goes out immediately and the retries back off
+#: 1s/2s/5s, so a peer that just booted is found within the 5 second budget
+#: without anyone pressing a button.
+ANNOUNCE_DELAYS = (0.0, 1.0, 2.0, 5.0)
 
 #: How often a device re-announces itself while running, in seconds.
-ANNOUNCE_INTERVAL = 30.0
+#: Charter §5.1 calls for a 15 s steady state (was 30 s).
+ANNOUNCE_INTERVAL = 15.0
 
 #: A discovered device is considered gone after this many seconds without an
 #: announcement.
@@ -346,6 +351,59 @@ MAX_ACTIVE_TRANSFERS = 8
 
 #: Maximum simultaneous control connections being handshaked.
 MAX_PENDING_HANDSHAKES = 32
+
+# ---------------------------------------------------------------------------
+# Record retention (charter C7: 垃圾记录堆积)
+# ---------------------------------------------------------------------------
+#
+# "记录" is the transfer ledger (one row per delivered file), *not* the chat
+# text: a conversation is the user's own writing and is only bounded per
+# conversation by ``ChatStore.limit_messages``.  These two numbers are the
+# retention policy the charter asks for ("默认保留最近 N 条 / D 天，可配置");
+# both are settable at runtime through ``ChatStore.prune_records``.
+
+#: How many transfer records are kept, newest first, across all conversations.
+RECORD_KEEP_COUNT = 500
+
+#: How many days of transfer records are kept.
+RECORD_KEEP_DAYS = 30
+
+#: A record still marked "进行中" after this many seconds is a leftover: the
+#: transfer that owned it is long gone (process restart, crash, dropped link),
+#: so it will never be completed.  Converging it to a terminal state is what
+#: stops "传输中" rows from piling up forever.
+RECORD_STALE_STATE_SECONDS = 15 * 60
+
+#: States that mean "this delivery is still running" (see :data:`RECORD_STATES`).
+RECORD_ACTIVE_STATES = ("sending", "active", "pending", "transferring", "queued")
+
+#: States that mean "this delivery is over", one way or another.
+RECORD_TERMINAL_STATES = ("sent", "done", "received", "failed", "cancelled", "rejected")
+
+#: Every state a transfer record may carry.
+RECORD_STATES = RECORD_ACTIVE_STATES + RECORD_TERMINAL_STATES
+
+#: Files up to this size get a real content digest (blake2b-256) when a record
+#: is written; larger files fall back to the (name, size, mtime_ns) identity
+#: unless the transfer engine already handed us the digest.  Hashing a 4 GB
+#: file on the UI thread to dedup one row is not a trade worth making.
+RECORD_DIGEST_MAX_BYTES = 64 * 1024 * 1024
+
+#: A transfer record may not be *created* with an empty name or an empty
+#: content identity -- such a row shows up in the table as a blank line with a
+#: zero-width name cell, which is exactly the "垃圾记录" the charter forbids.
+RECORD_MIN_NAME_CHARS = 1
+
+#: A device row that has not been seen for this long is a ghost: the "以前见过"
+#: list (``known_devices.json`` / ``web_clients.json``) must not grow forever,
+#: and reinstalling (or starting a second instance with a temporary data
+#: directory) mints a new ``deviceId`` for the same physical machine.  Matches
+#: the desktop's own ``KNOWN_DEVICE_TTL``.
+DEVICE_RECORD_TTL = 24 * 3600.0
+
+#: How many remembered device rows to keep (matches the desktop's
+#: ``KNOWN_DEVICE_LIMIT``); the oldest *offline* rows fall off first.
+DEVICE_RECORD_LIMIT = 24
 
 #: Chunk index bitmap width in bytes for a given chunk count.
 def bitmap_size(nchunks: int) -> int:

@@ -73,6 +73,38 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def dir_usage(path: Path) -> int:
+    """Bytes this directory really occupies.
+
+    Allocated blocks, not apparent size: the whole point of the bug this
+    measures is that a ``.eversend.part`` is preallocated to the *full* size of
+    the file being received, so a cancelled 10 GB transfer occupies 10 GB.
+    Filesystems without ``st_blocks`` (Windows) fall back to the size.
+    """
+    total = 0
+    if not path.exists():
+        return 0
+    for entry in path.rglob("*"):
+        try:
+            if not entry.is_file():
+                continue
+            info = entry.stat()
+        except OSError:
+            continue
+        total += (info.st_blocks * 512) if info.st_blocks else info.st_size
+    return total
+
+
+def wait_for(predicate, timeout: float = 10.0, interval: float = 0.05) -> bool:
+    """Poll ``predicate`` until it holds; returns whether it ever did."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return bool(predicate())
+
+
 class Rig:
     """Two engines wired to talk to each other over 127.0.0.1."""
 
@@ -291,15 +323,20 @@ def test_corruption_repair() -> None:
 
 
 def test_cancel() -> None:
-    print("\n[5] Cancellation")
+    print("\n[5] Cancellation reclaims the preallocated space")
     with scratch() as root:
         rig = Rig(root, streams=1)
+        recv_dir = root / "B" / "recv"
         try:
             source = root / "A" / "huge.bin"
-            make_random_file(source, 48 * 1024 * 1024)
+            # Large enough that the transfer is still running when we cancel:
+            # the point is to observe the preallocated part *and* its removal.
+            size = 192 * 1024 * 1024
+            make_random_file(source, size)
 
             peer = rig.peer_for(rig.engine_a, rig.engine_b)
             result: list[bool] = []
+            before = dir_usage(recv_dir)
 
             def do_send() -> None:
                 try:
@@ -309,17 +346,51 @@ def test_cancel() -> None:
 
             thread = threading.Thread(target=do_send, daemon=True)
             thread.start()
-            time.sleep(0.35)
+            part = recv_dir / "huge.bin.eversend.part"
+            wait_for(lambda: part.exists(), timeout=10.0)
+
+            # The bug in one line: the whole file is reserved the moment the
+            # transfer is accepted, long before any of it has arrived.
+            peak_part = 0
+            peak_usage = before
+            if part.exists():
+                peak_part = part.stat().st_size
+                peak_usage = dir_usage(recv_dir)
+            check(
+                "接收中的 .part 被预分配成整个文件大小（这正是要能收回来的东西）",
+                peak_part == size,
+                f"part={peak_part} 期望={size}",
+            )
 
             active = rig.engine_b.active_transfers()
+            check("取消前这次接收是活跃的", bool(active), str(active))
             if active:
                 rig.engine_b.cancel(active[0].transfer_id, "test cancel")
-            thread.join(timeout=15)
+            thread.join(timeout=20)
             check("send stopped after cancel", not thread.is_alive())
-            check("no final file written", not (root / "B" / "recv" / "huge.bin").exists())
+            check("no final file written", not (recv_dir / "huge.bin").exists())
+
+            # Cancelling means "give up", so the space must come back now --
+            # this used to be the opposite assertion: the full-size part was
+            # kept "for a later resume" that no one had asked for.
+            wait_for(lambda: not part.exists(), timeout=10.0)
+            leftovers = sorted(
+                p.name for p in recv_dir.iterdir() if p.name.endswith((".eversend.part", ".eversend.journal"))
+            )
+            after = dir_usage(recv_dir)
             check(
-                "partial state kept for a later resume",
-                (root / "B" / "recv" / "huge.bin.eversend.part").exists(),
+                "取消后接收目录里没有这个文件的 .part / .journal",
+                not leftovers,
+                f"残片={leftovers}",
+            )
+            check(
+                "取消把占用的字节还回来了（回到取消前）",
+                after <= before + 1024 * 1024,
+                f"取消前 {before} 字节（峰值 {peak_usage}，.part {peak_part}）→ 取消后 {after} 字节",
+            )
+            print(
+                f"      .part 峰值 {peak_part / 1048576:.1f} MiB / 目录实占 {peak_usage / 1048576:.1f} MiB"
+                f" → 取消后 {after / 1048576:.2f} MiB"
             )
         finally:
             rig.close()

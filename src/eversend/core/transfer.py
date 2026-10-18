@@ -88,7 +88,192 @@ class TransferCancelled(Exception):
 
 
 class TransferFailed(Exception):
-    """Raised when a transfer cannot proceed (disk full, I/O error, ...)."""
+    """Raised when a transfer cannot proceed (disk full, I/O error, ...).
+
+    Carries a machine-readable ``code`` when the caller knows one, so the UI
+    can show a *reason* instead of a stack-trace fragment.  Existing callers
+    that pass a single string keep working: the code is then derived from the
+    exception by :func:`classify_failure`.
+    """
+
+    def __init__(self, message: str, *, code: str = "", detail: str = "") -> None:
+        super().__init__(message)
+        self.code = code
+        self.detail = detail
+
+
+# ---------------------------------------------------------------------------
+# Failure reason codes (charter §5.6 / C14)
+# ---------------------------------------------------------------------------
+#
+# "传输失败" on its own is not an answer: the user cannot tell "the other side
+# refused" from "my disk is full" from "the Wi-Fi dropped", and those three
+# have completely different next steps.  Every failure that reaches an event
+# therefore carries one of these codes plus the Chinese sentence below.
+
+FAILURE_REASONS: dict[str, str] = {
+    "connection_refused": "连接被拒（对方没在监听，可能已经退出或被防火墙拦了）",
+    "timeout": "连接超时（对方没有响应）",
+    "disk_full": "磁盘空间不足",
+    "checksum_failed": "校验失败（收到的内容和源文件不一致）",
+    "cancelled": "用户取消",
+    "peer_offline": "对方不在线",
+    "rejected": "对方拒绝接收",
+    "auth_failed": "认证失败（PIN 不正确或对方不信任这台设备）",
+    "protocol_error": "协议错误（可能两端版本不一致）",
+    "io_error": "读写文件出错",
+    "interrupted": "连接中断",
+    #: The peer is a browser/phone with no listening socket at all: there is
+    #: nothing to push *to*.  The only honest answer is to say so, and let the
+    #: caller switch to "publish it and let the other side pull", which is what
+    #: the phone flow actually is (docs/REAL_DEVICE_FINDINGS.md §2.3).
+    "no_file_service": "对方没有接收文件的服务（手机/网页端只能由它主动来取）",
+    #: A chat message carried an attachment that never went over the file
+    #: channel.  Calling that "已发送" is exactly the reported bug: the bubble
+    #: said sent while the file had not left this machine.
+    "attachment_not_sent": "附件没有通过文件通道送达",
+    "attachment_too_large": "附件太大，不适合走聊天通道（请用「发送文件」）",
+    "attachment_missing": "附件文件不在本机（可能已被移动或删除）",
+    "nothing_to_send": "没有可发送的文件",
+    "unknown": "未知错误",
+}
+
+
+def failure_text(code: str, detail: str = "") -> str:
+    """Chinese sentence for a failure code, with an optional detail appended."""
+    base = FAILURE_REASONS.get(code or "unknown", FAILURE_REASONS["unknown"])
+    detail = str(detail or "").strip()
+    if detail and detail != base:
+        return f"{base}：{detail}"
+    return base
+
+
+def is_disk_full(exc: BaseException | str | None = None, *, errno_value: int | None = None) -> bool:
+    """Whether this failure is "no space left" (ENOSPC / quota exceeded)."""
+    import errno as _errno
+
+    value = errno_value if errno_value is not None else getattr(exc, "errno", None)
+    if value is None:
+        text = str(exc or "").lower()
+        return "no space left" in text or "disk full" in text
+    return value in (_errno.ENOSPC, getattr(_errno, "EDQUOT", -1))
+
+
+def classify_failure(exc: BaseException | str | None) -> str:
+    """Map an exception (or an error string) to a stable reason code."""
+    if exc is None:
+        return "unknown"
+    code = str(getattr(exc, "code", "") or "")
+    if code in FAILURE_REASONS:
+        return code
+    if isinstance(exc, TransferCancelled):
+        return "cancelled"
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return "timeout"
+    if is_disk_full(exc):
+        return "disk_full"
+    if isinstance(exc, ConnectionRefusedError):
+        return "connection_refused"
+    if isinstance(exc, ChunkStoreError):
+        return "io_error"
+    if isinstance(exc, ConnectionClosed):
+        return "interrupted"
+    if isinstance(exc, ProtocolError):
+        return "protocol_error"
+    text = str(exc).lower()
+    errno_value = getattr(exc, "errno", None)
+    if errno_value == 111 or "connection refused" in text or "连接被拒绝" in text:
+        return "connection_refused"
+    if errno_value == 28 or "no space left" in text or "磁盘空间" in text:
+        return "disk_full"
+    if "checksum" in text or "digest mismatch" in text or "校验" in text:
+        return "checksum_failed"
+    if "timed out" in text or "timeout" in text or "超时" in text:
+        return "timeout"
+    if "pin" in text or "auth" in text or "签名" in text:
+        return "auth_failed"
+    if "cancel" in text or "取消" in text:
+        return "cancelled"
+    if "cannot reach" in text or "unreachable" in text or "不在线" in text:
+        return "peer_offline"
+    if isinstance(exc, OSError):
+        return "io_error"
+    return "unknown"
+
+
+def failure_info(exc: BaseException | str | None, *, code: str = "") -> dict[str, str]:
+    """``{"error_code": ..., "error_text": ...}`` for an event payload."""
+    resolved = code or str(getattr(exc, "code", "") or "") or classify_failure(exc)
+    detail = str(exc) if isinstance(exc, TransferFailed) else ""
+    return {"error_code": resolved, "error_text": failure_text(resolved, detail)}
+
+
+@dataclass
+class SendOutcome:
+    """The *result* of one ``Engine.send_ex`` call, reason included.
+
+    A ``bool`` return is not enough to be trusted: "发送成功" and "对方一个字节
+    没收到" must not both be expressible as the same value.  Every field here has
+    exactly one source --
+
+    * ``ok`` is True only when the receiver *explicitly reported* the transfer
+      done (see ``SendSession.serve``: unknown is failure, never success);
+    * ``error_code`` is the machine-readable reason (:data:`FAILURE_REASONS`)
+      and ``error_text`` its Chinese sentence, both taken from the same
+      classification the event stream uses;
+    * ``status`` distinguishes a refusal from a cancellation from a fault, so a
+      UI does not have to re-derive it from the message.
+    """
+
+    ok: bool
+    peer_id: str = ""
+    peer_name: str = ""
+    transfer_id: str = ""
+    status: str = ""  # done | failed | rejected | cancelled
+    bytes: int = 0
+    files: int = 0
+    total_files: int = 0
+    error: str = ""
+    error_code: str = ""
+    error_text: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": bool(self.ok),
+            "peerId": self.peer_id,
+            "peerName": self.peer_name,
+            "transferId": self.transfer_id,
+            "status": self.status,
+            "bytes": int(self.bytes),
+            "files": int(self.files),
+            "totalFiles": int(self.total_files),
+            "error": self.error,
+            "errorCode": self.error_code,
+            "errorText": self.error_text,
+        }
+
+    @classmethod
+    def failure(
+        cls,
+        code: str,
+        *,
+        detail: str = "",
+        peer: DeviceInfo | None = None,
+        transfer_id: str = "",
+        status: str = "failed",
+        total_files: int = 0,
+    ) -> "SendOutcome":
+        return cls(
+            ok=False,
+            peer_id=getattr(peer, "device_id", "") or "",
+            peer_name=getattr(peer, "name", "") or "",
+            transfer_id=transfer_id,
+            status=status,
+            total_files=total_files,
+            error=detail or failure_text(code),
+            error_code=code,
+            error_text=failure_text(code, detail),
+        )
 
 
 @dataclass
@@ -346,6 +531,15 @@ class ReceiveSession:
         self._lock = threading.RLock()
         self._parts: dict[int, PartFile] = {}
         self._hashers: dict[int, IncrementalFileHasher] = {}
+        #: Set when the transfer is *given up* rather than merely interrupted
+        #: (the user pressed cancel, the peer cancelled, the offer was
+        #: declined).  The preallocated part file is then deleted instead of
+        #: being left behind for a resume that will never come; an interrupted
+        #: transfer keeps it, because that is exactly what resume needs.
+        self._discard_parts = False
+        #: Machine-readable reason the transfer ended badly (see
+        #: :data:`FAILURE_REASONS`); the UI shows its Chinese sentence.
+        self.failure_code = ""
         self._done_bytes = 0
         self._t0 = time.monotonic()
         self._expected_streams = 0
@@ -461,18 +655,46 @@ class ReceiveSession:
         )
         return self._decision
 
-    def reject(self, reason: str, status: str = "rejected") -> None:
-        """Tell the sender the offer was declined and clean up."""
+    def reject(
+        self,
+        reason: str,
+        status: str = "rejected",
+        *,
+        code: str = "",
+        detail: str = "",
+    ) -> None:
+        """Tell the sender the offer was declined and clean up.
+
+        ``code`` is the machine-readable reason the UI shows (charter §5.6):
+        ``rejected`` for "the user said no", ``disk_full`` when the destination
+        could not be prepared, ``auth_failed`` for a bad PIN.
+        """
+        code = code or ("rejected" if status == "rejected" else status)
         try:
             self.control.send_json(
-                MSG_OFFER_REJECT, {"transferId": self.transfer_id, "reason": reason}
+                MSG_OFFER_REJECT,
+                {
+                    "transferId": self.transfer_id,
+                    "reason": reason,
+                    "code": code,
+                    "status": status,
+                },
             )
         except Exception:
             pass
         for part in self._parts.values():
             part.discard()
         self._parts.clear()
-        self.events.emit("transfer_rejected", transfer_id=self.transfer_id, reason=reason)
+        self.failure_code = code
+        self.error = reason
+        self.events.emit(
+            "transfer_rejected",
+            transfer_id=self.transfer_id,
+            reason=reason,
+            status=status,
+            peer=self.peer,
+            **failure_info(detail or reason, code=code),
+        )
 
     def attach(self, conn: Connection) -> None:
         """Hand a freshly attached data connection to the stream pool."""
@@ -492,11 +714,33 @@ class ReceiveSession:
             self._stop.set()
             for thread in self._stream_threads:
                 thread.join(timeout=2.0)
-            for part in self._parts.values():
-                try:
+            self._release_parts(discard=self._discard_parts)
+
+    def _release_parts(self, *, discard: bool, immediate: bool = False) -> None:
+        """Let go of every part file -- or delete it when the transfer is dead.
+
+        ``discard`` is the "the user gave up" case: the whole point of
+        preallocating the part file is that resume is free, but that same
+        preallocation means an abandoned 10 GB receive sits on 10 GB of disk
+        forever.  A part nothing was ever written into is deleted on every
+        path, because there is nothing to resume from either way.
+
+        ``immediate`` is used when the caller cannot wait for the streams to
+        stop (a UI cancel): the files are unlinked right away so the folder and
+        the disk accounting are clean at once, and closing the descriptors is
+        left to the session teardown, which is the only place that knows the
+        writer threads have finished.
+        """
+        for part in list(self._parts.values()):
+            try:
+                if discard and immediate:
+                    part.reclaim()
+                elif discard or part.received_bytes <= 0:
+                    part.discard()
+                else:
                     part.close()
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
     def _run_inner(self, decision: OfferDecision, expected_streams: int) -> None:
         # 1. Order the files so the largest goes first: a long pole at the end
@@ -539,6 +783,7 @@ class ReceiveSession:
         streams = self._collect_streams(expected_streams)
         if not streams:
             self.error = "no data streams were established"
+            self.failure_code = "interrupted"
             self._finish("failed")
             return
         self._live = list(streams)
@@ -720,7 +965,14 @@ class ReceiveSession:
                     work.done(frame.index)
                     if work.exhausted and not outstanding:
                         return
-            except (ConnectionError, ProtocolError, TimeoutError, ConnectionClosed, OSError) as exc:
+            except (
+                ConnectionError,
+                ProtocolError,
+                TimeoutError,
+                ConnectionClosed,
+                ChunkStoreError,
+                OSError,
+            ) as exc:
                 failed = True
                 with error_lock:
                     errors.append(str(exc))
@@ -828,10 +1080,17 @@ class ReceiveSession:
                 f"{item.entry.name}: {remaining} chunk(s) could not be received"
                 + (f" ({errors[0]})" if errors else "")
             )
+            self.failure_code = classify_failure(errors[0]) if errors else "interrupted"
             item.status = "failed"
             item.error = self.error
             self.stats.failed_files += 1
-            self.events.emit("file_failed", transfer_id=self.transfer_id, index=file_index, error=self.error)
+            self.events.emit(
+                "file_failed",
+                transfer_id=self.transfer_id,
+                index=file_index,
+                error=self.error,
+                **failure_info(self.error, code=self.failure_code),
+            )
             return False
 
         return self._finalize_file(file_index, part, item, errors)
@@ -967,6 +1226,11 @@ class ReceiveSession:
         multi-gigabyte send starts instantly.
         """
         entry = item.entry
+        if self._discard_parts:
+            # The transfer was given up while this file was being verified, so
+            # the part file is already gone: finalising it would either fail on
+            # a closed handle or resurrect a file the user just cancelled.
+            return False
         self.events.emit(
             "file_verifying", transfer_id=self.transfer_id, index=file_index, name=entry.name
         )
@@ -1001,10 +1265,17 @@ class ReceiveSession:
                 f"{entry.name}: checksum mismatch "
                 f"(expected {expected[:16]}..., got {actual[:16]}...)"
             )
+            self.failure_code = "checksum_failed"
             item.status = "failed"
             item.error = self.error
             self.stats.failed_files += 1
-            self.events.emit("file_failed", transfer_id=self.transfer_id, index=file_index, error=self.error)
+            self.events.emit(
+                "file_failed",
+                transfer_id=self.transfer_id,
+                index=file_index,
+                error=self.error,
+                **failure_info(self.error, code="checksum_failed"),
+            )
             return False
 
         if not expected:
@@ -1020,9 +1291,17 @@ class ReceiveSession:
             part.finalize(verify=False)  # already verified above
         except ChunkStoreError as exc:
             self.error = str(exc)
+            self.failure_code = "disk_full" if is_disk_full(exc) else "io_error"
             item.status = "failed"
             item.error = self.error
             self.stats.failed_files += 1
+            self.events.emit(
+                "file_failed",
+                transfer_id=self.transfer_id,
+                index=file_index,
+                error=self.error,
+                **failure_info(exc, code=self.failure_code),
+            )
             return False
 
         part.set_times(entry.mtime_ns)
@@ -1036,6 +1315,12 @@ class ReceiveSession:
             name=entry.name,
             path=part.target_path,
             size=entry.size,
+            # The whole-file digest this file was verified against (blake2b-256,
+            # hex).  Every front end that keeps a transfer ledger wants a
+            # *content* identity to de-duplicate on -- a path can be renamed,
+            # this cannot (charter C7/C8).
+            digest=str(expected or actual or ""),
+            peer=self.peer,
         )
         self._send_control(
             MSG_FILE_DONE,
@@ -1224,9 +1509,18 @@ class ReceiveSession:
             self._store_digest(frame)
             return
         if frame.type == MSG_CANCEL:
+            # The sending side gave up on this transfer, so the part file here
+            # will never be resumed by it: reclaim the preallocated space now
+            # instead of leaving a full-size .part in the receive folder.
             self._cancelled = True
+            self._discard_parts = True
+            self.error = _frame_error(frame) or "发送方取消了这次传输"
             self._stop.set()
-            raise TransferCancelled("发送方取消了这次传输")
+            # A control message can arrive on a data stream, i.e. from a
+            # thread that is not the writer of every other stream: unlink the
+            # names now (safe) and let the teardown close the descriptors.
+            self._release_parts(discard=True, immediate=True)
+            raise TransferCancelled(self.error)
         if frame.type == MSG_ERROR:
             try:
                 message = json.loads(frame.payload.decode("utf-8")).get("message", "peer error")
@@ -1237,12 +1531,22 @@ class ReceiveSession:
             raise TransferCancelled(message)
 
     def _finish(self, status: str) -> None:
-        for part in self._parts.values():
-            try:
-                part.close()
-            except Exception:
-                pass
+        # A given-up transfer (user cancelled, peer cancelled, offer declined)
+        # must not leave the preallocated part file behind: the session is over,
+        # so releasing it here means the disk is back before the UI even shows
+        # 「已取消」.  An *interrupted* one keeps its part -- that is precisely
+        # what the next offer resumes from -- and so does a shut-down engine.
+        self._release_parts(discard=self._discard_parts)
         total = self._done_bytes
+        code = self.failure_code or (
+            "cancelled" if status == "cancelled" else ("unknown" if status == "failed" else "")
+        )
+        # One merged payload: passing ``error_text`` *and* the dict that also
+        # carries it is a duplicate-keyword TypeError inside an event emit.
+        extra: dict[str, Any] = {}
+        if status != "done":
+            extra = failure_info(self.error, code=code)
+            extra["error_text"] = failure_text(code, self.error)
         self.events.emit(
             "transfer_finished",
             transfer_id=self.transfer_id,
@@ -1251,6 +1555,7 @@ class ReceiveSession:
             bytes=total,
             files=self.stats.done_files,
             error=self.error,
+            **extra,
         )
         report = {
             "t": self.transfer_id,
@@ -1259,6 +1564,11 @@ class ReceiveSession:
             "files": self.stats.done_files,
             "error": self.error,
         }
+        if status != "done":
+            # The reason travels with the report, so the *sender* can show
+            # "磁盘空间不足" instead of a generic failure: the receiver is the
+            # only side that knows its disk filled up.
+            report["code"] = code
         self._debug(f"finish({status}): broadcasting report")
         self._broadcast_report(report)
         self._debug("finish: report broadcast done")
@@ -1319,13 +1629,35 @@ class ReceiveSession:
                 "transfer_report_undelivered", transfer_id=self.transfer_id, status=status_of(report)
             )
 
-    def cancel(self, reason: str = "cancelled by user") -> None:
-        """Abort from the receiving side."""
+    def cancel(self, reason: str = "cancelled by user", *, discard: bool = False) -> None:
+        """Abort from the receiving side.
+
+        ``discard`` says this is a *give-up*, not a pause: the part file (and
+        its journal) is deleted straight away rather than left on disk for a
+        resume that will never happen.  The UI's cancel button means exactly
+        that, and it is also what ``Engine.cancel`` passes; the paths that must
+        stay resumable -- the engine shutting down, a link that died -- call
+        this without it.
+        """
         self._cancelled = True
         self.error = reason
+        self.failure_code = "cancelled"
         self._stop.set()
+        if discard:
+            self._discard_parts = True
+            # Release now instead of waiting for the run loop to unwind: the
+            # user asked for this, and the next thing they do is look at the
+            # folder and the disk, not at a session that is still joining its
+            # threads.  Descriptors are closed by the teardown below.
+            self._release_parts(discard=True, immediate=True)
         self._send_control(MSG_CANCEL, {"t": self.transfer_id, "reason": reason})
-        self.events.emit("transfer_cancelled", transfer_id=self.transfer_id, reason=reason)
+        self.events.emit(
+            "transfer_cancelled",
+            transfer_id=self.transfer_id,
+            reason=reason,
+            peer=self.peer,
+            **failure_info(reason, code="cancelled"),
+        )
 
     def progress_report(self) -> None:
         """Push a PROGRESS message if enough time has passed.
@@ -1435,6 +1767,11 @@ class SendSession:
         #: supervisor restores the pool to this size when connections die.
         self._target_streams = 0
         self._reconnects = 0
+        #: Machine-readable reason this send ended badly (see
+        #: :data:`FAILURE_REASONS`); the receiver's own code wins when it
+        #: reported one (its disk filling up is not visible from here).
+        self._failure_code = ""
+        self.failure_code = ""
 
     # -- offer -------------------------------------------------------------
 
@@ -1491,8 +1828,11 @@ class SendSession:
     #: the sender dial forever.
     MAX_RECONNECTS = 40
 
-    #: How often the supervisor checks the health of the stream pool.
+    #: How often the supervisor checks the health of the stream pool, and how
+    #: long it waits between reconnect attempts once the pool is short.
     SUPERVISE_INTERVAL = 1.0
+    #: 1 s / 2 s / 4 s / 8 s, then 8 s forever (charter §5.7).
+    RECONNECT_DELAYS: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0)
 
     def serve(self) -> bool:
         """Serve chunk requests until the receiver reports the transfer done."""
@@ -1560,6 +1900,7 @@ class SendSession:
                         f"control connection lost and the peer stopped responding "
                         f"({control_lost})"
                     )
+                    self._failure_code = classify_failure(control_lost) or "interrupted"
             self._stop.set()
             for conn in self._data_conns:
                 conn.abort()
@@ -1575,6 +1916,7 @@ class SendSession:
             ok = False
             if not self.error:
                 self.error = "the receiver never reported the transfer result"
+                self._failure_code = self._failure_code or "interrupted"
         if self.error and self._finish_status == "done":
             ok = False
         if ok:
@@ -1586,6 +1928,17 @@ class SendSession:
             self.error = ""
         else:
             status = "failed"
+        if status == "done":
+            code = ""
+        elif self._cancelled and not self._failure_code:
+            code = "cancelled"
+        else:
+            code = self._failure_code or classify_failure(self.error)
+        self.failure_code = code
+        extra = {}
+        if status != "done":
+            extra = failure_info(self.error, code=code)
+            extra["error_text"] = failure_text(code, self.error)
         self.events.emit(
             "send_finished",
             transfer_id=self.transfer_id,
@@ -1593,6 +1946,7 @@ class SendSession:
             status=status,
             bytes=self._done_bytes,
             error=self.error,
+            **extra,
         )
         return ok
 
@@ -1610,7 +1964,8 @@ class SendSession:
         by itself, which is what makes a transfer survive losing *every*
         connection at once (a Wi-Fi roam, a VPN rekey, a sleeping radio).
         """
-        backoff = self.SUPERVISE_INTERVAL
+        backoff = self.RECONNECT_DELAYS[0]
+        attempt = 0
         while not self._stop.is_set() and not self.cancel_event.is_set():
             if self._finished.wait(backoff):
                 return
@@ -1619,7 +1974,8 @@ class SendSession:
 
             live = sum(1 for thread in list(self._threads) if thread.is_alive())
             if live >= self._target_streams:
-                backoff = self.SUPERVISE_INTERVAL
+                backoff = self.RECONNECT_DELAYS[0]
+                attempt = 0
                 continue
             if self._reconnects >= self.MAX_RECONNECTS:
                 return
@@ -1629,12 +1985,17 @@ class SendSession:
                 self._open_replacement_streams(missing)
             except Exception as exc:
                 self.error = str(exc)
+                self._failure_code = classify_failure(exc)
             self._reconnects += 1
-            # Gentle backoff only.  A peer that was moving data a moment ago
-            # is reached again in milliseconds once the link is back, and the
-            # reconnect budget already bounds how long we keep trying, so a
-            # steep backoff would only add dead time to every recovery.
-            backoff = min(2.0, backoff * 1.25)
+            # 1 s / 2 s / 4 s / 8 s, capped at 8 s (charter §5.7).  A peer that
+            # was moving data a moment ago is reached again in milliseconds
+            # once the link is back, so the first retry is immediate; the
+            # widening tail is what keeps a laptop that walked out of Wi-Fi
+            # range from turning into a connect storm.  The reconnect budget
+            # bounds the total, so backoff only ever adds politeness, not
+            # dead time.
+            attempt += 1
+            backoff = self.RECONNECT_DELAYS[min(attempt, len(self.RECONNECT_DELAYS) - 1)]
 
     def _has_live_streams(self) -> bool:
         """Whether any data-stream thread can still deliver a message."""
@@ -1773,6 +2134,9 @@ class SendSession:
                 info = {}
             status = str(info.get("status", "done"))
             self._finish_status = status
+            reported_code = str(info.get("code", "") or "")
+            if reported_code in FAILURE_REASONS:
+                self._failure_code = reported_code
             if status != "done":
                 self.error = str(info.get("error", "")) or "the receiver reported a failure"
             # Whichever connection carried the report ends the session, which
@@ -1958,7 +2322,14 @@ class SendSession:
 
     # -- lifecycle ---------------------------------------------------------
 
-    def cancel(self, reason: str = "cancelled by user") -> None:
+    def cancel(self, reason: str = "cancelled by user", *, discard: bool = False) -> None:
+        """Abort from the sending side.
+
+        ``discard`` matches :meth:`ReceiveSession.cancel` so a front end can
+        cancel whichever direction it is looking at without asking which one it
+        is; a sender owns no part files, so there is nothing to reclaim here.
+        The peer is told, and *it* discards the half-received file.
+        """
         self._cancelled = True
         self.error = reason
         self._stop.set()
@@ -1984,12 +2355,18 @@ class EventSink:
 
 
 __all__ = [
+    "FAILURE_REASONS",
     "ChunkQueue",
     "EventSink",
     "FileReader",
     "OfferDecision",
     "ReceiveSession",
+    "SendOutcome",
     "SendSession",
     "TransferCancelled",
     "TransferFailed",
+    "classify_failure",
+    "failure_info",
+    "failure_text",
+    "is_disk_full",
 ]

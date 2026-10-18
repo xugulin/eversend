@@ -8,15 +8,9 @@
 <!-- 深色是默认（跟 harness 的 Web 界面同一套 token）；设置页里可以切浅色。 -->
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#151517">
-<script>
-  /* 在样式生效前定好主题，避免先闪一下浅色。 */
-  try {
-    if (localStorage.getItem('eversend-theme') === 'light') {
-      document.documentElement.setAttribute('data-theme', 'light');
-      document.querySelector('meta[name="theme-color"]').setAttribute('content', '#ffffff');
-    }
-  } catch (e) {}
-</script>
+<!-- 主题预加载：在样式生效前把 data-theme 定好，避免先闪一下深色。
+     单独一个文件而不是内联脚本 —— 页面的 CSP 是 script-src 'self'。 -->
+<script src="/assets/theme.js"></script>
 <meta name="description" content="韧传 EverSend 手机网页版：在同一局域网内收发文件，无需安装任何应用。">
 <meta name="robots" content="noindex, nofollow">
 <!-- The CSRF token for this server run.  Every POST echoes it back in the
@@ -31,200 +25,400 @@
   <p class="noscript">韧传网页版需要 JavaScript 才能收发文件，请在浏览器设置中启用后重试。</p>
 </noscript>
 
-<div class="app">
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo" aria-hidden="true">⚡</span>
-      <h1>韧传<small>EverSend</small></h1>
-    </div>
-    <div class="topbar-right">
-      <div class="conn" id="conn" role="status" aria-live="off">
+<div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+<!-- 布局骨架见 docs/UI_LAYOUT.md + docs/ENTERPRISE_CHARTER.md §3：左边一条固定
+     288px 侧栏，右边主区。窄屏（≤720px）侧栏收成抽屉，左上角 ☰ 打开，内容顺序
+     不变。主区只有三种内容：会话 / 传输 / 设置 —— 入口只有一个（侧栏底部两项 +
+     点一台设备），没有第二套分段控件。
+
+     容器层数（本文件的结构约束，web/selftest.py 会解析本文件逐条检查）：
+       第 1 层  .app
+       第 2 层  .side-*（侧栏三段）/ .page（主区三页）/ .composer / .mobile-bar
+       第 3 层  页面内部直接用的东西（.list-bar、卡片列表、聊天空状态…）
+     列表（ul/ol）、表格（table/tr/td）与卡片（li.card）是**内容**，不是包裹层：
+     它们的行就是"一行一事实"的落点。为了包裹而包裹的 div 一律不留。 -->
+<div class="app" id="app">
+
+  <!-- ======================================================= 侧栏 -->
+  <aside class="sidebar" id="sidebar" aria-label="设备与导航">
+
+    <!-- ① 品牌行：本机名 · 地址，谁都能照着念出来 -->
+    <div class="side-brand">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">⚡</span>
+        <h1>韧传<small>EverSend</small></h1>
+      </div>
+      <p class="side-self"><span id="self-name">本机</span><span class="sep">·</span><span id="self-addr">地址读取中…</span></p>
+      <p class="conn" id="conn" role="status" aria-live="off">
         <span class="dot" aria-hidden="true"></span><span id="conn-text">连接中…</span>
-      </div>
-      <button class="theme-toggle" id="btn-theme" type="button" title="切换深色/浅色">🌙</button>
+      </p>
     </div>
-  </header>
 
-  <nav class="tabs" role="tablist" aria-label="功能切换">
-    <button class="tab is-active" data-view="send" role="tab" aria-selected="true" aria-controls="view-send">发送</button>
-    <button class="tab" data-view="receive" role="tab" aria-selected="false" aria-controls="view-receive">
-      接收<span class="badge" id="offer-badge" hidden>0</span>
-    </button>
-    <button class="tab" data-view="chat" role="tab" aria-selected="false" aria-controls="view-chat">
-      聊天<span class="badge" id="chat-badge" hidden>0</span>
-    </button>
-    <button class="tab" data-view="about" role="tab" aria-selected="false" aria-controls="view-about">设置</button>
-  </nav>
+    <!-- ② 设备操作：一行三个入口，每个意图只出现一次。
+         「扫描」= 原来的「⟳ 刷新」+「◎ 扫描」合并（先催一次公告，没应答就升级成
+         主动扫描）；别的连接方式收进它右下角的小箭头里（手动输入地址 / 用二维码
+         连接）—— 和电脑端 §3.1 的处理一致。「连接手机」直接出二维码弹窗。
+         选文件的入口只有输入区那一行的「📎 传输文件」（外加把文件拖进会话区）。 -->
+    <div class="side-actions">
+      <button class="ghost tool" id="btn-scan" type="button" title="扫描局域网：先让设备们再喊一声，没人应答就主动扫一遍">扫描</button>
+      <button class="ghost tool is-caret" id="btn-scan-more" type="button" aria-haspopup="menu"
+              aria-expanded="false" aria-controls="scan-menu" aria-label="更多连接方式" title="更多连接方式">▾</button>
+      <button class="ghost tool" id="btn-phone-link" type="button" title="连接手机：把这台电脑的地址用二维码给手机">连接手机</button>
+      <button class="ghost tool" id="btn-group" type="button" title="新建群聊">群聊</button>
+      <span class="menu" id="scan-menu" role="menu" aria-label="更多连接方式" hidden>
+          <button class="menu-item" type="button" id="btn-manual" role="menuitem">手动输入地址…</button>
+        </span>
+    </div>
 
-  <main class="views">
-    <!-- ---------------------------------------------------------- 发送 -->
-    <section class="view" id="view-send" role="tabpanel" aria-label="发送">
-      <div class="card">
-        <div class="card-head">
-          <h2>设备列表</h2>
-          <button class="ghost" id="btn-refresh-devices" type="button">刷新</button>
-        </div>
-        <div class="device-list" id="device-list"></div>
-        <div class="empty" id="device-empty" hidden>
-          <p class="empty-title">未找到设备</p>
-          <p class="hint">请确认两台设备在同一局域网，并且对方的韧传正在运行。</p>
-          <button class="primary" id="btn-rescan" type="button">重新扫描</button>
-        </div>
+    <!-- ③ 设备列表：>6 台时出现搜索框；在线（默认展开）/ 离线（默认折叠）两段，
+         点标题整段展开折叠。同一个 identityKey 只画一行 —— 去重在 app.js 的
+         deviceRows()（按 identityKey 并查集归并），名字用 CSS 省略 + title 全名。 -->
+    <div class="side-devices">
+      <div class="side-title">
+        <h2>设备列表</h2>
+        <span class="muted" id="device-count"></span>
       </div>
 
-      <div class="card">
-        <div class="card-head">
-          <h2>选择文件</h2>
-          <span class="muted" id="file-total"></span>
-        </div>
-        <label class="dropzone" id="dropzone" for="file-input">
-          <strong>点击选择文件</strong>
-          <span>或把文件拖到这里（支持多选）</span>
-        </label>
-        <!-- multiple is what makes a phone's photo picker usable. -->
-        <input type="file" id="file-input" multiple hidden>
-        <ul class="file-list" id="file-list"></ul>
-        <label class="field">
-          <span>PIN 码（可选）</span>
-          <input type="text" id="pin" inputmode="numeric" autocomplete="off" enterkeyhint="send"
-                 placeholder="对方设置了 PIN 才需要填写">
-        </label>
-        <button class="primary block" id="btn-send" type="button" disabled>发送</button>
+      <div class="side-search" id="device-search" hidden>
+        <input type="search" id="device-search-input" autocomplete="off"
+               placeholder="搜索设备" aria-label="搜索设备">
       </div>
 
-      <div class="card" id="upload-card" hidden>
-        <div class="card-head"><h2>上传到本机</h2><span class="muted">手机 → 电脑</span></div>
-        <div id="upload-body"></div>
+      <!-- ③-1 在线：现在就能收发的设备（判定见 app.js 的 deviceOnline） -->
+      <div class="dev-head" id="dev-section-online">
+        <button class="dev-section-head" id="dev-online-head" type="button"
+                aria-expanded="true" aria-controls="device-list">
+          <span class="caret" id="dev-online-caret" aria-hidden="true">▾</span>
+          <span class="dev-section-name">在线</span>
+          <span class="badge count-badge" id="dev-online-count">0</span>
+        </button>
       </div>
+      <ul class="device-list" id="device-list"></ul>
+      <p class="hint dev-section-empty" id="online-empty" hidden>现在没有在线的设备</p>
 
-      <div class="card">
-        <div class="card-head"><h2>正在发送</h2></div>
-        <div class="transfer-list" id="send-transfers"></div>
+      <!-- ③-2 离线：上次见过、现在不在线的设备 —— 点开还进得去历史会话。
+           「清空」只清这份「以前见过」的名单（聊天记录、配对关系都不动）：网页版
+           在标题行上给一个小按钮，手机上长按标题行是同一件事（app.js 的
+           bindOfflineClear）。清空入口只有这一个，页面上没有第二个。 -->
+      <div class="dev-head" id="dev-section-offline">
+        <button class="dev-section-head" id="dev-offline-head" type="button"
+                aria-expanded="false" aria-controls="device-list-offline">
+          <span class="caret" id="dev-offline-caret" aria-hidden="true">▸</span>
+          <span class="dev-section-name">离线</span>
+          <span class="badge count-badge" id="dev-offline-count">0</span>
+        </button>
+        <button class="ghost dev-clear" id="btn-clear-offline" type="button" disabled
+                title="清掉「以前见过」的离线设备（聊天记录、配对关系保留）">清空</button>
       </div>
-    </section>
+      <p class="hint dev-section-note" id="offline-note" role="status" hidden></p>
+      <ul class="device-list" id="device-list-offline" hidden></ul>
+      <p class="hint dev-section-empty" id="offline-empty" hidden>没有离线的设备</p>
 
-    <!-- ---------------------------------------------------------- 接收 -->
-    <section class="view" id="view-receive" role="tabpanel" aria-label="接收" hidden>
-      <div class="card" id="share-card" hidden>
-        <div class="card-head"><h2>电脑发来的文件</h2><span class="muted">点「下载」取到手机里</span></div>
-        <ul class="file-list" id="share-list"></ul>
-        <p class="hint">下载完的文件在手机的「下载」目录里——网页看不到手机自己的文件系统，
-          所以这里只记录电脑发过来过什么。</p>
+      <!-- 一台设备都没有时的那张卡片（两段标题仍然在，各写 0） -->
+      <div class="empty" id="device-empty" hidden>
+        <p class="empty-title">未找到设备</p>
+        <p class="hint">请确认两台设备在同一局域网，并且对方的韧传正在运行。</p>
+        <button class="primary" id="btn-rescan" type="button">扫描</button>
       </div>
-      <div class="card">
-        <div class="card-head"><h2>待确认</h2><span class="muted" id="offer-count"></span></div>
-        <div class="transfer-list" id="offer-list"></div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>正在接收</h2></div>
-        <div class="transfer-list" id="receive-transfers"></div>
-      </div>
-      <div class="card">
-        <div class="card-head">
-          <h2>电脑上的文件</h2>
-          <button class="ghost" id="btn-refresh-files" type="button">刷新</button>
-        </div>
-        <p class="hint" id="receive-dir"></p>
-        <ul class="file-list" id="received-files"></ul>
-      </div>
-    </section>
+      <div class="side-sep" id="group-sep" hidden></div>
+      <div class="side-title" id="group-title" hidden><h3>群聊</h3></div>
+      <ul class="conv-list" id="conv-list"></ul>
+    </div>
 
-    <!-- ---------------------------------------------------------- 聊天 -->
-    <section class="view" id="view-chat" role="tabpanel" aria-label="聊天" hidden>
-      <div class="card" id="chat-pick">
-        <div class="card-head">
-          <h2>会话</h2>
-          <button class="ghost" id="btn-new-chat" type="button">和电脑聊天</button>
-        </div>
-        <ul class="conv-list" id="conv-list"></ul>
-        <p class="hint">
-          手机和电脑之间的聊天记录存在电脑上：文字、表情、图片、视频、文件、语音都在这里收发。
+    <!-- 底部：传输（带进行中徽标）/ 设置，列表再长也压不下去 -->
+    <div class="side-foot">
+      <button class="nav-item" id="nav-transfers" data-view="transfers" type="button">
+        <span class="nav-icon" aria-hidden="true">▸</span>传输
+        <span class="badge" id="offer-badge" hidden>0</span>
+      </button>
+      <button class="nav-item" id="nav-settings" data-view="settings" type="button">
+        <span class="nav-icon" aria-hidden="true">⚙</span>设置
+      </button>
+    </div>
+  </aside>
+  <div class="scrim" id="scrim" hidden></div>
+
+  <!-- ======================================================= 主区
+       拖放的目标就是主区本身（原来多套了一层 .body，白占一层容器）。 -->
+  <main class="main" id="main" data-page="session">
+
+    <!-- 窄屏顶栏：左上角 ☰ 开抽屉，右边是当前页名字与连接状态点 -->
+    <div class="mobile-bar">
+      <button class="icon-btn" id="btn-menu" type="button" aria-label="打开设备与导航">☰</button>
+      <span class="mobile-title" id="mobile-title">会话</span>
+      <span class="conn-dot" id="conn-dot" aria-hidden="true"></span>
+    </div>
+
+    <!-- ④ 会话顶部 PeerHeader：对方设备的详细信息 + ⋯ 溢出菜单。
+         只在「会话」「传输」两页出现（设置页不显示）。以前这里还有一套
+         [会话｜传输] 分段控件 —— 它和侧栏底部「传输」是同一个意图的两个入口，
+         按 §3.1 删掉，导航只留侧栏底部那一处。 -->
+    <header class="peer-header" id="peer-header">
+      <span class="peer-avatar" id="peer-avatar" aria-hidden="true">💻</span>
+      <span class="peer-lines">
+        <span class="peer-line">
+          <h2 class="peer-name" id="chat-title">从左边选一台设备</h2>
+          <span class="peer-tags" id="peer-tags"></span>
+        </span>
+        <span class="peer-facts muted" id="peer-facts">左边点一台设备，这里显示它的地址、系统和状态。</span>
+        <span class="peer-members muted" id="chat-members"></span>
+      </span>
+      <span class="peer-acts">
+        <button class="ghost peer-back" id="btn-chat-back" type="button" hidden>← 回设备会话</button>
+      </span>
+    </header>
+
+    <!-- ⑤ 会话页：气泡列表 -->
+    <div class="page" id="page-session">
+      <div class="chat-empty" id="chat-empty">
+        <p class="empty-title" id="chat-empty-title">还没有会话</p>
+        <p class="hint" id="chat-empty-hint">
+          聊天记录存在电脑上：文字、表情、图片、视频、文件、语音都在这里收发。
           语音需要 HTTPS 地址（见「设置」），因为浏览器只在安全上下文里给麦克风。
         </p>
       </div>
-      <div class="card" id="chat-thread" hidden>
-        <div class="card-head">
-          <button class="ghost" id="btn-chat-back" type="button">← 会话</button>
-          <h2 id="chat-title">会话</h2>
-          <span class="muted" id="chat-members"></span>
-        </div>
-        <ul class="msg-list" id="msg-list"></ul>
-        <div class="composer">
-          <button class="emoji" id="btn-emoji" type="button" aria-label="表情">😊</button>
-          <button class="emoji" id="btn-attach" type="button" aria-label="附件">📎</button>
-          <button class="emoji" id="btn-voice" type="button" aria-label="按住说话">🎤</button>
-          <input type="text" id="chat-input" placeholder="输入消息，回车发送" enterkeyhint="send"
-                 autocomplete="off">
-          <button class="primary" id="btn-chat-send" type="button">发送</button>
-        </div>
-        <div class="emoji-pad" id="emoji-pad" hidden></div>
-        <p class="hint" id="voice-hint" hidden></p>
-        <input type="file" id="chat-file" accept="image/*,video/*,*/*" hidden>
-        <input type="file" id="chat-camera" accept="image/*,video/*" capture="environment" hidden>
-      </div>
-    </section>
+      <ul class="msg-list" id="msg-list" hidden></ul>
+    </div>
 
-    <!-- ---------------------------------------------------------- 设置 -->
-    <section class="view" id="view-about" role="tabpanel" aria-label="设置" hidden>
-      <div class="card" id="app-card" hidden>
-        <div class="card-head"><h2>装安卓 App（推荐）</h2><span class="muted" id="apk-size"></span></div>
+    <!-- ⑥ 传输页：一行工具条（[接收｜发送] + 筛选药丸 + 搜索 + ⋯）下面是两张表，
+         点分段控件就地切换（不跳页、不弹窗）。表是**内容网格**，不再是卡片套卡片。 -->
+    <div class="page" id="page-transfers">
+      <div class="list-bar">
+        <span class="seg" id="transfer-seg" role="group" aria-label="接收与发送">
+          <button type="button" data-transfer="receive" class="is-active" aria-selected="true">接收</button>
+          <button type="button" data-transfer="send" aria-selected="false">发送</button>
+        </span>
+        <span class="pills" id="filter-pills" role="group" aria-label="筛选传输">
+          <button type="button" data-filter="all" class="is-active" aria-selected="true">全部</button>
+          <button type="button" data-filter="active" aria-selected="false">进行中</button>
+          <button type="button" data-filter="done" aria-selected="false">已完成</button>
+          <button type="button" data-filter="failed" aria-selected="false">失败</button>
+        </span>
+        <input type="search" id="transfer-search" autocomplete="off"
+               placeholder="搜索文件或设备" aria-label="搜索传输记录">
+        <!-- 传输页的 ⋯：网页版**做不到**的三件事写在这里（§4 的能力边界要写明，
+             不是缺项）——「打开接收文件夹 / 更改接收位置 / 清空记录」在浏览器里
+             没有对应能力，所以它们是禁用项 + 一句为什么，而不是"点了没反应"。 -->
+        <button class="icon-btn" id="btn-transfers-more" type="button" aria-haspopup="menu"
+                aria-expanded="false" aria-controls="transfers-menu" title="更多操作" aria-label="更多操作">⋯</button>
+        <span class="menu" id="transfers-menu" role="menu" aria-label="更多操作" hidden>
+          <button class="menu-item" type="button" id="btn-refresh-files" role="menuitem">重新加载列表<span class="menu-hint">重新拉一次电脑接收目录里的文件清单</span></button>
+          <button class="menu-item is-off" type="button" role="menuitem" aria-disabled="true" disabled>打开接收文件夹<span class="menu-hint">网页版不支持：浏览器打不开电脑的文件管理器</span></button>
+          <button class="menu-item is-off" type="button" role="menuitem" aria-disabled="true" disabled>更改接收位置<span class="menu-hint">网页版不支持：接收位置在电脑端设置里改</span></button>
+          <button class="menu-item is-off" type="button" role="menuitem" aria-disabled="true" disabled>清空记录<span class="menu-hint">网页版不支持：历史记录只保留在电脑端</span></button>
+        </span>
+      </div>
+
+      <!-- 接收：一张表（待确认请求、正在接收、空状态各占一个 tbody） -->
+      <table class="ttable" id="receive-table" data-seg="receive">
+        <thead>
+          <tr>
+            <th class="col-file">文件</th>
+            <th class="col-peer">来自</th>
+            <th class="col-size">大小</th>
+            <th class="col-time">时间</th>
+            <th class="col-state">状态</th>
+            <th class="col-act">操作</th>
+          </tr>
+        </thead>
+        <tbody id="offer-list"></tbody>
+        <tbody id="receive-transfers"></tbody>
+        <tbody id="receive-empty">
+          <tr><td colspan="6" class="table-empty" id="receive-empty-text">还没有收到文件</td></tr>
+        </tbody>
+      </table>
+      <p class="hint" id="offer-count"></p>
+
+      <!-- 表格下面那一行说明：这张表里的「电脑上的文件」是电脑接收目录里的东西，
+           点「下载」就能取到手机里（分段切到「发送」时一起收起来）。 -->
+      <p class="hint" id="receive-dir" data-seg="receive">电脑上的文件：这些文件在电脑上；点「下载」就能取到手机里。</p>
+
+      <!-- 电脑发来的文件：电脑把文件交给这台手机，点「下载」取走 -->
+      <section class="card" id="share-card" data-seg="receive" hidden>
+        <h2 class="card-title">电脑发来的文件<span class="muted">点「下载」取到手机里</span></h2>
+        <ul class="file-list" id="share-list"></ul>
+        <p class="hint">下载完的文件在手机的「下载」目录里——网页看不到手机自己的文件系统，
+        所以这里只记录电脑发过来过什么。</p>
+      </section>
+
+      <!-- 发送：另一张表（加上手机 → 电脑的字节流进度） -->
+      <!-- 两张表都在 DOM 里，分段控件只切 class（is-seg-off）：不重建、不跳页。
+           这里**不能**写 hidden —— hidden 是元素自己的状态，会被分段控件误当成"关"。 -->
+      <table class="ttable" id="send-table" data-seg="send">
+        <thead>
+          <tr>
+            <th class="col-file">文件</th>
+            <th class="col-peer">发给</th>
+            <th class="col-size">大小</th>
+            <th class="col-progress">进度</th>
+            <th class="col-speed">速度·剩余</th>
+            <th class="col-act">操作</th>
+          </tr>
+        </thead>
+        <tbody id="send-transfers"></tbody>
+        <tbody id="send-empty">
+          <tr><td colspan="6" class="table-empty" id="send-empty-text">还没有发送过文件</td></tr>
+        </tbody>
+      </table>
+      <section class="card upload-strip" id="upload-card" data-seg="send" hidden>
+        <h2 class="card-title">上传到本机<span class="muted">手机 → 电脑</span></h2>
+        <ul class="upload-body" id="upload-body"></ul>
+      </section>
+    </div>
+
+    <!-- ⑦ 设置页：分组卡片（每张卡片是页面里的一个 section，标题就是 h2，
+         不再 div 套 div） -->
+    <div class="page" id="page-settings">
+      <div class="settings-head">
+        <button class="ghost" id="btn-back-session" type="button">← 返回会话</button>
+        <h2>设置</h2>
+      </div>
+
+      <section class="card" id="app-card" hidden>
+        <h2 class="card-title">装安卓 App（推荐）<span class="muted" id="apk-size"></span></h2>
         <p class="hint">
-          网页版受浏览器限制：手机熄屏后页面会被系统冻结，收文件要等你回到页面，
-          也不能发系统通知。装了这个 App 就能常驻后台、熄屏也收得到，还能记住配对。
+            网页版受浏览器限制：手机熄屏后页面会被系统冻结，收文件要等你回到页面，
+            也不能发系统通知。装了这个 App 就能常驻后台、熄屏也收得到，还能记住配对。
         </p>
         <a class="ghost block button-link" id="apk-link" href="/apk" download>下载安装包（.apk）</a>
         <p class="hint">
-          装完第一次打开如果系统提示，需要允许「安装未知应用」。安装包直接从这台电脑下载，
-          不经过互联网。
+            装完第一次打开如果系统提示，需要允许「安装未知应用」。安装包直接从这台电脑下载，
+            不经过互联网。
         </p>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>手机扫码打开</h2></div>
-        <div class="qr-wrap">
-          <img id="qr" src="/api/qr.svg" alt="指向本机韧传网页版的二维码" width="280" height="280">
-        </div>
-        <p class="url" id="qr-url">读取中…</p>
-        <p class="hint">手机与本机需在同一局域网。上面的地址也可以手动输入浏览器。</p>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>本机信息</h2></div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">本机信息</h2>
         <dl class="kv" id="self-info"></dl>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>连接</h2><span class="muted" id="conn-detail"></span></div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">连接<span class="muted" id="conn-detail"></span></h2>
         <label class="switch-row">
-          <input type="checkbox" id="keepalive">
-          <span>
-            熄屏也保持连接
-            <em class="hint">手机熄屏后浏览器会被系统冻结，连接就断了。打开这个开关会用一段
-              无声音频让页面留在后台（略微耗电，个别系统的深度省电仍可能挂起）。
-              传输本身会等你回来，续传不会丢。</em>
-          </span>
+            <input type="checkbox" id="keepalive">
+            <span>
+              熄屏也保持连接
+              <em class="hint">手机熄屏后浏览器会被系统冻结，连接就断了。打开这个开关会用一段
+                无声音频让页面留在后台（略微耗电，个别系统的深度省电仍可能挂起）。
+                传输本身会等你回来，续传不会丢。</em>
+            </span>
         </label>
         <p class="hint" id="keepalive-state"></p>
         <button class="ghost block" id="btn-disconnect" type="button">断开与电脑的连接</button>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>外观</h2><span class="muted">深色是默认</span></div>
-        <div class="seg" id="theme-seg" role="group" aria-label="主题">
-          <button type="button" data-theme-value="dark" class="is-active">深色</button>
-          <button type="button" data-theme-value="light">浅色</button>
-        </div>
-        <p class="hint">深色跟电脑端一致；在太阳底下看不清时可以切浅色，选择会记住。</p>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>关于</h2></div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">外观<span class="muted">深色是默认</span></h2>
+        <span class="seg" id="theme-seg" role="group" aria-label="主题">
+            <button type="button" data-theme-value="dark" class="is-active">深色</button>
+            <button type="button" data-theme-value="light">浅色</button>
+        </span>
+        <p class="hint">深色跟电脑端一致；在太阳底下看不清时可以切浅色，选择会记住。
+            主题只有这一处开关。</p>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">网页版做不到的事<span class="muted">写在这里，不当 bug 修</span></h2>
+        <dl class="kv" id="web-limits">
+        <dt>打开接收文件夹</dt><dd>浏览器打不开电脑的文件管理器 —— 用表格里的「下载」取文件</dd>
+        <dt>更改接收位置</dt><dd>接收位置在电脑端的设置里改</dd>
+        <dt>清空记录</dt><dd>传输记录只保留在电脑端，网页版看不到历史</dd>
+        <dt>清空会话</dt><dd>聊天记录存在电脑上，请在电脑端清空</dd>
+        <dt>失败记录</dt><dd>传输页点「失败」看最近的失败；发送方向的上传失败会一直留着（红字 + 原因码），接收方向那一条随电脑端的记录回收，不是丢了</dd>
+        </dl>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">关于</h2>
         <p class="hint">
-          韧传 EverSend 手机网页版：在浏览器里直接收发文件，无需安装应用。<br>
-          传输全程在本局域网内完成，不经过任何服务器。
+        韧传 EverSend 手机网页版：在浏览器里直接收发文件，无需安装应用。<br>
+        传输全程在本局域网内完成，不经过任何服务器。
         </p>
         <p class="hint" id="about-version"></p>
+      </section>
+    </div>
+
+    <!-- ⑧ 输入区：只有会话页出现。分两行 —— 上面一行是待发方块 + 统计，
+         下面那一行（永远贴着底）才是 📎 传输文件 / 😊 / 输入框 / PIN / 发送。
+         PIN 平时不占位（只有对方要 PIN 时才出现，见 app.js 的 pinNeeded）。 -->
+    <div class="composer" id="composer">
+      <!-- ⑧-0 表情面板：默认收起，点 😊 展开。它是输入区里的内嵌面板，不是弹窗。 -->
+      <div class="emoji-pad" id="emoji-pad" hidden></div>
+      <!-- ⑧-1 待发区：每个文件一块「缩略图（或类型图标）+ 底部文件名」的方块 -->
+      <div class="composer-picked is-empty" id="composer-picked">
+        <p class="hint stage-hint" id="stage-hint">拖文件或文件夹到会话区，或点「📎 传输文件」——选好之后再点「发送」。</p>
+        <ul class="file-list tile-list" id="file-list"></ul>
+        <span class="muted picked-stat" id="file-total"></span>
       </div>
-    </section>
+      <p class="hint" id="voice-hint" hidden></p>
+      <!-- ⑧-2 输入行：工具按钮 + 输入框（占满剩余）+ 可选 PIN + 发送。
+           窄屏时工具按钮留在上一行，输入框 + 发送 仍然在最后一行。 -->
+      <div class="composer-row" id="composer-row">
+        <label class="tool tool-pick" for="file-input" title="选文件发给对方（可多选）">📎 <span class="tool-text">传输文件</span></label>
+        <button class="tool" id="btn-attach" type="button" aria-label="发图片、视频到聊天" title="发图片、视频到聊天">🖼</button>
+        <button class="tool" id="btn-emoji" type="button" aria-label="表情" title="表情">😊</button>
+        <button class="tool" id="btn-voice" type="button" aria-label="按住说话" title="按住说话">🎤</button>
+        <input type="text" id="chat-input" placeholder="输入消息，回车发送" enterkeyhint="send" autocomplete="off">
+        <input type="text" id="pin" inputmode="numeric" autocomplete="off" enterkeyhint="send" hidden
+               placeholder="PIN" title="对方设置了接收 PIN 时才要填" aria-label="PIN 码（可选）">
+        <!-- 这一行最右边只有一个「发送」：有待发文件时是 #btn-send（发文件），
+             没有时是 #btn-chat-send（发输入框里的那句话）。两个都在 DOM 里。 -->
+        <button class="primary" id="btn-chat-send" type="button">发送</button>
+        <button class="primary" id="btn-send" type="button" hidden disabled>发送</button>
+      </div>
+      <!-- multiple is what makes a phone's photo picker usable. -->
+      <input type="file" id="file-input" multiple hidden>
+      <input type="file" id="chat-file" accept="image/*,video/*,*/*" hidden>
+      <input type="file" id="chat-camera" accept="image/*,video/*" capture="environment" hidden>
+    </div>
   </main>
 </div>
 
-<div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+<!-- 连接手机：一个二维码弹窗。侧栏「连接手机」与设置页那个按钮都打开它 ——
+     同一件事只有一个实现（openQr），不是两套。 -->
+<div class="modal" id="qr-modal" hidden role="dialog" aria-modal="true" aria-label="连接手机">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>连接手机</h2>
+      <button class="icon-btn" id="qr-close" type="button" aria-label="关闭" title="关闭">✕</button>
+    </div>
+    <div class="qr-wrap">
+      <img id="qr" src="/api/qr.svg" alt="指向本机韧传网页版的二维码" width="260" height="260">
+    </div>
+    <p class="url" id="qr-url">读取中…</p>
+    <p class="hint">手机与本机需在同一局域网，用相机或浏览器扫这个二维码就能打开网页版；
+      上面的地址也可以手动输入浏览器。</p>
+  </div>
+</div>
+
+<!-- 文件属性（§4 的最后一个动作）：名字 / 大小 / 类型 / 时间，没有路径与 SHA-256
+     —— 这两项在网页版拿不到，弹层里直接写明，而不是留个空格。 -->
+<div class="modal" id="facts-modal" hidden role="dialog" aria-modal="true" aria-label="文件属性">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="facts-title">文件</h2>
+      <button class="icon-btn" id="facts-close" type="button" aria-label="关闭" title="关闭">✕</button>
+    </div>
+    <dl class="kv" id="facts-body"></dl>
+  </div>
+</div>
+
+<!-- 文件预览弹层（docs/UI_LAYOUT.md §6）：能看的就地摊开，不能看的老实说。
+     待发方块、气泡上的「预览」、接收表 / 文件列表里的「预览」都打开它 —— 都是
+     页内弹层，不开新标签页。类型判定与电脑端 desktop/preview.py 同一套规则。 -->
+<div class="preview" id="preview" hidden role="dialog" aria-modal="true" aria-label="文件预览">
+  <div class="preview-card" id="preview-card">
+    <div class="preview-head">
+      <span class="preview-icon" id="preview-icon" aria-hidden="true">📄</span>
+      <span class="preview-title" id="preview-title">文件预览</span>
+      <span class="preview-facts muted" id="preview-facts"></span>
+      <button class="icon-btn preview-close" id="preview-close" type="button" aria-label="关闭预览" title="关闭预览">✕</button>
+    </div>
+    <div class="preview-body" id="preview-body"></div>
+    <div class="preview-foot" id="preview-foot"></div>
+  </div>
+</div>
 
 <script src="/assets/app.js" defer></script>
 </body>

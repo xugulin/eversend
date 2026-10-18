@@ -40,6 +40,8 @@ class EngineBridge(QObject):
     progress = Signal(str, int, int)       # transfer_id, done_bytes, total_bytes
     file_done = Signal(str, int, str, str) # transfer_id, index, name, path
     file_failed = Signal(str, int, str)    # transfer_id, index, error
+    #: 手机/网页版"发给我自己"的上传落了盘（没有协议传输，所以没有 file_done）。
+    local_upload = Signal(dict)            # event payload
 
     warning = Signal(str)
     engine_started = Signal(int)
@@ -98,6 +100,11 @@ class EngineBridge(QObject):
                     int(event.get("index", -1)),
                     str(event.get("error", "")),
                 )
+            elif kind == "web_upload_finished":
+                # 手机把文件"发给这台电脑"：文件直接落盘，没有协议传输。
+                # 不转这一条，用户的「接收」列表里就一行都没有 —— 文件在磁盘上，
+                # 界面上却看不到"谁给我发过什么"。
+                self.local_upload.emit(event)
         except Exception:
             # A UI signal must never be able to kill a transfer thread.
             pass

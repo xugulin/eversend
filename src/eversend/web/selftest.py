@@ -16,6 +16,7 @@ Exits non-zero if any check fails.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -24,10 +25,12 @@ import socket
 import struct
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from html.parser import HTMLParser
 from pathlib import Path
 
 if __package__ in (None, ""):  # allow "python3 src/eversend/web/selftest.py"
@@ -41,9 +44,10 @@ from eversend.core.chat import (  # noqa: E402
     new_group_id,
 )
 from eversend.core.engine import Engine, EngineConfig  # noqa: E402
+from eversend.core.model import disambiguate_names  # noqa: E402
 from eversend.web import create_web_ui  # noqa: E402
 from eversend.web import qr  # noqa: E402
-from eversend.web.server import TOKEN_HEADER, display_address  # noqa: E402
+from eversend.web.server import CLIENT_TTL, TOKEN_HEADER, display_address  # noqa: E402
 
 GREEN = "\033[32m"
 RED = "\033[31m"
@@ -1154,6 +1158,262 @@ def check_device_identity_is_stable(ui, base: str) -> None:
     ui.remove_client(key)
 
 
+def check_one_device_one_row(ui, base: str) -> None:
+    """用户报的那两行「Android 上的 Chrome」——回归检查。
+
+    触发链：浏览器**不可能**给地址栏导航（``GET /``）或者 ``<script src>`` 加
+    自定义头，所以"打开页面"这一下没有 ``X-EverSend-Device``，落到"地址 + UA"
+    的老分支上建了第二条记录；页面里的 ``fetch`` 才带设备号，走 ``web:<id>``。
+    两条都在说话，桌面端就显示成两台设备。这里按真实 HTTP 路径走一遍，
+    再补上换地址、普通浏览器、以及已经落盘的脏数据。
+    """
+    print("\n[设备去重] 一台手机只能有一行")
+    agent = "Mozilla/5.0 (Linux; Android 16; V2509A) AppleWebKit/537.36 Chrome/148 Mobile Safari/537.36"
+    device = "one-row-selftest-0001"
+    other_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148 Safari/537.36"
+    address = "127.0.0.1"
+
+    # ① 页面首次加载：没有自定义头（浏览器加不了）
+    status, _headers, _body = http(base + "/", headers={"User-Agent": agent})
+    check("打开页面成功", status == 200, str(status))
+    first = [c for c in ui.known_clients() if c.get("agent") == agent]
+    check("第一次打开时还只能按地址记一条（此时谁都不知道它是谁）",
+          len(first) == 1 and "|" in str(first[0]["key"]), str([c["key"] for c in first]))
+
+    # ② 页面里的 fetch 带 localStorage 里的设备号
+    status, _headers, body = http(
+        base + "/api/state",
+        headers={"User-Agent": agent, "X-EverSend-Device": device},
+    )
+    check("带设备号的 /api/state 成功", status == 200, str(status))
+    rows = [c for c in ui.known_clients() if c.get("address") == address and c.get("agent") == agent]
+    check("一台手机只剩一条记录", len(rows) == 1, str([c["key"] for c in rows]))
+    check("留下的是带设备号的那条", bool(rows) and rows[0]["key"] == "web:" + device,
+          str([c["key"] for c in rows]))
+    check("地址只是它身上的一个字段", bool(rows) and rows[0]["address"] == address, str(rows)[:140])
+    check("identityKey 就是稳定设备号",
+          bool(rows) and rows[0].get("identityKey") == "web:" + device, str(rows)[:140])
+    check("它还在线（刚说过话）", bool(rows) and rows[0].get("online") is True, str(rows)[:140])
+
+    state = json.loads(
+        http(base + "/api/state", headers={"User-Agent": agent, "X-EverSend-Device": device})[2].decode("utf-8")
+    )
+    known = state.get("knownClients", [])
+    check("/api/state 的 knownClients 里也只有一条",
+          len([c for c in known if str(c.get("deviceId")) == device]) == 1,
+          str([c.get("key") for c in known])[:140])
+    check("每一条 knownClient 都带 identityKey",
+          bool(known) and all(c.get("identityKey") for c in known), str(known)[:140])
+    keys = [str(c.get("identityKey")) for c in known]
+    check("identityKey 在名单里唯一（客户端可以据此兜底去重）",
+          len(set(keys)) == len(keys), str(keys)[:140])
+    check("正在说话的名单里也只有一个身份",
+          len({str(c.get("identityKey")) for c in state.get("webClients", [])}) == len(state.get("webClients", [])),
+          str([c.get("key") for c in state.get("webClients", [])])[:140])
+
+    # ③ 设备记录已经有了之后再打开一次页面 / 拉静态资源：不能再多一条
+    http(base + "/", headers={"User-Agent": agent})
+    http(base + "/assets/app.js", headers={"User-Agent": agent})
+    rows = [c for c in ui.known_clients() if c.get("address") == address and c.get("agent") == agent]
+    check("再打开一次页面/静态资源也不会多一条", len(rows) == 1, str([c["key"] for c in rows]))
+
+    # ④ 换地址（手机换网络）：还是同一条，地址跟着变
+    ui.touch_client("192.168.88.6", agent, device_id=device)
+    rows = [c for c in ui.known_clients() if c.get("deviceId") == device]
+    check("换地址之后仍然只有一条", len(rows) == 1, str([c["key"] for c in rows]))
+    check("地址更新成最新的那个", bool(rows) and rows[0]["address"] == "192.168.88.6", str(rows)[:140])
+    check("换地址之后也还是一条在线记录",
+          bool(rows) and rows[0].get("online") is True, str(rows)[:140])
+
+    # ⑤ 没有设备号的普通浏览器（另一个 UA）：仍然各自成条，不会被并进手机那条
+    http(base + "/", headers={"User-Agent": other_agent})
+    plain = [c for c in ui.known_clients() if c.get("agent") == other_agent]
+    plain_key = str(plain[0]["key"]) if plain else ""
+    check("没有设备号的普通浏览器照样有自己的记录",
+          len(plain) == 1 and "|" in plain_key, str([c["key"] for c in plain]))
+    check("它的 identityKey 只能退回自己的地址键",
+          bool(plain) and plain[0].get("identityKey") == plain_key, str(plain)[:140])
+    check("它不会把手机那条吃掉",
+          len([c for c in ui.known_clients() if c.get("deviceId") == device]) == 1,
+          str([c["key"] for c in ui.known_clients()])[:160])
+    if plain_key:
+        ui.remove_client(plain_key)
+
+    # ⑥ 已经落盘的脏数据：同一台设备的"设备号记录 + 地址记录"，两条都还在说话
+    dirty_device = "dirty-legacy-0001"
+    dirty_agent = "Mozilla/5.0 (Linux; Android 16; Pixel 9) AppleWebKit/537.36 Chrome/150 Mobile Safari/537.36"
+    device_key = "web:" + dirty_device
+    legacy_key = ui.client_key("10.7.7.7", dirty_agent)
+    now = time.time()
+    with ui._state_lock:
+        ui._known[device_key] = {
+            "key": device_key, "address": "10.7.7.7", "agent": dirty_agent, "label": "Android 上的 Chrome",
+            "deviceId": dirty_device, "kind": "browser", "firstSeen": now - 60, "lastSeen": now - 5,
+        }
+        ui._known[legacy_key] = {
+            "key": legacy_key, "address": "10.7.7.7", "agent": dirty_agent, "label": "Android 上的 Chrome",
+            "firstSeen": now - 600, "lastSeen": now - 1,
+        }
+        ui._clients[device_key] = {
+            "address": "10.7.7.7", "agent": dirty_agent, "label": "Android 上的 Chrome",
+            "since": now - 60, "lastSeen": now - 5,
+        }
+        ui._clients[legacy_key] = {
+            "address": "10.7.7.7", "agent": dirty_agent, "label": "Android 上的 Chrome",
+            "since": now - 600, "lastSeen": now - 1,
+        }
+    dirty = [c for c in ui.known_clients() if c.get("address") == "10.7.7.7"]
+    check("老数据里同一台设备的两条被并成一条", len(dirty) == 1, str([c["key"] for c in dirty]))
+    check("并的是地址键那条，留下设备号那条",
+          bool(dirty) and dirty[0]["key"] == device_key, str([c["key"] for c in dirty]))
+    check("被并掉的旧键留在 aliases 里（老会话还要靠它查名字）",
+          bool(dirty) and legacy_key in list(dirty[0].get("aliases") or []),
+          str(dirty[0].get("aliases") if dirty else None))
+    check("lastSeen 取最新的（刚说过话的在线状态不丢）",
+          bool(dirty) and dirty[0].get("online") is True and dirty[0]["lastSeen"] >= now - 1.01,
+          str(dirty)[:160])
+    check("firstSeen 取更早的（配对历史不丢）",
+          bool(dirty) and float(dirty[0].get("firstSeen") or 0) <= now - 599, str(dirty)[:160])
+    with ui._state_lock:
+        still_there = legacy_key in ui._known or legacy_key in ui._clients
+    check("地址键那条真的从注册表和活跃表里都清掉了", not still_there, legacy_key)
+
+    # ⑦ 换过地址留下的幽灵行：它已经不在说话，也要能被收掉
+    ghost_key = ui.client_key("10.7.7.8", dirty_agent)
+    with ui._state_lock:
+        ui._known[ghost_key] = {
+            "key": ghost_key, "address": "10.7.7.8", "agent": dirty_agent, "label": "Android 上的 Chrome",
+            "firstSeen": now - 900, "lastSeen": now - 800,
+        }
+    ghosts = [c for c in ui.known_clients() if c.get("agent") == dirty_agent]
+    check("换过地址的旧记录也被收掉，不留幽灵行",
+          len(ghosts) == 1 and ghosts[0]["key"] == device_key, str([c["key"] for c in ghosts]))
+
+    # ⑧ online 仍然是"现在正在说话"（key 还在活跃表里），不是"记录还在"
+    with ui._state_lock:
+        ui._clients.pop(device_key, None)
+    offline = [c for c in ui.known_clients() if c.get("key") == device_key]
+    check("不在说话了就是 online=False（记录本身仍然留着）",
+          len(offline) == 1 and offline[0].get("online") is False, str(offline)[:140])
+
+    # ⑨ 「断开连接」（/api/leave）必须还能断开带设备号的那条记录
+    status, _headers, body = http(
+        base + "/api/leave",
+        method="POST",
+        data=b"{}",
+        headers={
+            "Content-Type": "application/json",
+            TOKEN_HEADER: ui.token,
+            "User-Agent": agent,
+            "X-EverSend-Device": device,
+        },
+    )
+    answer = json.loads(body.decode("utf-8")) if body else {}
+    check("带设备号的「断开连接」回 200", status == 200, f"{status} {body[:60]!r}")
+    check("接口说它断开了", bool(answer.get("forgotten")), str(answer))
+    check("断开之后名单里没有它了",
+          not [c for c in ui.known_clients() if c.get("deviceId") == device],
+          str([c["key"] for c in ui.known_clients()])[:160])
+    ui.remove_client(device_key)  # 已经断了，这里只是保证不留残留
+
+
+def check_merge_keeps_conversation_title(ui, base: str) -> None:
+    """归并旧记录不能把老会话的名字弄丢。
+
+    用户真实数据里那段 **289 条消息**的会话，成员写的是"影子记录"的写法
+    ``web:127.0.0.1|d2445430`` —— 页面首次加载（浏览器加不了自定义头）时按
+    "地址 + UA"建的那条。T1 把这台手机归并成一条设备记录之后，注册表里就只剩
+    ``android:<id>`` / ``web:<uuid>``：名字必须仍然认得出来，否则会话列表上
+    那段聊天会从「安卓 App」掉成「未知设备」。
+    """
+    print("\n[归并留痕] 老会话的成员写法还要认得出来")
+    engine = ui.engine
+    agent = "EverSend-Android/1.0 (Android 14)"
+    legacy_key = ui.client_key("127.0.0.1", agent)      # 127.0.0.1|<UA摘要>
+    member = "web:" + legacy_key                        # 会话里存的就是这个写法
+    now = time.time()
+    with ui._state_lock:
+        ui._known[legacy_key] = {
+            "key": legacy_key, "address": "127.0.0.1", "agent": agent,
+            "label": "安卓 App", "firstSeen": now - 900, "lastSeen": now - 800,
+        }
+    conv_id = direct_conversation_id(engine.info.device_id, member)
+    engine.chat.upsert_conversation(conv_id, kind="direct", members=[member])
+
+    def title(conversation_id: str) -> str:
+        """走真实接口：/api/state → _conversation_labels → 名字。"""
+        body = json.loads(http(base + "/api/state")[2].decode("utf-8"))
+        items = (body.get("chat") or {}).get("conversations") or []
+        found = next((item for item in items if item.get("id") == conversation_id), None)
+        return str((found or {}).get("displayTitle") or "")
+
+    before = title(conv_id)
+    check("归并前：那段老会话有名字（不是「未知设备」）", before not in ("", "未知设备"), before)
+
+    # 这台手机带着设备号回来了：影子记录会被收掉（App 登记时的旧记录清理）。
+    ui.register_app("legacy-shadow-0001", name="老安卓机", address="127.0.0.1", agent=agent)
+    with ui._state_lock:
+        kept = dict(ui._known.get("android:legacy-shadow-0001") or {})
+        gone = legacy_key not in ui._known
+    check("影子记录被并掉了（注册表里只剩设备号那条）", gone, str(sorted(ui._known))[:160])
+    check("旧键被记成 alias", legacy_key in list(kept.get("aliases") or []),
+          str(kept.get("aliases"))[:160])
+
+    after = title(conv_id)
+    check("归并之后老会话的标题一字不变", after == before, f"{before!r} → {after!r}")
+
+    # 反过来也要对：新会话用的是设备现在的名字，没有被旧名字粘住。
+    fresh_id = direct_conversation_id(engine.info.device_id, "android:legacy-shadow-0001")
+    engine.chat.upsert_conversation(fresh_id, kind="direct", members=["android:legacy-shadow-0001"])
+    check("新会话用的是设备现在的名字", title(fresh_id) == "老安卓机", title(fresh_id))
+
+    for conversation_id in (conv_id, fresh_id):
+        engine.chat.remove_conversation(conversation_id)
+    ui.remove_client("android:legacy-shadow-0001")
+
+
+def check_broken_registry_row_does_not_break_state(ui, base: str) -> None:
+    """注册表里一行坏数据不能让整页挂掉。
+
+    这份文件是直接从磁盘读回来的（手工改过、旧版本写的都可能），字段残缺时
+    ``known_clients()`` 以前用 ``client["address"]`` 这种下标读，一行坏数据就
+    让 ``/api/state`` 整个 500 —— 用户看到的是"页面连不上"，连哪台设备坏了
+    都看不见。
+    """
+    print("\n[坏数据] 字段残缺的记录不能把 /api/state 拖崩")
+    with ui._state_lock:
+        ui._known["web:broken-row-0001"] = {"deviceId": "broken-row-0001", "aliases": "不是列表"}
+        ui._known["broken-row-no-key"] = {"address": "10.4.4.4", "lastSeen": "昨天"}
+    crashed = ""
+    rows: list = []
+    try:
+        rows = ui.known_clients()
+    except Exception as exc:  # noqa: BLE001 - 这条检查就是"不许抛"
+        crashed = f"{type(exc).__name__}: {exc}"
+    check("known_clients() 不抛异常", not crashed, crashed)
+
+    broken = [c for c in rows if str(c.get("deviceId")) == "broken-row-0001"]
+    check("残缺记录照样列得出来（缺字段用默认值）",
+          len(broken) == 1
+          and broken[0].get("address") == ""
+          and broken[0].get("lastSeen") == 0.0
+          and isinstance(broken[0].get("secondsAgo"), float),
+          str(broken)[:160])
+    keyless = [c for c in rows if str(c.get("key")) == "broken-row-no-key"]
+    check("记录里没有 key 字段时用注册表的键兜底（那一行才点得动）",
+          len(keyless) == 1 and keyless[0].get("address") == "10.4.4.4", str(keyless)[:160])
+    check("时间字段是字符串也不炸（当成 0）",
+          bool(keyless) and keyless[0].get("secondsAgo", -1) >= 0, str(keyless)[:160])
+    check("每条 knownClient 仍然都有 identityKey",
+          all("identityKey" in c for c in rows), str([c.get("key") for c in rows])[:160])
+
+    status, _headers, _body = http(base + "/api/state")
+    check("/api/state 不会因为一行坏数据 500", status == 200, str(status))
+    with ui._state_lock:
+        for row in ("web:broken-row-0001", "broken-row-no-key"):
+            ui._known.pop(row, None)
+
+
 def check_discovery_reply(engine: Engine) -> None:
     """A phone that asks "who is there?" must be answered immediately.
 
@@ -1559,6 +1819,671 @@ def check_app_registration(ui) -> None:
     check("记住的设备说明文字会跟着更新", refreshed["label"] == "安卓 App", refreshed["label"])
     ui.remove_client(old["key"])
 
+
+def check_stream_keeps_client_online(ui, base: str) -> None:
+    """开着的**事件流**就该一直算在线 —— 这条是回归测试。
+
+    手机端的保活服务把 SSE 挂上之后就阻塞在流里（它本来就该一直挂着），心跳请求
+    再也发不出去；服务端如果只把"离散的 HTTP 请求"算作在线，15 秒后这台手机就
+    被标成离线 —— 用户看到的是"手机明明连着、电脑端却显示未连接"，发给它的文件
+    被当成离线留着。安卓仪器测试 ``keepAliveServiceStaysOnline`` 抓的就是这个。
+
+    所以这里真的开一条带设备号的事件流，然后**除了这条流什么都不发**，等过一个
+    ``CLIENT_TTL`` 再问一次 /api/state。
+    """
+    print("\n[流保活] 开着事件流就该一直算在线")
+    agent = "EverSend-Android/1.0 (Android 16)"
+    device = "stream-keepalive"
+    ui.register_app(device, name="流保活手机", address="10.9.9.31", agent=agent)
+    try:
+        request = urllib.request.Request(
+            base + "/api/events",
+            headers={
+                "Accept": "text/event-stream",
+                "User-Agent": agent,
+                "X-EverSend-Device": device,
+                "X-EverSend-Name": "%E6%B5%81%E4%BF%9D%E6%B4%BB%E6%89%8B%E6%9C%BA",
+            },
+        )
+        stream = urllib.request.urlopen(request, timeout=10)
+        try:
+            check("事件流打开了", stream.status == 200, str(stream.status))
+            # 手机就是这样：SSE 挂着，除此之外一个请求都不发。
+            deadline = time.monotonic() + CLIENT_TTL + 3
+            while time.monotonic() < deadline:
+                time.sleep(0.5)
+            state = json.loads(http(base + "/api/state")[2].decode("utf-8"))
+            mine = [
+                c for c in state.get("knownClients", []) if c.get("key") == f"android:{device}"
+            ]
+            check(
+                f"{CLIENT_TTL:.0f} 秒没发请求、流还开着 → 仍然算在线",
+                bool(mine) and mine[0].get("online") is True,
+                str(mine)[:160],
+            )
+            check(
+                "...而且是刚碰过的那种在线（secondsAgo 在窗口内）",
+                bool(mine) and float(mine[0].get("secondsAgo", 999)) < CLIENT_TTL,
+                str(mine)[:160],
+            )
+        finally:
+            stream.close()
+    finally:
+        ui.remove_client(f"android:{device}")
+    # 流关掉之后要慢慢回到"离线"，否则这个在线就是假的。
+    deadline = time.monotonic() + CLIENT_TTL + 3
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+    state = json.loads(http(base + "/api/state")[2].decode("utf-8"))
+    mine = [c for c in state.get("knownClients", []) if c.get("key") == f"android:{device}"]
+    check(
+        "流关掉之后它才变成不在线",
+        not mine or mine[0].get("online") is not True,
+        str(mine)[:160],
+    )
+    ui.remove_client(f"android:{device}")
+
+
+
+def check_offline_devices_are_listed(ui) -> None:
+    """走过一台设备之后，它应该掉进「离线」那一栏，而不是从列表里消失。
+
+    页面要求把设备列表分成「在线 / 离线」两段（``docs/UI_LAYOUT.md`` §2③）。
+    引擎的发现表有 TTL：一台电脑关掉几分钟后就不在 ``engine.devices()`` 里了，
+    如果 /api/state 只报"现在活着的"，离线那一段永远是空的 —— 功能等于没做。
+    """
+    print("\n[设备两段] 走过的设备要留在「离线」里")
+    state = json.loads(http(f"http://127.0.0.1:{ui._bound_port}/api/state")[2].decode("utf-8"))
+    devices = {str(d.get("id")): d for d in state.get("devices", [])}
+    check("设备列表里每一台都带 online 标记",
+          all("online" in d for d in devices.values()),
+          str([(d.get("name"), d.get("online")) for d in list(devices.values())[:4]]))
+    check("在线的那台（本机）online=True",
+          devices.get(str(state["device"]["id"]), {}).get("online") is not False)
+
+    # 记一台假的设备，然后把它的时间推回到 10 分钟前：它就该出现在离线里
+    ui._remember_device(
+        {"id": "offline-demo", "name": "早就关机的笔记本", "address": "10.9.9.77", "online": True},
+        time.time() - 600,
+    )
+    state = json.loads(http(f"http://127.0.0.1:{ui._bound_port}/api/state")[2].decode("utf-8"))
+    found = [d for d in state.get("devices", []) if str(d.get("id")) == "offline-demo"]
+    check("离线设备仍然出现在设备列表里", len(found) == 1, str(found)[:140])
+    if found:
+        check("它被标成 online=false", found[0].get("online") is False, str(found[0])[:140])
+        check("并带上「最后在线」秒数", float(found[0].get("secondsAgo") or 0) >= 600,
+              str(found[0].get("secondsAgo")))
+    ui._remembered.pop("offline-demo", None)
+
+
+def check_offline_devices_can_be_cleared(ui) -> None:
+    """清空「以前见过」的离线设备：列表干净了，在线的与配对关系都不受影响。"""
+    print("\n[设备两段] 离线名单要能一键清空")
+    ui._remember_device(
+        {"id": "cleanup-demo", "name": "以前见过的电脑", "address": "10.9.9.88", "online": True},
+        time.time() - 600,
+    )
+    state = json.loads(http(f"http://127.0.0.1:{ui._bound_port}/api/state")[2].decode("utf-8"))
+    before = [d for d in state.get("devices", []) if str(d.get("id")) == "cleanup-demo"]
+    check("清空前它还在离线列表里", len(before) == 1, str(before)[:120])
+
+    answer = json.loads(
+        http(
+            f"http://127.0.0.1:{ui._bound_port}/api/devices/forget-offline",
+            method="POST",
+            data=b"",
+            headers={"X-EverSend-Token": ui.token},
+        )[2].decode("utf-8")
+    )
+    check("接口回了清掉几台",
+          bool(answer.get("ok")) and int(answer.get("forgotten") or 0) >= 1, str(answer))
+    state = json.loads(http(f"http://127.0.0.1:{ui._bound_port}/api/state")[2].decode("utf-8"))
+    check("清空后列表里没有它了",
+          not [d for d in state.get("devices", []) if str(d.get("id")) == "cleanup-demo"],
+          str([d.get("name") for d in state.get("devices", [])])[:120])
+    check("本机（在线设备）不受影响",
+          any(str(d.get("id")) == str(state["device"]["id"]) for d in state.get("devices", [])))
+
+
+# =====================================================================
+# 企业级改造（docs/ENTERPRISE_CHARTER.md §2 / §3 / §4 / §5，C12）
+#
+# 这一节盯的是**网页版自己不杂乱、不重复、与桌面端同一套语义**：
+#   · 骨架：宽屏侧栏 288px、窄屏抽屉 + ☰；主区只有 会话/传输/设置 三页；
+#   · 容器：没有三层以上的包裹容器（div/section），行里（li/td）不许再套容器；
+#   · token：颜色来自 desktop/theme.py 那一组变量，规则里不写裸 hex；
+#   · 文案：设备列表 / 会话 / 传输 / 接收 / 发送 / 设置 / 连接手机 / 扫描 逐字一致；
+#   · 入口：一个意图一个入口（刷新并进扫描、二维码并进连接手机、主题只在设置里）；
+#   · 传输页：筛选药丸 + 搜索 + 空状态 + 中文失败原因 + 行右键（长按）完整动作菜单。
+#
+# 结构检查走的是"解析 index.html / app.css / app.js"这条路：这些都是**静态事实**，
+# 不依赖浏览器，也就不需要 UI 测试框架（脚本要在没有图形库的机器上跑得起来）。
+# =====================================================================
+
+#: 包裹容器：只为"把别的东西套起来"而存在的标签。列表（ul/ol）、表格
+#: （table/thead/tbody/tr/td）、列表项（li）与所有控件都是**内容**，不是容器 ——
+#: 内容网格本来就长这样，用户看到的"杂乱"来自一层层白套的 div/section。
+_WRAP_TAGS = {"div", "section"}
+_VOID_TAGS = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+    "param", "source", "track", "wbr",
+}
+#: 主区容器层数上限（宪章 C12：没有嵌套三层以上的容器）。
+MAX_WRAP_DEPTH = 3
+
+
+class _HtmlDepth(HTMLParser):
+    """量 index.html 的两件事：包裹层最深几层、行里有没有套容器。"""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.stack: list[str] = []
+        self.max_depth = 0
+        self.deepest: list[str] = []
+        self.inside_row: list[str] = []
+        self.main_depths: list[int] = []
+        self.main_deepest: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        label = tag
+        if values.get("id"):
+            label += "#" + str(values["id"])
+        elif values.get("class"):
+            label += "." + str(values["class"]).split()[0]
+        if tag in _VOID_TAGS:
+            path = self.stack + [label]
+        else:
+            self.stack = self.stack + [label]
+            path = self.stack
+        if tag in _WRAP_TAGS:
+            for enclosing in self.stack[:-1]:
+                if enclosing.split("#")[0].split(".")[0] in ("li", "td"):
+                    self.inside_row.append(" > ".join(path))
+                    break
+            # 层数只数 div/section：main/aside/header/nav 是语义骨架，ul/li/table
+            # 是内容网格 —— 用户看到的"杂乱"来自一层层白套的 div/section。
+            wraps = [item for item in path if item.split("#")[0].split(".")[0] in _WRAP_TAGS]
+            if len(wraps) > self.max_depth:
+                self.max_depth = len(wraps)
+                self.deepest = list(wraps)
+            names = [item.split("#")[0].split(".")[0] for item in self.stack]
+            if "main" in names:
+                inside_main = names[names.index("main") + 1:]
+                depth = len([name for name in inside_main if name in _WRAP_TAGS])
+                self.main_depths.append(depth)
+                if depth >= max(self.main_depths):
+                    self.main_deepest = list(wraps[-depth:]) if depth else []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _VOID_TAGS:
+            return
+        for index in range(len(self.stack) - 1, -1, -1):
+            if self.stack[index].split("#")[0].split(".")[0] == tag:
+                del self.stack[index:]
+                return
+
+
+def _hex_outside_tokens(css: str) -> list[str]:
+    """规则体里的裸 hex（token 声明块之外、注释之外）。
+
+    注释里那张"深色 / 浅色对照表"本来就该写满 hex —— 那是给人看的文档，
+    不是规则。所以先把注释去掉，再去掉两个 token 块，剩下的才是违规的。
+    """
+    body = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    body = re.sub(r":root\s*\{[^}]*\}", "", body, count=1)
+    body = re.sub(r'html\[data-theme="light"\]\s*\{[^}]*\}', "", body, count=1)
+    return re.findall(r"#[0-9a-fA-F]{3,8}\b", body)
+
+
+def check_enterprise_layout(ui, base: str) -> None:
+    print("\n[企业级 §3] 网页版的信息架构与文案")
+    html = _asset_text(ui, "index.html")
+    css = _asset_text(ui, "app.css")
+    script = _asset_text(ui, "app.js")
+
+    # ---- 骨架：宽屏 288px 固定侧栏，窄屏抽屉 + ☰ -------------------------
+    check("侧栏宽度是 288px（与电脑端同一个数，§2.3）",
+          re.search(r"--sidebar-w:\s*288px", css) is not None, "app.css")
+    check("宽屏（≥721px）侧栏常驻、窄屏收成抽屉",
+          "@media (min-width: 721px)" in css and "translateX(-102%)" in css, "app.css")
+    check("窄屏左上角是 ☰（抽屉开关）",
+          'id="btn-menu"' in html and "☰" in html and "openDrawer" in script)
+    check("主区就是拖放目标（没有 .body 那一层多余包裹）",
+          'id="main"' in html and "$('#main')" in script and 'id="dropzone"' not in html)
+
+    # ---- 主区只有三种内容 ------------------------------------------------
+    pages = re.findall(r'<div class="page" id="page-([a-z]+)"', html)
+    check("主区只有 会话/传输/设置 三页",
+          pages == ["session", "transfers", "settings"], str(pages))
+    check("主区顶部那套 [会话｜传输] 分段控件已经删掉（它是第二个入口）",
+          "view-seg" not in html and "view-seg" not in script)
+    check("侧栏底部保留「传输」与「设置」两个导航",
+          'id="nav-transfers"' in html and 'id="nav-settings"' in html)
+    check("导航是唯一的页面入口（switchView 只由侧栏与设备行触发）",
+          script.count("switchView(") >= 3 and "data-view=\"session\"" not in html)
+
+    # ---- 容器层数：没有三层以上的包裹 -----------------------------------
+    parser = _HtmlDepth()
+    parser.feed(html.split("<body>", 1)[-1])
+    check(f"包裹容器（div/section）最深 {MAX_WRAP_DEPTH} 层以内",
+          parser.max_depth <= MAX_WRAP_DEPTH,
+          f"{parser.max_depth} 层：" + " > ".join(parser.deepest[-4:]))
+    check("主区里的包裹容器不超过 3 层",
+          bool(parser.main_depths) and max(parser.main_depths) <= MAX_WRAP_DEPTH,
+          f"{max(parser.main_depths or [0])} 层：" + " > ".join(parser.main_deepest[-4:]))
+    check("行里（li / td）不再套 div 或 section",
+          not parser.inside_row, "; ".join(parser.inside_row[:2]))
+    check("卡片标题是 <h2 class=\"card-title\">（不再是 div.card-head > h2）",
+          'class="card-title"' in html and "card-head" not in html)
+    check("设备列表与消息列表都是 <ul>，行是 <li>",
+          '<ul class="device-list" id="device-list">' in html and
+          '<ul class="msg-list" id="msg-list"' in html)
+
+    # ---- JS 引用的静态 id 必须真的存在（删元素留下的死引用会当场抛异常）--
+    html_ids = set(re.findall(r'id="([^"]+)"', html))
+    used = set(re.findall(r"\$\('#([A-Za-z0-9_-]+)'\)", script))
+    used |= set(re.findall(r"getElementById\('([A-Za-z0-9_-]+)'\)", script))
+    created = set(re.findall(r"id:\s*'([A-Za-z0-9_-]+)'", script))
+    missing = sorted(used - html_ids - created)
+    check("app.js 引用的每个静态 id 都在页面上", not missing, str(missing))
+
+    # ---- 设计 token：颜色只有一处来源 -----------------------------------
+    check("app.css 声明了深色画布 token（#0f0f11）", "#0f0f11" in css)
+    check("app.css 声明了深色面 token（#151517）", "#151517" in css)
+    wanted = ["--canvas", "--surface", "--raised", "--overlay", "--border", "--border-strong",
+              "--text", "--text-muted", "--text-faint", "--accent", "--accent-fg",
+              "--success", "--warning", "--danger", "--info"]
+    absent = [name for name in wanted if name + ":" not in css]
+    check("§2.1 的十五个 token 一个不少", not absent, str(absent))
+    check("浅色一套也在（html[data-theme=\"light\"]）",
+          'html[data-theme="light"]' in css and "--canvas: #ffffff" in css)
+    stray = _hex_outside_tokens(css)
+    check("token 声明之外不再出现裸 hex", not stray, str(stray[:6]))
+    check("规则引用变量而不是写死颜色", css.count("var(--") > 200, str(css.count("var(--")))
+
+    # ---- 文案冻结：与电脑端逐字一致 -------------------------------------
+    frozen = ["设备列表", "会话", "传输", "接收", "发送", "设置", "连接手机", "扫描"]
+    missing_words = [word for word in frozen if word not in html]
+    check("八个冻结词都在页面上", not missing_words, str(missing_words))
+    check("筛选药丸用的是 全部/进行中/已完成/失败",
+          all(f'data-filter="{name}"' in html for name in ("all", "active", "done", "failed")) and
+          all(word in html for word in ("全部", "进行中", "已完成", "失败")))
+    check("侧栏四个入口的标签是纯文字（符号交给图标）",
+          ">扫描<" in html and ">连接手机<" in html and ">群聊<" in html and
+          "⟳" not in html.split('class="side-actions"')[1].split("</div>")[0])
+
+    # ---- 一个意图一个入口 ------------------------------------------------
+    check("「刷新」并进了「扫描」（页面上没有第二个扫描/刷新按钮）",
+          'id="btn-refresh-devices"' not in html and html.count('id="btn-scan"') == 1)
+    check("「手动添加 IP」收进扫描的下拉里",
+          'id="btn-manual"' in html and 'id="scan-menu"' in html and
+          html.count(">手动输入地址…</button>") == 1)
+    check("二维码只有一个入口（连接手机弹窗），下拉里的重复项已删",
+          'id="qr-modal"' in html and "用二维码连接" not in html and "openQr" in script)
+    check("主题开关只在设置页（侧栏那颗 🌙 已删）",
+          'id="theme-seg"' in html and 'id="btn-theme"' not in html and "btn-theme" not in script)
+    check("PIN 输入框默认隐藏，只有对方要 PIN 时才出现",
+          re.search(r'id="pin"[^>]*hidden', html) is not None and "pinNeeded" in script)
+    check("「和电脑聊天」按钮已去掉（它和设备行是同一个入口）",
+          "btn-new-chat" not in html and "和电脑聊天" not in html and "和电脑聊天" not in script)
+
+    # ---- 设备列表：去重 + 省略号 + 全名 ---------------------------------
+    check("设备行按 identityKey 归并（同一台设备一行）",
+          "groupByIdentity" in script and "identityVariants" in script and
+          "identityKey" in script)
+    check("设备名用 CSS 省略号 + title 放全名",
+          "text-overflow: ellipsis" in css and "title: title" in script)
+    check("设备 > 6 台时才出现搜索框",
+          'id="device-search"' in html and "allRows.length <= 6" in script)
+
+    # ---- 传输页：筛选 / 搜索 / 空状态 / 失败原因 / 行动作菜单 -----------
+    check("传输页有搜索框", 'id="transfer-search"' in html and "store.search" in script)
+    check("两张表都有空状态节点", 'id="receive-empty-text"' in html and 'id="send-empty-text"' in html)
+    check("两张表常驻 DOM，分段控件只切 class（不靠 hidden 顶开彼此）",
+          "is-seg-off" in script and "is-seg-off" in css and
+          'id="send-table" data-seg="send">' in html and
+          'id="receive-table" data-seg="receive">' in html)
+    check("空状态文案跟着筛选走", "function emptyText(" in script and "没有匹配" in script)
+    check("失败行给中文原因 + 原因码",
+          "failureReason" in script and "E_TIMEOUT" in script and "E_LINK" in script and
+          "fail-reason" in css)
+    check("失败原因不把英文原文直接摆上来（原文只在 title 里）",
+          "reason.text + '（' + reason.code + '）'" in script)
+    check("引擎已经给了中文原因时原样用（不再包一层「传输失败」）",
+          "u4e00" in script and "return { code: 'E_FAIL', text: raw, raw: raw }" in script)
+    check("行右键/长按 = 完整文件动作菜单",
+          "bindRowActions" in script and "bindFileActions" in script and
+          "has-menu" in script and "has-menu" in css)
+    check("动作菜单里网页版该有的一样不少",
+          all(word in script for word in
+              ("'预览'", "'打开'", "'下载'", "'另存为…'", "'复制文件'", "'重新发送'", "'属性'")))
+    check("「打开所在文件夹」写明不支持、换成「下载」",
+          "网页版没有" in script and "打开所在文件夹" in script)
+    check("属性弹层写明没有路径与 SHA-256",
+          'id="facts-modal"' in html and ("SHA-256" in html or "SHA-256" in script))
+    check("网页版做不到的事写在设置页那张卡片里",
+          'id="web-limits"' in html and "打开接收文件夹" in html and "清空记录" in html)
+    check("能力边界卡片里写清了失败记录去哪儿看",
+          "失败记录" in html and "传输页点「失败」" in html)
+    # 「来自」这一列不许整列破折号（用户原话：信息不明、不详细）。
+    check("已完成那一行的「来自」有出处，不留破折号",
+          "function landedSource(" in script and "var from = landedSource(file)" in script and
+          "text: '—'" not in script)
+    check("「来自」按证据说话：传输对端 / 分享方 / 上传记录 / 兜底本机",
+          script.count("landedSource(") >= 2 and
+          all(word in script for word in ("这台电脑接收目录里的文件", "电脑分享给这台手机的文件",
+                                          "这台手机发过去的文件")))
+    # 设备行副标题 = 地址 · 来源（端口与平台留给 PeerHeader，桌面端口径一致）。
+    subtitle = script[script.index("function deviceSubtitle("):script.index("function sourceShort(")]
+    check("设备行副标题不放端口/平台（端口只出现在会话顶部详情行）",
+          "device.address" in subtitle and "deviceAddress(" not in subtitle and
+          "tcpPort" not in subtitle and "platformName(" not in subtitle)
+    check("副标题的发现来源用短词（本机 / 网页 / 局域网 / 手动 / 扫描）",
+          "function sourceShort(" in script and
+          all(word in script[script.index("function sourceShort("):script.index("function sourceShort(") + 900]
+              for word in ("'本机'", "'网页'", "'局域网'", "'手动'", "'扫描'")))
+
+    # ---- 服务端：手动占位行与同名设备消歧 --------------------------------
+    rows, dropped = ui._drop_manual_phantoms([
+        {"id": "real-1", "name": "客厅的笔记本", "address": "192.168.1.20", "tcpPort": 52117,
+         "source": "mdns", "addresses": ["192.168.1.20"]},
+        {"id": "manual:127.0.0.1:52117", "name": "127.0.0.1", "address": "127.0.0.1",
+         "tcpPort": 52117, "source": "manual"},
+        {"id": "manual:192.168.1.77:52119", "name": "另一台", "address": "192.168.1.77",
+         "tcpPort": 52119, "source": "manual"},
+    ])
+    check("同端口的手动占位行被真实设备行吸收",
+          [row["id"] for row in rows] == ["real-1", "manual:192.168.1.77:52119"], str(rows)[:120])
+    check("被丢掉的是占位行自己的 id", dropped == {"manual:127.0.0.1:52117"}, str(dropped))
+    names = disambiguate_names([
+        {"id": "a", "name": "RealProbe", "online": True, "lastSeen": 10},
+        {"id": "b", "name": "RealProbe", "online": True, "lastSeen": 5},
+        {"id": "c", "name": "另一台", "online": True, "lastSeen": 1},
+    ])
+    check("同名设备给出编号（RealProbe / RealProbe #2）",
+          sorted(names.values()) == ["RealProbe", "RealProbe #2", "另一台"], str(names))
+    state = json.loads(http(base + "/api/state")[2].decode("utf-8"))
+    names = [str(row.get("name") or "") for row in state.get("devices", [])]
+    check("/api/state 的设备名不重复（去重 + 消歧在服务端就做完）",
+          len(set(names)) == len(names), str(names)[:160])
+    check("每条设备记录都带 identityKey 或 id",
+          all(row.get("id") for row in state.get("devices", [])))
+
+
+def check_share_download(ui, base: str, root: Path) -> None:
+    """手机来取电脑发布的文件：分享表 → 下载 → Range 续传 → 完成回执。
+
+    真机上的原始问题就是这一条链断了（电脑"发出去了"、手机 `/sdcard/Download`
+    里一个文件都没有）。这里用真实 HTTP 请求把它整条走一遍：字节数、sha256、
+    进度语义、完成回执、以及四种错误各自的中文说法。
+    """
+    print("\n[分享/下载] 手机取文件的整条路")
+    source = root / "share-source.bin"
+    payload = bytes(range(256)) * 512          # 128 KiB，内容可校验、不是全 0
+    source.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+
+    added = ui.share_files([str(source)])
+    check("发布一个文件进分享表", len(added) == 1 and added[0]["name"] == "share-source.bin", str(added)[:120])
+    share_id = added[0]["id"]
+
+    status, headers, body = http(base + "/api/shares")
+    listed = {}
+    try:
+        listed = json.loads(body.decode("utf-8"))
+    except ValueError:
+        pass
+    shares = {item["id"]: item for item in listed.get("shares", [])}
+    check("/api/shares 返回分享表", status == 200 and share_id in shares, str(status))
+    entry = shares.get(share_id, {})
+    check("分享条目带 size / sentBytes / downloaded",
+          entry.get("size") == len(payload) and entry.get("sentBytes") == 0
+          and entry.get("downloaded") is False, str(entry)[:140])
+    check("分享表里没有本机文件系统路径（只给不透明 id）",
+          "path" not in entry and str(source) not in body.decode("utf-8", "replace"))
+
+    # -- 完整下载：字节与 sha256 都要对得上（curl 手工验证的就是这条） --------
+    status, headers, body = http(base + f"/api/share/{share_id}")
+    check("完整下载拿到 200", status == 200 and len(body) == len(payload), f"{status} {len(body)}")
+    check("下载到的字节与源文件逐字节一致（sha256）",
+          hashlib.sha256(body).hexdigest() == digest, hashlib.sha256(body).hexdigest()[:16])
+    check("响应告诉手机可以续传（Accept-Ranges）", headers.get("Accept-Ranges") == "bytes")
+    disposition = headers.get("Content-Disposition", "")
+    check("Content-Disposition 带 UTF-8 文件名（手机存下来名字是中文也不乱）",
+          "filename*=UTF-8''" in disposition and "share-source.bin" in disposition, disposition[:120])
+    # 回执（sentBytes / downloaded）是服务端**把响应写完以后**才回调记录的
+    # （server.py 的 on_progress / on_complete）。客户端刚拿到 body 就立刻读，
+    # 可能读到还没落地的旧值 —— 负载高、服务端线程被抢占时尤其明显。
+    # 用 wait_for 等它落地：**断言内容一个都没改**（仍然要求 downloaded is True
+    # 且 sentBytes 等于文件大小），只是把"无同步的立刻读"换成有界等待；
+    # 等不到照样 FAIL，门禁没有被放松。
+    def share_row(sid: str) -> dict:
+        return next((item for item in ui.shares() if item["id"] == sid), {})
+
+    wait_for(lambda: share_row(share_id).get("downloaded") is True
+             and share_row(share_id).get("sentBytes") == len(payload), 3.0)
+    after = share_row(share_id)
+    check("取完之后回执是 downloaded=True", after["downloaded"] is True, str(after)[:140])
+    check("取完之后 sentBytes 等于文件大小", after["sentBytes"] == len(payload), str(after)[:140])
+
+    # -- Range 续传：分段取，进度必须是"总体取到哪了" ----------------------
+    tail_file = root / "share-resume.bin"
+    tail_file.write_bytes(payload)
+    resume_id = ui.share_files([str(tail_file)])[0]["id"]
+    half = len(payload) // 2
+
+    status, headers, body = http(base + f"/api/share/{resume_id}", headers={"Range": f"bytes=0-{half - 1}"})
+    check("Range 头拿到 206", status == 206 and len(body) == half, f"{status} {len(body)}")
+    check("206 带 Content-Range", headers.get("Content-Range") == f"bytes 0-{half - 1}/{len(payload)}",
+          headers.get("Content-Range", ""))
+    # Range 段只有 64KiB，比服务端的 IO_CHUNK（256KiB）还小 ⇒ 整段是**一块**发完的，
+    # 于是"客户端读完了、服务端那次 on_progress 还没跑"的窗口真实存在
+    # （2026-10-04 的企业级验收就这么偶发红过一次：356 项里只错这一项，
+    #  sentBytes 读到 0，而单跑 6 次全绿）。等它落地，断言内容不变。
+    wait_for(lambda: share_row(resume_id).get("sentBytes") == half, 3.0)
+    mid = share_row(resume_id)
+    check("只取了一半：进度涨到一半", mid["sentBytes"] == half, str(mid)[:140])
+    check("只取了一半**不算取完**（downloaded 仍为 False）",
+          mid["downloaded"] is False, str(mid)[:140])
+
+    status, headers, body = http(base + f"/api/share/{resume_id}", headers={"Range": f"bytes={half}-"})
+    check("续传剩下的一半也拿到 206", status == 206 and len(body) == len(payload) - half, str(status))
+    wait_for(lambda: share_row(resume_id).get("downloaded") is True
+             and share_row(resume_id).get("sentBytes") == len(payload), 3.0)
+    done = share_row(resume_id)
+    check("续传补齐后才算取完（downloaded=True）", done["downloaded"] is True, str(done)[:140])
+    check("续传后的进度是总体进度（等于文件大小，不是最后一段的大小）",
+          done["sentBytes"] == len(payload), str(done)[:140])
+
+    # 从头重下（浏览器"重新下载"就是这么发的）：进度不许倒退。
+    ui.note_share_progress(resume_id, 10)
+    back = next(item for item in ui.shares() if item["id"] == resume_id)
+    check("进度只增不减（重试/重下不会倒退）", back["sentBytes"] == len(payload), str(back)[:140])
+
+    # -- 错误都要说人话 ----------------------------------------------------
+    status, headers, body = http(base + f"/api/share/{resume_id}", headers={"Range": f"bytes={len(payload) + 10}-"})
+    message = body.decode("utf-8", "replace")
+    check("要不到的 Range 回 416", status == 416, str(status))
+    check("416 带 Content-Range: bytes */长度",
+          headers.get("Content-Range") == f"bytes */{len(payload)}", headers.get("Content-Range", ""))
+    check("416 的说明是中文（含真实长度）",
+          "要不到" in message and str(len(payload)) in message, message[:120])
+
+    status, _headers, body = http(base + f"/api/share/{resume_id}",
+                                  headers={"Range": "bytes=0-9,20-29"})
+    check("多段 Range 被忽略、整文件照发（不再回 416）",
+          status == 200 and len(body) == len(payload), f"{status} {len(body)}")
+
+    status, _headers, body = http(base + "/api/share/this-id-does-not-exist")
+    message = body.decode("utf-8", "replace")
+    check("不存在的分享 id 回 404", status == 404, str(status))
+    check("分享不存在时说的是「过期 / 让电脑重发」",
+          "分享列表" in message and "重新发" in message, message[:120])
+
+    gone_file = root / "share-deleted.bin"
+    gone_file.write_bytes(b"x" * 1024)
+    gone_id = ui.share_files([str(gone_file)])[0]["id"]
+    gone_file.unlink()
+    status, _headers, body = http(base + f"/api/share/{gone_id}")
+    message = body.decode("utf-8", "replace")
+    check("文件被删掉时回 404", status == 404, str(status))
+    check("文件被删的说法与「分享不存在」不同（指出文件本身没了）",
+          "已经不在了" in message and "share-deleted.bin" in message, message[:140])
+
+    # -- forKey：指定给某台设备的分享，别人看不见 -------------------------
+    addressed = ui.share_files([str(source)], only_key="some-other-phone")
+    status, _headers, body = http(base + "/api/shares")
+    mine = {item["id"] for item in json.loads(body.decode("utf-8"))["shares"]}
+    check("指定给别的设备的分享不出现（forKey 过滤）",
+          addressed and addressed[0]["id"] not in mine, str(sorted(mine))[:140])
+    check("没有指定接收方的分享所有人都能看到",
+          share_id in mine, str(sorted(mine))[:140])
+
+
+def check_chat_media_rides_the_share(ui, base: str, root: Path) -> None:
+    """`/api/chat/media/<id>` 与分享通道**必须是同一条路**（真机 404 的回归）。
+
+    真机现场：一条 `kind=file` 的消息 `media_rel=''`，同一份文件在分享表里，
+    App 的「保存」打 `/api/chat/media/<id>` → 404，用户看到的却是"电脑说发了、
+    我这儿什么都没有"。这里按真机那条数据的三步兜底各走一遍：
+
+    1. 消息里只有 ``media_source``（绝对路径）→ 按路径找到分享；
+    2. 连 ``media_source`` 都没有，只剩 名字 + 大小 → 仍然找得到；
+    3. 都没有 → 404 但带 ``hint`` / ``shareId``（App 能说出下一步）。
+    """
+    print("\n[分享/下载] 记录通道与分享通道是同一条路")
+    receive = ui.receive_dir
+    payload = bytes(range(256)) * 128          # 32 KiB
+    landed = os.path.join(receive, "记录通道 文件.bin")
+    with open(landed, "wb") as handle:
+        handle.write(payload)
+    share_id = ui.share_files([landed])[0]["id"]
+
+    conv = "d:selftest-media-share"
+    # ① 真机那条数据的形状：有 media_source、media_rel 是空串
+    message = ui.engine.chat.add_message(
+        conv,
+        kind="file",
+        direction="out",
+        state="sending",
+        media_name="记录通道 文件.bin",
+        media_rel="",
+        media_size=len(payload),
+        media_source=landed,
+        record=False,
+    )
+    status, headers, body = http(base + "/api/chat/media/" + message["id"])
+    check("media_rel 为空时不再 404（按 media_source 找到分享）",
+          status == 200 and body == payload, f"{status} {len(body)}")
+    check("走的是分享通道：字节与分享文件一致（sha256）",
+          hashlib.sha256(body).hexdigest() == hashlib.sha256(payload).hexdigest())
+    taken = {item["id"]: item for item in ui.shares()}.get(share_id, {})
+    check("同一条路才有进度与回执：sentBytes 涨到文件大小",
+          taken.get("sentBytes") == len(payload), str(taken)[:140])
+    check("同一条路才有回执：downloaded=True",
+          taken.get("downloaded") is True, str(taken)[:140])
+
+    # ② 路径也丢了（老记录 / 文件挪过位置）：只剩 名字 + 大小
+    second = os.path.join(receive, "只剩名字.bin")
+    with open(second, "wb") as handle:
+        handle.write(payload[:1024])
+    second_id = ui.share_files([second])[0]["id"]
+    orphan = ui.engine.chat.add_message(
+        conv,
+        kind="file",
+        direction="out",
+        state="sending",
+        media_name="只剩名字.bin",
+        media_rel="",
+        media_size=1024,
+        media_source="",
+        record=False,
+    )
+    status, _headers, body = http(base + "/api/chat/media/" + orphan["id"])
+    check("连 media_source 都没有时按 名字+大小 也能找到（1024 字节一致）",
+          status == 200 and body == payload[:1024], f"{status} {len(body)}")
+    check("这条也记了进度", {i["id"]: i for i in ui.shares()}[second_id]["sentBytes"] == 1024)
+
+    # ③ 什么都没有：404 也要能照做
+    missing = ui.engine.chat.add_message(
+        conv,
+        kind="file",
+        direction="out",
+        state="sending",
+        media_name="根本没有的.bin",
+        media_rel="",
+        media_size=7,
+        media_source="",
+        record=False,
+    )
+    status, _headers, body = http(base + "/api/chat/media/" + missing["id"])
+    answer = json.loads(body.decode("utf-8"))
+    check("确实找不到的附件回 404", status == 404, str(status))
+    check("404 的 error 是中文、说清「没有可下载的附件」",
+          "没有可下载的附件" in str(answer.get("error")), str(answer)[:140])
+    check("404 带可执行的下一步（hint + shareId 字段）",
+          bool(answer.get("hint")) and "shareId" in answer, str(answer)[:160])
+    check("老字段 error 还在（老客户端不受影响）",
+          set(["ok", "error"]) <= set(answer.keys()), str(sorted(answer))[:120])
+
+    # ④ 不存在的消息 id：同样给 hint，不再是干巴巴一句
+    status, _headers, body = http(base + "/api/chat/media/no-such-message")
+    answer = json.loads(body.decode("utf-8"))
+    check("不存在的消息 id 也是中文 + hint",
+          status == 404 and bool(answer.get("hint")), str(answer)[:140])
+
+
+def check_share_events(ui, base: str) -> None:
+    """发布即通知 + 取走回执：都走已有的 SSE 流（新增事件名，不动旧的）。"""
+    print("\n[分享/下载] 发布即通知（SSE）")
+    request = urllib.request.Request(base + "/api/events", headers={"Accept": "text/event-stream"})
+    response = urllib.request.urlopen(request, timeout=15)
+    frames: list[str] = []
+
+    def reader() -> None:
+        try:
+            while True:
+                line = response.readline()
+                if not line:
+                    return
+                if line.startswith(b"data: ") or line.startswith(b"event: "):
+                    frames.append(line.decode("utf-8", "replace").strip())
+        except Exception:
+            return
+
+    thread = threading.Thread(target=reader, name="sse-share-reader", daemon=True)
+    thread.start()
+    try:
+        # 先等 hello，确认流真的起来了（否则后面的断言会因为"流没开"而假红）。
+        check("事件流先给了 hello", wait_for(lambda: any("hello" in f for f in frames), 5.0))
+
+        source = ui.receive_dir + "/通知用文件.bin"
+        with open(source, "wb") as handle:
+            handle.write(b"notify" * 1024)
+        added = ui.share_files([source])
+        check("发布之后事件流上出现 share_added",
+              wait_for(lambda: any('"kind": "share_added"' in f or '"kind":"share_added"' in f for f in frames), 5.0),
+              str(frames[-3:])[:200])
+        check("share_added 带上文件名（手机能直接说清是什么）",
+              any("通知用文件.bin" in f for f in frames), str(frames[-3:])[:200])
+
+        share_id = added[0]["id"]
+        http(base + f"/api/share/{share_id}")
+        check("取完之后事件流上出现 share_taken",
+              wait_for(lambda: any("share_taken" in f for f in frames), 5.0), str(frames[-3:])[:200])
+        before = len([f for f in frames if "share_taken" in f])
+        ui.mark_share_downloaded(share_id)
+        time.sleep(0.5)
+        after = len([f for f in frames if "share_taken" in f])
+        check("重复回执不会再刷一条事件", before == after, f"{before} -> {after}")
+    finally:
+        try:
+            response.close()
+        except Exception:
+            pass
+
+
 def main() -> int:
     _use_utf8_console()
     print("EverSend web UI self-test")
@@ -1585,6 +2510,9 @@ def main() -> int:
         check_discovery_reply(engine_a)
         check_emoji_api(base)
         check_device_identity_is_stable(ui, base)
+        check_one_device_one_row(ui, base)
+        check_merge_keeps_conversation_title(ui, base)
+        check_broken_registry_row_does_not_break_state(ui, base)
         check_mdns_answer(engine_a)
         check_media_source_stays_local(ui, base, engine_a, root)
 
@@ -1598,6 +2526,14 @@ def main() -> int:
         check_chat(ui, base, ui.token, root)
         check_upload(engine_a, engine_b, base, ui.token, root)
         check_offer_roundtrip(engine_a, engine_b, base, ui.token, ui)
+        # 放在最后：它会注册一台"只有事件流"的手机，后面的检查不该被它影响。
+        check_stream_keeps_client_online(ui, base)
+        check_offline_devices_are_listed(ui)
+        check_offline_devices_can_be_cleared(ui)
+        check_enterprise_layout(ui, base)
+        check_share_download(ui, base, root)
+        check_share_events(ui, base)
+        check_chat_media_rides_the_share(ui, base, root)
     finally:
         if ui is not None:
             ui.stop()

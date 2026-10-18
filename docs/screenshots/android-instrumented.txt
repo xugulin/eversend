@@ -1,8 +1,191 @@
+# 安卓 App 真机（模拟器）验证
+# 命令：
+#   cd android
+#   JAVA_HOME=/home/xgl/android-dev/jdk-17.0.20.1+1 \
+#   GRADLE_USER_HOME=/home/xgl/android-dev/gradle-home \
+#   /home/xgl/android-dev/gradle-8.7/bin/gradle :app:assembleDebug :app:assembleDebugAndroidTest
+#   adb install -r app/build/outputs/apk/debug/app-x86_64-debug.apk
+#   adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+#   adb shell pm grant cn.eversend.app android.permission.POST_NOTIFICATIONS
+#   adb shell rm -f /sdcard/Download/ui-*            # 见下面"两个环境坑"
+#   adb shell am instrument -w -e host 10.0.2.2:52822 \
+#     cn.eversend.app.test/androidx.test.runner.AndroidJUnitRunner
+#
+# ⚠️ 起电脑端时**一定要设 EVERSEND_HOME**（例如 EVERSEND_HOME=/tmp/eversend-dev）：
+#    不设的话 `--cli serve` 会把数据目录算成 `<仓库>/data`，仪器测试的消息和测试群聊
+#    就会写进那份库（`--receive` 只改接收目录，不改数据目录）。审计员量到过：
+#    445 条消息里 434 条、60 段会话里 58 段是测试产生的；`tools/clean_test_data.py`
+#    可以查/清（默认只看，`--apply` 才删，删前自动备份）。
+# 电脑端：--port 52922 --web-port 52822（显式端口，避免和别人抢默认 52117，否则回环上传会卡在 0 B）
+# 模拟器：avd eversend（API 34，x86_64 分包）
+#
+# 界面（三轮）：侧栏三段（品牌/设备操作/设备列表两段+群聊/底部传输·设置）+ 主区三段
+# （对方设备详情 + [会话｜传输] / 会话或两张传输表 / 输入区：方块待发区 + 统计在
+# 输入框上面、输入框贴底），以及 §6 的文件预览弹层。截图见
+# android-app-sidebar / wide-sidebar / device-sections / device-sections-offline /
+# emoji-pad / transfers / transfers-send / composer-tiles /
+# preview-text / preview-image / preview-video。
+#
+# 这一轮修掉的两件事（下面这份记录就是修完之后的跑）：
+#   1) keepAliveServiceStaysOnline 曾经固定失败：保活服务开着、SSE 挂着，电脑端
+#      15 秒后仍把这台手机判成离线（knownClients 里 secondsAgo≈22.9、online=false）。
+#      两个原因都修了：
+#        · 服务端 web/server.py：以前只有离散 HTTP 请求才算"在线" → 现在**一条开着
+#          的事件流**每 CLIENT_TTL/2 碰一次客户端。web selftest 里新增 4 项回归检查，
+#          把修复去掉就会红（已实测）。
+#        · 手机端 AppState.init：全新安装时 prefs 里还没有设备号，init 记进去的是空
+#          字符串，于是保活服务发出的请求（包括那条事件流）都不带 X-EverSend-Device，
+#          电脑端只能按来源地址另记一条"浏览器"式的记录 → 现在 init 里就把 id 与名字
+#          生成并登记进 ApiClient，第一个请求就带身份。
+#   2) 「保存到系统下载」偶发失败：模拟器 Download 里积了 ui-图片.png (N) 时 MediaStore
+#      会给新文件加 (1) 后缀，而测试按精确名字查 → 跑前清一次即可，不是界面问题。
+#
+# 两个环境坑：gradle 的 connectedAndroidTest 每轮会重装 App（运行期权限被清掉，
+# 通知权限弹窗会抢焦点顶掉界面测试），所以用上面的 am instrument 走法更稳；另外就是
+# 上面那条 Download 残留。
 
 cn.eversend.app.EverSendInstrumentedTest:...............
+Time: 72.131
+OK (15 tests)      # 侧栏+主区+两张表那一轮（首跑）
 
-Time: 72.782
+cn.eversend.app.EverSendInstrumentedTest:...............
+Time: 75.391
+OK (15 tests)      # 方块待发区 + 预览 + 保活修复之后
 
-OK (15 tests)
+# 第三轮（侧栏「在线 / 离线」两段 + 内嵌表情面板），只动界面层（MainActivity.kt）：
+#   · 侧栏中部 ③ 拆成两段：在线（默认展开）/ 离线（默认折叠），标题行左边 ▾/▸、
+#     右边数量徽标，整行可点 = 整段展开折叠；空段标题仍在（数量 0）并给空状态文案；
+#     选中的设备落在折叠着的那一段时自动展开；群聊段与底部「传输 / 设置」不动。
+#   · 表情面板从"贴在输入区顶上的一块全宽面板"改成**内嵌面板**：宽度与输入行一致
+#     （两边都用 6dp 内缩，实测面板与输入行同为 1046px = 380dp）、位置紧贴待发方块
+#     那一行的上边（顺序 表情 → 待发方块+统计 → 输入行）、高度上限 200dp
+#     （实测面板高 550px = 200dp），超出在面板里滚动，点表情插进输入框且面板不关。
+#   新增 testTag：section-online / section-offline / section-toggle-在线 /
+#   section-toggle-离线 / emoji-inline（emoji-pad、emoji-<表情>、device-count 等保留）。
+#   截图：android-app-device-sections.png（在线展开 + 离线折叠）、
+#         android-app-emoji-pad.png（面板展开、宽度与输入行一致、紧贴待发那行）、
+#         android-app-device-sections-offline.png（离线段展开，行长与在线那一段一样）。
+
+cn.eversend.app.EverSendInstrumentedTest:...............
+Time: 79.349
+OK (15 tests)      # 侧栏两段 + 内嵌表情面板（本轮，15/15）
+
+# 期间的两次对照（说明 keepalive 那条与本轮界面无关）：
+#   把 MainActivity.kt 换回 git HEAD 原版编译后跑同一条 → 失败签名一模一样；
+#   只去掉服务端那处"事件流也算在线" → 新增的 selftest 回归检查立刻变红。
 
 
+# ── T3 轮（审计 #5）：设备列表按稳定身份去重 + 两台同名设备各开各的会话 ──────
+#
+# 这一节补的是审计员 #5 要的**真机 A/B 证据**：两台显示名完全相同的设备
+# （都叫「Android 上的 Chrome」），点第一行必须打开第一台的会话、点第二行必须
+# 打开第二台的会话。修复前设备行的 id 被写成 `"web:" + key`（key 本身已带
+# `web:`/`android:` 前缀）→ `web:web:<uuid>`，`conversationFor` 的
+# `members.contains(id)` 永远不成立，整体退化成按**显示名**匹配（还是 startsWith）：
+# 两台同名设备点哪一行都开同一段会话。修法：id 用服务端的稳定身份 `identityKey`，
+# 成员匹配走 aliases + `web:`/`android:` 前缀展开，名字兜底只在**完全同名**时用。
+#
+# ★ 分两层证据：
+#   (a) **进了套件的逻辑回归**：`sameNamedDevicesOpenTheirOwnConversation`
+#       （EverSendInstrumentedTest.kt 末尾）—— 真机上跑、不碰界面不碰网络，
+#       钉住"同名设备各开各的会话 + 名字兜底不许猜 + 两条记录并一行"；
+#       套件因此从 15 条变成 **16 条**（本节末尾那次 `am instrument` = OK (16 tests)）。
+#   (b) 下面是**临时手工验证（界面层 A/B）**：把两台同名设备真的摆进 App 的设备
+#       列表，按坐标点两行、看会话页实际打开哪一段。它没有进套件：要先在服务端造
+#       两台同名设备与两段会话、再按坐标点抽屉里的行，做成固定用例要先解决
+#       "设备行顺序/滚动位置"的不确定性，收益不如留成可复跑的记录。
+#
+# ★ 服务端一律 `EVERSEND_HOME=/tmp/<自己的目录>`（审计 #13）：这一轮全部写
+#   /tmp/t3-ab/，用户真实的 eversend/data/ 一个字节都没动（见本节末尾的对照）。
+#
+# ① 起服务端（临时脚本 /tmp/t3-ab-server.py，全文贴在下面，方便原样复跑）：
+#      cd <repo> && EVERSEND_HOME=/tmp/t3-ab PYTHONPATH=$PWD/src \
+#        .venv/bin/python /tmp/t3-ab-server.py
+#    —— 监听 42897；discovery_port 取随机空闲端口、不开 mDNS/广播，所以它听不见
+#    局域网里别人的实例，App 的设备列表干净地只有「电脑 + 两台手机」。
+#
+#    #!/usr/bin/env python3
+#    import socket, sys, time
+#    from pathlib import Path
+#    ROOT = Path("<repo>"); sys.path.insert(0, str(ROOT / "src"))
+#    from eversend.core.engine import Engine, EngineConfig
+#    from eversend.web import create_web_ui
+#    with socket.socket() as s:
+#        s.bind(("127.0.0.1", 0)); free = s.getsockname()[1]
+#    engine = Engine(EngineConfig(
+#        data_dir="/tmp/t3-ab/data", receive_dir="/tmp/t3-ab/recv", name="T3-AB",
+#        tcp_port=0, discovery_port=free, enable_broadcast=False, enable_mdns=False,
+#        enable_web=False, auto_accept_all=True))
+#    engine.start()
+#    ui = create_web_ui(engine, host="0.0.0.0", port=42897, log_requests=False)
+#    print("READY token=%s" % ui.token, flush=True)
+#    while True: time.sleep(1)
+#
+# ② 装包 / 授权（同其它轮）：
+#      adb install -r app/build/outputs/apk/debug/app-x86_64-debug.apk
+#      adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+#      adb shell pm grant cn.eversend.app android.permission.POST_NOTIFICATIONS
+#
+# ③ 造两台**同名**手机（同一条 Android UA、不同 X-EverSend-Device、不同来源地址
+#    —— 走的是真实的 touch_client 路径，不是手改 JSON）：
+#      UA='Mozilla/5.0 (Linux; Android 16; V2408A Build/BP2A.250605.031.A3_V000L1) ... Mobile Safari/537.36'
+#      curl -s -H "User-Agent: $UA" -H "X-EverSend-Device: aaaa1111-…" http://192.168.110.127:42897/api/state
+#      curl -s -H "User-Agent: $UA" -H "X-EverSend-Device: bbbb2222-…" http://127.0.0.1:42897/api/state
+#    服务端那一刻的 knownClients（实测输出）：
+      key=web:bbbb2222-2222-4222-8222-222222222222  identityKey=web:bbbb2222-…  label=Android 上的 Chrome  addr=127.0.0.1        online=True
+      key=web:aaaa1111-1111-4111-8111-111111111111  identityKey=web:aaaa1111-…  label=Android 上的 Chrome  addr=192.168.110.127  online=True
+#    （两条的 label 一模一样，identityKey/地址不同 = 两台不同的设备。）
+#
+# ④ 给两台各造一段会话（成员 = App 自己 web:<App 设备号> + 那一台；POST /api/chat/send
+#    的请求头带 App 的设备号，所以服务端把发送者算成这台手机）：
+#      members=[web:b696fdc5-…, web:aaaa1111-…] text=会话A：来自 192.168.110.127 那台
+#      members=[web:b696fdc5-…, web:bbbb2222-…] text=会话B：来自 127.0.0.1 那台
+#
+# ⑤ 启动 App（连 10.0.2.2:42897）、点左上角 ☰ 打开抽屉
+#    （`adb shell input tap 99 260`，坐标取自 uiautomator dump 里 content-desc="设备栏"），
+#    再 `adb shell uiautomator dump`，两行同名设备的实际 bounds：
+      设备列表 | [39,510][186,560]
+      Android 上的 Chrome          | [150,874][536,940]     ← 第 1 行 = 127.0.0.1（设备 B）
+      127.0.0.1 · 网页客户端        | [150,940][473,1006]
+      Android 上的 Chrome          | [150,1050][536,1116]   ← 第 2 行 = 192.168.110.127（设备 A）
+      192.168.110.127 · 网页客户端  | [150,1116][583,1182]
+      设备列表 3 / 在线 3 / 离线 0   （= 电脑 1 台 + 两台同名手机，计数与行数一致）
+#
+# ⑥ 点第 1 行：`adb shell input tap 400 907` → 会话页实际文本
+      网页版 · browser · web:bbbb · 127.0.0.1 · 发现方式：网页客户端
+      会话B：来自 127.0.0.1 那台                    ✅ 开的是 B 自己的会话
+#
+# ⑦ 再开抽屉、点第 2 行：`adb shell input tap 400 1083` → 会话页实际文本
+      网页版 · browser · web:aaaa · 192.168.110.127 · 发现方式：网页客户端
+      会话A：来自 192.168.110.127 那台              ✅ 开的是 A 自己的会话
+#
+#    （⑥⑦ 在**最终那个包**上又跑了一遍，输出一字不差；那一版还多加了一条保护：
+#     名字兜底只在"列表里没有第二台同名设备"时才用 —— 两台同名设备都认不出成员
+#     写法时宁可不开，也不许按名字猜。）
+#
+# ⑧ 同一台手机两条记录 → 一行（安卓侧的"去重前后"数字，同一份注册表）：
+#    注册表预置 web:aaaa1111-… 与 192.168.1.50|deadbeef（带同一个设备号，
+#    identityKey 都是 web:aaaa1111-…）：
+#      · 临时把 dedupeDevices 改成 `return rows` 编出来的对比包：
+#          设备列表 3 / 在线 3 / **两行「V2408A」**
+#      · 修好之后的包（本节用的这个）：
+#          设备列表 2 / 在线 2 / 离线 0 / **「V2408A」一行**
+#    截图：docs/screenshots/android-app-one-device-one-row.png
+#    （对比包拍完立刻还原：`diff` 与备份逐字节一致、源码里没有 TEMP 标记。）
+#
+# ⑨ 同一次环境里跑仪器测试（顺手证明 #13 的做法是对的）—— 含这次新加的
+#    `sameNamedDevicesOpenTheirOwnConversation`（逻辑层 A/B，见上面 ★(a)）：
+      adb shell am instrument -w -e host 10.0.2.2:42897 cn.eversend.app.test/androidx.test.runner.AndroidJUnitRunner
+      Time: 90.557
+      OK (16 tests)
+#    单独跑那一条（改代码前它是红的：id 是 web:web:<key>、名字兜底用 startsWith）：
+      adb shell am instrument -w -e host 10.0.2.2:42897 \
+        -e class cn.eversend.app.EverSendInstrumentedTest#sameNamedDevicesOpenTheirOwnConversation \
+        cn.eversend.app.test/androidx.test.runner.AndroidJUnitRunner
+      Time: 0.068
+      OK (1 test)
+#
+#    跑前 / 跑后两份 chat.db（同一个 shell 里量的）：
+#      /home/xgl/python/跨平台文件互传/EverSend/data/chat.db  messages=26 conversations=6  （跑前=跑后，mtime 仍是 00:12）
+#      /tmp/t3-ab/data/chat.db                               messages=2→9  conversations=2→4 （mtime 01:21）
+#    —— 仪器测试写的是 /tmp 那份，用户真实数据没被写。

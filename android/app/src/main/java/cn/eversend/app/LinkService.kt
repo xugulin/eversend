@@ -84,6 +84,14 @@ class LinkService : Service() {
 
     private fun start(host: String) {
         startForegroundCompat()
+        // 前台服务也把发现引擎拉起来：熄屏/切后台时电脑端仍然能"听到"这台手机
+        // （每 15 秒一条公告），而手机这边也在继续听电脑的公告 —— 换 Wi-Fi、
+        // 电脑换 IP 之后不用用户手动重连（C13 的"自动"要在这个场景下也成立）。
+        try {
+            LanDiscovery.get(this).start()
+        } catch (problem: Exception) {
+            Log.d(TAG, "后台发现引擎启动失败: ${problem.message}")
+        }
         if (worker?.isAlive == true) return
         stopRequested = false
         running = true
@@ -147,7 +155,10 @@ class LinkService : Service() {
                 val now = System.currentTimeMillis()
                 if (now - lastBeat > HEARTBEAT_MS) {
                     // 心跳：既维持"在线"，也是 SSE 挂掉时的替代通道。
-                    ApiClient(base, token).getJson("/api/state")
+                    val state = ApiClient(base, token).getJson("/api/state")
+                    // 顺手把"电脑交给我的文件"收下来：熄屏/切后台时界面轮询停了，
+                    // 这里是唯一还在跑的地方 —— 762 MB 的文件就该在口袋里下完。
+                    offerShares(state)
                     lastBeat = now
                     lastSeenAt = now
                     if (!streamUp) {
@@ -201,6 +212,29 @@ class LinkService : Service() {
         stopForegroundCompat()
     }
 
+    /**
+     * 后台收文件：电脑把文件发布在 `/api/state` 的 `shares` 里，手机来取
+     * （真机实测：App 没有任何 LISTEN 端口，电脑推不过来，只能手机主动取）。
+     *
+     * 只做"排队 + 下载"，进度与落地都由 [FetchManager] 管；界面开着的时候两边
+     * 读的是同一份队列，不会重复下载（它按 shareId 去重）。
+     */
+    private fun offerShares(state: JSONObject) {
+        val shares = state.optJSONArray("shares") ?: return
+        if (shares.length() == 0) return
+        val pending = (0 until shares.length())
+            .mapNotNull { shares.optJSONObject(it) }
+            .filterNot { it.optBoolean("downloaded", false) }
+        if (pending.isEmpty()) return
+        val fetcher = FetchManager.get(this)
+        if (!fetcher.autoFetch) return
+        try {
+            fetcher.offer(ApiClient(base, token), pending, auto = !fetcher.meteredNetwork())
+        } catch (problem: Exception) {
+            Log.d(TAG, "后台收文件失败: ${problem.message}")
+        }
+    }
+
     /** 服务里的地址以界面里存的那个为准（用户改地址、换网络都能跟上）。 */
     private fun currentHost(): String {
         val stored = AppState(this).host
@@ -213,6 +247,34 @@ class LinkService : Service() {
 
     private fun onEvent(event: JSONObject) {
         when (event.optString("kind")) {
+            // 电脑一发布文件就推过来（web-ui 定的 SSE 契约）：**立刻开始收**，
+            // 不必等下一次轮询。熄屏/切后台时，这条事件是唯一还能触发下载的路径。
+            "share_added" -> {
+                val name = event.optString("name")
+                lastMessage = "电脑发来文件：$name"
+                notify("📥 电脑发来文件", "$name · 正在接收")
+                Thread({
+                    try {
+                        val api = ApiClient(base, token)
+                        val payload = api.getJson("/api/shares")
+                        val array = payload.optJSONArray("shares") ?: return@Thread
+                        val pending = (0 until array.length())
+                            .mapNotNull { array.optJSONObject(it) }
+                            .filterNot { it.optBoolean("downloaded", false) }
+                        if (pending.isNotEmpty()) {
+                            val fetcher = FetchManager.get(this)
+                            if (fetcher.autoFetch) {
+                                fetcher.offer(api, pending, auto = !fetcher.meteredNetwork())
+                            }
+                        }
+                    } catch (problem: Exception) {
+                        Log.d(TAG, "share_added 处理失败: ${problem.message}")
+                    }
+                }, "eversend-fetch-share").apply { isDaemon = true }.start()
+            }
+            "share_taken" -> {
+                lastMessage = "手机已取走：${event.optString("name")}"
+            }
             "chat_message" -> {
                 val message = event.optJSONObject("message") ?: return
                 val who = message.optString("senderName", "对方")

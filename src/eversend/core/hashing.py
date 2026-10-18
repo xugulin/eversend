@@ -200,6 +200,49 @@ def verify_chunk(data: bytes | memoryview, expected_crc: int) -> bool:
     return zlib.crc32(data) == expected_crc
 
 
+def file_identity(
+    path: str,
+    *,
+    cache: "DigestCache | None" = None,
+    max_bytes: int = 0,
+) -> str:
+    """A stable identity for a file's *content*, cheap enough to use per row.
+
+    Returned form:
+
+    * ``"d:<blake2b-256 hex>"`` -- the bytes were hashed (or came out of
+      ``cache``).  Two files with the same string really are the same content,
+      whatever they are called.
+    * ``"f:<size>:<mtime_ns>"`` -- hashing was skipped: the file is larger than
+      ``max_bytes`` (``<= 0`` means "no limit"), or it disappeared between the
+      ``stat`` and the read.  Size plus nanosecond mtime is the strongest
+      identity available without reading gigabytes, and an edited file still
+      gets a different one.
+    * ``""`` -- the path does not exist and cannot even be stat'ed.
+
+    Why not always hash: a ledger row must not cost a full read of a 4 GB video
+    on the thread that writes it.  The transfer engine hashes every file it
+    sends or receives anyway, so a caller that already has the digest should
+    pass it in rather than asking for it here.
+    """
+    try:
+        info = os.stat(path)
+    except OSError:
+        return ""
+    size, mtime_ns = int(info.st_size), int(info.st_mtime_ns)
+    if cache is not None:
+        remembered = cache.get(path, size, mtime_ns)
+        if remembered:
+            return "d:" + remembered
+    if max_bytes > 0 and size > max_bytes:
+        return f"f:{size}:{mtime_ns}"
+    try:
+        digest = cache.digest_for(path, size, mtime_ns) if cache is not None else file_digest(path)
+    except OSError:
+        return f"f:{size}:{mtime_ns}"
+    return "d:" + digest
+
+
 class DigestCache:
     """Persistent ``(path, size, mtime) -> digest`` cache.
 
@@ -284,6 +327,7 @@ __all__ = [
     "digest_of_stream",
     "file_digest",
     "file_digest_positioned",
+    "file_identity",
     "new_file_hasher",
     "verify_chunk",
     "verify_file",

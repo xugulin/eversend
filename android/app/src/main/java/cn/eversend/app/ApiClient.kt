@@ -33,13 +33,48 @@ import java.util.Collections
  * 这也意味着：手机与手机之间的直连（二进制协议那条路）暂时不走这里，手机都是通过
  * 电脑中转，和网页版一致。这一点在 README 里写明了。
  */
-class ApiClient(val base: String, val token: String) {
+class ApiClient(val base: String, token: String) {
+
+    /**
+     * 防跨站令牌。**电脑端每次重启都会换一张**，而 App 手里的 client 是连接时建的 ——
+     * 电脑重启后旧令牌就 403（"缺少或错误的防跨站令牌"），用户看到的是"发不出去"。
+     * 所以它得是 var，并且提供 [refreshToken] 让调用方换一张再试。
+     */
+    @Volatile
+    var token: String = token
+        private set
+
+    /** 重新从网页里取一张令牌；成功返回 true（失败保持旧值，让调用方照旧报错）。 */
+    fun refreshToken(): Boolean {
+        val result = try {
+            val fresh = fetchToken(base)
+            if (fresh.isBlank()) {
+                Log.w("EverSend", "refreshToken: 页面里没取到令牌 base=$base")
+                false
+            } else {
+                token = fresh
+                Log.w("EverSend", "refreshToken: 换到新令牌 ${fresh.take(8)} base=$base")
+                true
+            }
+        } catch (problem: Exception) {
+            Log.w("EverSend", "refreshToken 失败: ${problem.javaClass.simpleName}: ${problem.message}")
+            false
+        }
+        return result
+    }
+
 
     private fun open(path: String): HttpURLConnection {
         val url = URL(base.trimEnd('/') + path)
         val conn = url.openConnection() as HttpURLConnection
         conn.connectTimeout = 8000
         conn.readTimeout = 30000
+        // **禁用缓存**：Android 的 HttpResponseCache 会把网页/接口的响应缓存下来。
+        // 电脑端重启换的是"防跨站令牌"，缓存里那份旧 HTML 会把旧令牌再喂回来 ——
+        // 于是"刷新令牌再重试"看起来执行了、却还是 403（真机实测到过）。
+        conn.useCaches = false
+        conn.setRequestProperty("Cache-Control", "no-cache")
+        conn.setRequestProperty("Pragma", "no-cache")
         conn.setRequestProperty("Accept", "application/json")
         conn.setRequestProperty("X-EverSend-Token", token)
         conn.setRequestProperty("User-Agent", userAgent())
@@ -105,9 +140,19 @@ class ApiClient(val base: String, val token: String) {
                     onProgress(sent)
                 }
             }
-            val body = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
+            val code = conn.responseCode
+            val body = if (code in 200..299) conn.inputStream else conn.errorStream
             val text = body?.reader(Charsets.UTF_8)?.readText().orEmpty()
-            return if (text.isBlank()) JSONObject() else JSONObject(text)
+            val json = if (text.isBlank()) JSONObject() else JSONObject(text)
+            // **非 2xx 必须抛**：以前这里不检查状态码 —— 服务端回 400/404/500 时它照样
+            // 读 errorStream、解析出 JSON 返回，调用方以为成功、界面写「已发给 N 台
+            // 设备」，而电脑那边一个字节都没收到（真机上可复现）。
+            // 原因用服务端给的中文 error 字段，用户能直接看懂。
+            if (code !in 200..299) {
+                val why = json.optString("error").ifBlank { "HTTP $code" }
+                throw IllegalStateException(why)
+            }
+            return json
         } finally {
             conn.disconnect()
         }
@@ -164,6 +209,33 @@ class ApiClient(val base: String, val token: String) {
     fun saveMedia(messageId: String, sink: java.io.OutputStream): Long =
         download("/api/chat/media/" + java.net.URLEncoder.encode(messageId, "UTF-8"), sink)
 
+    /**
+     * 服务端拒绝这件事时给的那句话（404 的 `hint` / `error`）。
+     *
+     * web-ui 把 404 的 body 写成了"可以执行的信息"（比如"这条消息没有可下载的附件，
+     * 让电脑重新发一次，或者在「传输 → 接收」里找它的分享条目"）—— 界面直接显示它，
+     * 比 App 自己猜一句"保存失败"有用得多（宪章 E3：失败要带可执行的下一步）。
+     */
+    fun failureText(path: String): String {
+        return try {
+            val conn = open(path)
+            try {
+                val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
+                val text = stream?.reader(Charsets.UTF_8)?.readText().orEmpty()
+                val json = try {
+                    JSONObject(text)
+                } catch (ignored: Exception) {
+                    JSONObject()
+                }
+                json.optString("hint").ifBlank { json.optString("error") }
+            } finally {
+                conn.disconnect()
+            }
+        } catch (problem: Exception) {
+            ""
+        }
+    }
+
     /** 事件流：电脑端一有消息就推过来，App 不用轮询。 */
     fun events(onEvent: (JSONObject) -> Unit, isRunning: () -> Boolean) {
         val conn = open("/api/events")
@@ -206,6 +278,10 @@ class ApiClient(val base: String, val token: String) {
             val conn = (URL(base.trimEnd('/') + "/").openConnection() as HttpURLConnection).apply {
                 connectTimeout = 6000
                 readTimeout = 15000
+                // 取令牌这一页**绝对不能走缓存**，否则拿到的是重启前那份 HTML 里的旧令牌。
+                useCaches = false
+                setRequestProperty("Cache-Control", "no-cache")
+                setRequestProperty("Pragma", "no-cache")
                 setRequestProperty("User-Agent", userAgent())
             }
             try {
@@ -364,6 +440,8 @@ class ApiClient(val base: String, val token: String) {
                             host = host,
                             webPort = web,
                             platform = json.optString("p", ""),
+                            identityKey = json.optString("id", ""),
+                            version = json.optString("v", ""),
                         )
                         if (found.size >= 8) break
                     } catch (ignored: SocketTimeoutException) {
@@ -454,6 +532,15 @@ class ApiClient(val base: String, val token: String) {
                     }
                 }
             }.distinctBy { it.hostAddress }
+            // 扫了哪些网段必须留痕：真机上"扫了 508 台命中 0 台"时，
+            // 第一件要知道的事就是"这 508 台里有没有电脑所在的那个网段"。
+            Log.d(
+                TAG,
+                "TCP 扫描：${chunks.size} 个网段 " +
+                    chunks.joinToString(",") { (base, prefix) ->
+                        "${base[0].toInt() and 0xFF}.${base[1].toInt() and 0xFF}.${base[2].toInt() and 0xFF}.0/$prefix"
+                    } + "，共 ${candidates.size} 个地址，端口 $webPort",
+            )
             if (candidates.isEmpty()) return emptyList()
 
             // 先按"最可能是电脑"的顺序串行试几个：上次连过的那台（hints）、
@@ -551,13 +638,18 @@ class ApiClient(val base: String, val token: String) {
                 }
                 val text = String(body, 0, filled, Charsets.UTF_8)
                 if (!text.contains("nameCn")) return null
-                val device = JSONObject(text).optJSONObject("device") ?: return null
+                val payload = JSONObject(text)
+                val device = payload.optJSONObject("device") ?: return null
                 val name = device.optString("name").ifBlank { host }
                 return Found(
                     name = name,
                     host = host,
                     webPort = webPort,
                     platform = device.optString("platform", ""),
+                    // 稳定身份（服务端的 identityKey）：主动扫描和组播/广播听到的是
+                    // 同一台电脑时，界面才能把它合成一行（宪章 C4）。
+                    identityKey = device.optString("id", ""),
+                    version = device.optString("version", ""),
                 )
             } catch (ignored: Exception) {
                 return null
@@ -629,7 +721,18 @@ class ApiClient(val base: String, val token: String) {
                                         ?.takeIf { it.isNotBlank() }
                                         ?: info.serviceName
                                     val platform = attributes["p"]?.toString(Charsets.UTF_8).orEmpty()
-                                    found.add(Found(name = name, host = host, webPort = web, platform = platform))
+                                    val identity = attributes["id"]?.toString(Charsets.UTF_8).orEmpty()
+                                    val version = attributes["v"]?.toString(Charsets.UTF_8).orEmpty()
+                                    found.add(
+                                        Found(
+                                            name = name,
+                                            host = host,
+                                            webPort = web,
+                                            platform = platform,
+                                            identityKey = identity,
+                                            version = version,
+                                        )
+                                    )
                                     Log.d(TAG, "mDNS 找到电脑：$name@http://$host:$web/")
                                 }
                             },
@@ -661,9 +764,22 @@ class ApiClient(val base: String, val token: String) {
         /** 一个网卡的 IPv4 信息。 */
         private data class Subnet(val address: InetAddress, val broadcast: InetAddress?, val prefix: Int)
 
-        /** 读出所有可用网卡的 IPv4 地址与掩码；失败就当作没有。 */
+        /**
+         * 读出所有可用网卡的 IPv4 地址与掩码；失败就当作没有。
+         *
+         * **枚举结果要和系统当前网络求并集**：真机（vivo V2408A / Android 16，双 Wi-Fi）
+         * 上光靠 `getNetworkInterfaces()` 会漏掉真正在用的那块网卡，于是扫描只覆盖
+         * 了别的网段，电脑所在的 172.20.90.0/24 一个地址都没探 —— 真机日志就是
+         * "探了 508 台，命中 0 台"，用户看到的是"手机找不到电脑，只能手输 IP"。
+         */
         private fun subnets(): List<Subnet> {
             val result = mutableListOf<Subnet>()
+            val seen = HashSet<String>()
+            fun addOnce(address: InetAddress, broadcast: InetAddress?, prefix: Int) {
+                val key = address.hostAddress ?: return
+                if (!seen.add(key)) return
+                result.add(Subnet(address, broadcast, prefix))
+            }
             try {
                 val interfaces = NetworkInterface.getNetworkInterfaces() ?: return result
                 for (nic in Collections.list(interfaces)) {
@@ -672,12 +788,35 @@ class ApiClient(val base: String, val token: String) {
                         val address = info.address
                         if (address !is Inet4Address) continue
                         if (address.isLoopbackAddress || address.isLinkLocalAddress) continue
-                        result.add(Subnet(address, info.broadcast, info.networkPrefixLength.toInt()))
+                        addOnce(address, info.broadcast, info.networkPrefixLength.toInt())
                     }
                 }
             } catch (ignored: Exception) {
             }
+            // 系统当前网络优先（路由表真正在用的那些），并集兜底。
+            for (subnet in subnetsOfActiveNetwork()) addOnce(subnet.address, subnet.broadcast, subnet.prefix)
             return result
+        }
+
+        /** 系统当前网络（`ConnectivityManager`）的 IPv4 网段。 */
+        private fun subnetsOfActiveNetwork(): List<Subnet> {
+            val out = mutableListOf<Subnet>()
+            try {
+                val context = EverSendApp.instance
+                val cm = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
+                    as? android.net.ConnectivityManager ?: return out
+                for (network in cm.allNetworks) {
+                    val props = cm.getLinkProperties(network) ?: continue
+                    for (link in props.linkAddresses) {
+                        val address = link.address
+                        if (address !is Inet4Address) continue
+                        if (address.isLoopbackAddress || address.isLinkLocalAddress) continue
+                        out.add(Subnet(address, null, link.prefixLength))
+                    }
+                }
+            } catch (ignored: Exception) {
+            }
+            return out
         }
 
         /**
@@ -765,7 +904,15 @@ class ApiClient(val base: String, val token: String) {
     }
 
     /** 发现到的一台电脑。放在 companion 外面，类型名才是 ``ApiClient.Found``。 */
-    data class Found(val name: String, val host: String, val webPort: Int, val platform: String) {
+    data class Found(
+        val name: String,
+        val host: String,
+        val webPort: Int,
+        val platform: String,
+        /** 服务端的稳定身份（`/api/state` 的 `device.id` / mDNS TXT 的 `id`）。 */
+        val identityKey: String = "",
+        val version: String = "",
+    ) {
         val base: String get() = "http://$host:$webPort/"
     }
 }

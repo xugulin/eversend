@@ -5,6 +5,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -699,5 +700,96 @@ class EverSendInstrumentedTest {
             mine!!.optBoolean("online", false),
         )
         context.stopService(android.content.Intent(context, LinkService::class.java))
+    }
+
+    /**
+     * 两台**同名**设备各开各的会话（审计 #5 的回归，真机里跑）。
+     *
+     * 设备行的 id 曾经写成 `"web:" + client.optString("key")`，而 key 本身已经带
+     * `web:` / `android:` 前缀 → `web:web:<uuid>`，`conversationFor` 的
+     * `members.contains(id)` 永远不成立，于是整体退化成按**显示名**匹配
+     * （`displayTitle == name || startsWith(name)`）：两台同名设备点哪一行都打开
+     * 同一段会话，名字对不上就开一段空会话。
+     *
+     * 这条不碰界面、不碰网络，只钉住三段纯逻辑：设备行的稳定身份/别名、
+     * "按成员写法匹配"，以及"名字兜底只在没有第二台同名设备时用"。
+     */
+    @Test
+    fun sameNamedDevicesOpenTheirOwnConversation() {
+        val phone = "web:b696fdc5-6f04-4faf-a65f-9e4a3cbb0b2c"
+        val idA = "web:aaaa1111-1111-4111-8111-111111111111"
+        val idB = "web:bbbb2222-2222-4222-8222-222222222222"
+        val a = DeviceRow(
+            id = idA, name = "Android 上的 Chrome", kind = "网页版",
+            address = "192.168.110.127", aliases = identityAliases(idA),
+        )
+        val b = DeviceRow(
+            id = idB, name = "Android 上的 Chrome", kind = "网页版",
+            address = "127.0.0.1", aliases = identityAliases(idB),
+        )
+        val convA = Conversation(
+            id = "d:$phone|$idA", title = "", displayTitle = a.name, kind = "direct",
+            lastText = "会话A", unread = 0, members = listOf(phone, idA),
+        )
+        val convB = Conversation(
+            id = "d:$phone|$idB", title = "", displayTitle = b.name, kind = "direct",
+            lastText = "会话B", unread = 0, members = listOf(phone, idB),
+        )
+        val all = listOf(convA, convB)
+        assertEquals("点 A 行要开 A 自己的会话", convA.id, conversationFor(a, all, listOf(a, b))?.id)
+        assertEquals("点 B 行要开 B 自己的会话", convB.id, conversationFor(b, all, listOf(a, b))?.id)
+
+        // 会话里存的是"当时那种写法"（老式 地址|UA摘要）也要认得出来。
+        val legacyMember = "web:192.168.1.50|deadbeef"
+        val legacyConv = Conversation(
+            id = "d:$phone|$legacyMember", title = "", displayTitle = "老安卓机", kind = "direct",
+            lastText = "老会话", unread = 0, members = listOf(phone, legacyMember),
+        )
+        val legacyRow = DeviceRow(
+            id = idA, name = "老安卓机", kind = "网页版", address = "192.168.1.50",
+            aliases = identityAliases(idA, legacyMember),
+        )
+        assertEquals(
+            "旧身份键（aliases 里）也要能对上会话",
+            legacyConv.id,
+            conversationFor(legacyRow, listOf(legacyConv))?.id,
+        )
+
+        // 名字兜底：写法和成员都对不上时，只有"列表里没有第二台同名设备"才允许按名字开。
+        val soloConv = Conversation(
+            id = "d:$phone|web:eeee4444", title = "", displayTitle = "老安卓机", kind = "direct",
+            lastText = "", unread = 0, members = listOf(phone, "web:eeee4444"),
+        )
+        val solo = DeviceRow(
+            id = "web:eeee4444-4444-4444-8444-444444444444", name = "老安卓机",
+            kind = "网页版", address = "10.0.0.7",
+            aliases = identityAliases("web:eeee4444-4444-4444-8444-444444444444"),
+        )
+        assertEquals(
+            "只有一台叫这个名字时，按名字兜底打开",
+            soloConv.id,
+            conversationFor(solo, listOf(convA, convB, soloConv), listOf(a, b, solo))?.id,
+        )
+        val stranger = DeviceRow(
+            id = "web:cccc3333-3333-4333-8333-333333333333", name = "Android 上的 Chrome",
+            kind = "网页版", address = "10.0.0.9",
+            aliases = identityAliases("web:cccc3333-3333-4333-8333-333333333333"),
+        )
+        assertNull(
+            "有两台同名设备时不许按名字猜（点哪一行都进别人会话就是这条 bug）",
+            conversationFor(stranger, all, listOf(a, b, stranger)),
+        )
+
+        // 同一台设备的两条记录（identityKey 相同）→ 一行；地址取最新、online 取任一条在线。
+        val older = DeviceRow(
+            id = "192.168.1.50|deadbeef", name = "Android 上的 Chrome", kind = "网页版",
+            address = "192.168.1.50", online = false, secondsAgo = 400.0,
+            aliases = identityAliases("192.168.1.50|deadbeef", idA),
+        )
+        val newer = a.copy(online = true, secondsAgo = 3.0, address = "192.168.110.127")
+        val merged = dedupeDevices(listOf(newer, older))
+        assertEquals("同一台设备的两条记录只留一行", 1, merged.size)
+        assertEquals("地址取最新那条", "192.168.110.127", merged[0].address)
+        assertTrue("online 取任一条在线", merged[0].online)
     }
 }

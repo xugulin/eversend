@@ -117,6 +117,17 @@ def run_gui(argv: Sequence[str] | None = None) -> int:
     # Closing the window must actually quit, including the engine's threads.
     app.setQuitOnLastWindowClosed(True)
 
+    # 中文界面：必须**在建任何窗口之前**装好翻译，否则 Qt 自己的对话框
+    # （选文件、消息框、输入框右键菜单）会是英文 —— 用户报过这一条。
+    from . import i18n
+
+    i18n.install(app)
+
+    # 字体也要在建窗口之前定：Qt 默认是抽象的「Sans Serif」，三端解析出来的
+    # 字族不一样，中文尤其明显（Windows 会落到宋体）。theme 里那份有序字族表
+    # 会把中英混排都覆盖住。
+    app.setFont(theme.application_font())
+
     dark = theme.is_dark()
     app.setStyleSheet(theme.stylesheet(dark))
     app.setWindowIcon(theme.app_icon(128, dark))

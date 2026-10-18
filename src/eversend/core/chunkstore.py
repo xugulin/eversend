@@ -42,7 +42,7 @@ import struct
 import sys
 import threading
 import time
-from typing import Iterator
+from typing import Iterable, Iterator
 
 from . import hashing
 from .constants import chunk_count, chunk_range, pick_chunk_size
@@ -56,6 +56,13 @@ JOURNAL_VERSION = 1
 PART_SUFFIX = ".eversend.part"
 JOURNAL_SUFFIX = ".eversend.journal"
 
+#: Sidecar in the *state* directory listing every folder that may hold a
+#: ``.eversend.part``/``.eversend.journal`` pair.  The pair always lives next to
+#: the file being received -- i.e. in the receive folder -- while the resume
+#: state itself is keyed off the data folder, so a sweep that only looked at
+#: the state directory never saw a single leftover (see :meth:`ResumeIndex.sweep`).
+SWEEP_DIRS_FILE = "resume_dirs.json"
+
 #: Journal record: ``chunk_index:u32, crc32:u32``.
 _RECORD = struct.Struct("!II")
 _RECORD_SIZE = _RECORD.size
@@ -68,6 +75,12 @@ JOURNAL_FLUSH_INTERVAL = 1.0
 
 #: How often the journal is fsync'd by default (seconds).
 JOURNAL_SYNC_INTERVAL = 10.0
+
+#: How deep :meth:`ResumeIndex.sweep` looks below a registered folder for
+#: ``.part``/``.journal`` leftovers.  Received files keep the sender's layout,
+#: and a chat attachment is two levels down (``韧传聊天/<hash>/file``), so one
+#: level was not enough; the bound keeps the walk finite.
+SWEEP_MAX_DEPTH = 4
 
 
 class ChunkStoreError(Exception):
@@ -344,14 +357,31 @@ class PartFile:
         except Exception:
             pass
 
-    def discard(self) -> None:
-        """Delete the partial file and its journal."""
-        self.close()
+    def reclaim(self) -> None:
+        """Delete the part file and its journal, leaving the descriptor alone.
+
+        Removing the *names* is what the user measures -- the receive folder,
+        the free-space pre-check, ``/api/files`` -- and it can be done safely
+        while data-stream threads are still writing, because the bytes then go
+        to an inode nothing can reach any more.
+
+        Closing the descriptor is deliberately not part of this: doing it from
+        the thread that cancels would race with a writer that is between
+        reading the fd and using it, and an fd number that gets reused by
+        another thread in that window would send a chunk into an unrelated
+        file.  The session releases (and closes) the part for real once its
+        workers have stopped; the blocks come back then, milliseconds later.
+        """
         for path in (self._part, self._journal):
             try:
                 os.unlink(path)
             except OSError:
                 pass
+
+    def discard(self) -> None:
+        """Delete the partial file and its journal."""
+        self.close()
+        self.reclaim()
 
     def set_times(self, mtime_ns: int) -> None:
         """Apply the sender's modification time to the finished file."""
@@ -490,6 +520,22 @@ class PartFile:
         return True
 
 
+def _part_pair(name: str) -> tuple[str, str] | None:
+    """The ``(.part, .journal)`` paths for one directory entry, or ``None``.
+
+    Either half of the pair identifies it: a part file is only meaningful
+    together with its journal, and a journal without its part is a crash that
+    landed before the first chunk.
+    """
+    if name.endswith(JOURNAL_SUFFIX):
+        base = name[: -len(JOURNAL_SUFFIX)]
+    elif name.endswith(PART_SUFFIX):
+        base = name[: -len(PART_SUFFIX)]
+    else:
+        return None
+    return base + PART_SUFFIX, base + JOURNAL_SUFFIX
+
+
 class ResumeIndex:
     """Looks up resume state for incoming transfers.
 
@@ -497,11 +543,70 @@ class ResumeIndex:
     deterministic transfer key derived from sender + file set + destination is
     mapped to the part files on disk.  Re-offering the same files therefore
     resumes, while offering them to a different folder starts clean.
+
+    It is also the handle on the *leftovers*: a part file and its journal are
+    written into the receive folder, so this class keeps a list of every folder
+    that can contain them (:meth:`register_dir`) and cleans the stale ones out
+    on start-up (:meth:`sweep`).
     """
 
-    def __init__(self, state_dir: str) -> None:
-        self.state_dir = state_dir
-        os.makedirs(state_dir, exist_ok=True)
+    def __init__(self, state_dir: str, extra_dirs: Iterable[str] | None = None) -> None:
+        self.state_dir = os.path.abspath(state_dir) if state_dir else state_dir
+        os.makedirs(self.state_dir, exist_ok=True)
+        #: Every folder worth sweeping, the state dir first.
+        self._sweep_dirs: list[str] = [self.state_dir]
+        for path in list(self._load_dirs()) + list(extra_dirs or ()):
+            self._remember(path)
+
+    # -- the folders that may hold part files ------------------------------
+
+    @property
+    def sweep_dirs(self) -> list[str]:
+        """Every folder :meth:`sweep` will look at."""
+        return list(self._sweep_dirs)
+
+    def _registry(self) -> str:
+        return os.path.join(self.state_dir, SWEEP_DIRS_FILE)
+
+    def _load_dirs(self) -> list[str]:
+        try:
+            with open(self._registry(), "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return []
+        if not isinstance(data, list):
+            return []
+        return [item for item in data if isinstance(item, str)]
+
+    def _remember(self, path: str) -> bool:
+        """Add ``path`` to the sweep list.  Returns True when it was new."""
+        target = os.path.abspath(os.path.expanduser(str(path))) if path else self.state_dir
+        if target in self._sweep_dirs:
+            return False
+        self._sweep_dirs.append(target)
+        return True
+
+    def register_dir(self, path: str) -> None:
+        """Remember a folder that receives files, and persist the list.
+
+        Call this once per configured receive folder.  It is what lets a later
+        ``ResumeIndex(data_dir).sweep()`` -- the start-up cleanup, and the
+        documented way to reclaim leftovers -- find the ``.part`` files, which
+        are written next to the received file rather than into the data dir.
+        """
+        if not self._remember(path):
+            return
+        try:
+            tmp = self._registry() + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(self._sweep_dirs, fh, ensure_ascii=False)
+            os.replace(tmp, self._registry())
+        except OSError:
+            # A read-only or full data dir must not stop a transfer; the
+            # in-memory list still covers this process.
+            pass
+
+    # -- lookup ------------------------------------------------------------
 
     def part_file(
         self,
@@ -525,22 +630,73 @@ class ResumeIndex:
     def sweep(self, max_age_seconds: float = 7 * 24 * 3600) -> list[str]:
         """Remove stale part files left behind by abandoned transfers.
 
-        Only files whose journal has not been touched for ``max_age_seconds``
-        are removed, so a transfer paused over a weekend survives.
+        Two things make this work where the old version silently did nothing:
+        every registered receive folder is scanned (not just the state dir,
+        which never contains a part file), and a journal takes its ``.part``
+        with it -- the preallocated part is the thing that actually eats the
+        disk, so removing the journal alone reclaimed nothing.
+
+        Only files whose *newest* half has not been touched for
+        ``max_age_seconds`` are removed, so a transfer paused over a weekend --
+        or one that failed on a flaky link and will be resumed -- survives.
+        ``max_age_seconds=0`` means "everything right now", which is what
+        tooling and tests use.
         """
         removed: list[str] = []
-        now = time.time()
+        seen: set[str] = set()
+        for directory in self._sweep_dirs:
+            for path in self._sweep_dir(directory, max_age_seconds):
+                if path not in seen:
+                    seen.add(path)
+                    removed.append(path)
+        return removed
+
+    @staticmethod
+    def _sweep_dir(
+        directory: str, max_age_seconds: float, *, depth: int = SWEEP_MAX_DEPTH
+    ) -> list[str]:
+        """Remove stale sidecars in ``directory`` and its sub-folders.
+
+        Recursion matters because received files keep the sender's folder
+        layout: a chat attachment lands in
+        ``<receive>/韧传聊天/<hash>/photo.jpg``, so its ``.part``/``.journal``
+        pair is written *two levels down*.  A sweep that only listed the top
+        level therefore never saw those leftovers, no matter how old they were
+        -- the receive folder kept growing with preallocated parts of files the
+        user had long forgotten.  ``depth`` bounds the walk so a pathological
+        tree cannot turn start-up cleanup into a full disk scan.
+        """
         try:
-            entries = os.listdir(self.state_dir)
+            entries = os.listdir(directory)
         except OSError:
-            return removed
+            return []
+        now = time.time()
+        removed: list[str] = []
         for name in entries:
-            if name.endswith(JOURNAL_SUFFIX):
-                path = os.path.join(self.state_dir, name)
+            full = os.path.join(directory, name)
+            pair = _part_pair(name)
+            if pair is None:
+                if depth > 0 and os.path.isdir(full):
+                    removed.extend(
+                        ResumeIndex._sweep_dir(full, max_age_seconds, depth=depth - 1)
+                    )
+                continue
+            pair = tuple(os.path.join(directory, half) for half in pair)
+            # The newest half decides: a journal that is still being appended to
+            # belongs to a live or resumable transfer even if the part file's
+            # mtime looks old, and vice versa.
+            touched: list[float] = []
+            for path in pair:
                 try:
-                    if now - os.path.getmtime(path) > max_age_seconds:
-                        os.unlink(path)
-                        removed.append(path)
+                    touched.append(os.path.getmtime(path))
+                except OSError:
+                    pass
+            if not touched or now - max(touched) <= max_age_seconds:
+                continue
+            for path in pair:
+                try:
+                    os.unlink(path)
+                    removed.append(path)
                 except OSError:
                     pass
         return removed
@@ -570,6 +726,7 @@ def journal_crcs(path: str) -> dict[int, int]:
 __all__ = [
     "JOURNAL_SUFFIX",
     "PART_SUFFIX",
+    "SWEEP_DIRS_FILE",
     "ChunkStoreError",
     "PartFile",
     "ResumeIndex",

@@ -261,11 +261,58 @@ def test_group_chat() -> None:
             c.stop()
 
 
+def test_unread_is_idempotent_and_bounded() -> None:
+    """未读是计数器，别让它虚高：同一条消息重发只算一次，裁剪之后不许超过消息数。
+
+    审计员量到过：同一条消息投两次 → 消息 1 条、未读 2；裁剪把消息删了但未读不
+    回落 → 未读 6 而库里只有 3 条。前者是弱网重发的正常后果，后者长期不看的会话
+    会显示得比它实际的消息还多。
+    """
+    print("\n[未读] 幂等 + 有上限")
+    with scratch("chat-unread") as root:
+        store = ChatStore(root / "chat.db")
+        store.upsert_conversation("c1", kind="direct", members=["me", "peer"])
+        store.add_message(
+            "c1", sender="peer", kind="text", text="只该算一条",
+            direction="in", state="received", message_id="fixed-id-1",
+        )
+        check("第一条收到的消息算 1 条未读", store.conversation("c1")["unread"] == 1,
+              str(store.conversation("c1")["unread"]))
+        store.add_message(
+            "c1", sender="peer", kind="text", text="只该算一条",
+            direction="in", state="received", message_id="fixed-id-1",
+        )
+        check("同一条消息重发不会把未读加第二遍",
+              len(store.messages("c1")) == 1 and store.conversation("c1")["unread"] == 1,
+              f"消息 {len(store.messages('c1'))} / 未读 {store.conversation('c1')['unread']}")
+        for index in range(3):
+            store.add_message(
+                "c1", sender="peer", kind="text", text=f"第{index}条",
+                direction="in", state="received",
+            )
+        check("正常收消息仍然照常累加", store.conversation("c1")["unread"] == 4,
+              str(store.conversation("c1")["unread"]))
+        store.limit_messages = 2
+        store.add_message(
+            "c1", sender="peer", kind="text", text="再一条", direction="in", state="received",
+        )
+        unread = int(store.conversation("c1")["unread"])
+        check("裁剪之后未读不超过剩下的消息条数",
+              unread <= len(store.messages("c1")) and unread > 0,
+              f"消息 {len(store.messages('c1'))} / 未读 {unread}")
+
+
 def main() -> int:
     use_utf8_console()
     print("EverSend chat tests")
     print("=" * 60)
-    for test in (test_store, test_direct_chat, test_attachment, test_group_chat):
+    for test in (
+        test_store,
+        test_direct_chat,
+        test_attachment,
+        test_group_chat,
+        test_unread_is_idempotent_and_bounded,
+    ):
         try:
             test()
         except Exception:

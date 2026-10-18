@@ -38,6 +38,7 @@ import os
 import queue
 import secrets
 import socket
+import sys
 import threading
 import time
 import urllib.parse
@@ -55,7 +56,14 @@ from ..core.chat import (
     media_relpath,
 )
 from ..core.engine import Engine, build_file_entries, free_space
-from ..core.model import DeviceInfo, Peer, new_transfer_id, sanitize_component, unique_path
+from ..core.model import (
+    DeviceInfo,
+    Peer,
+    disambiguate_names,
+    new_transfer_id,
+    sanitize_component,
+    unique_path,
+)
 from . import qr
 
 log = logging.getLogger("eversend.web")
@@ -100,6 +108,58 @@ MAX_SHARES = 50
 #: open, so this survives a few dropped polls without leaving a phone listed
 #: forever after it walks out of Wi-Fi range.
 CLIENT_TTL = 15.0
+
+
+def _as_float(value: Any) -> float:
+    """A timestamp that survives a hand-edited / older ``web_clients.json``.
+
+    The registry is loaded straight off disk, so a record may be missing fields
+    or carry a string where a number belongs.  One bad row must never take
+    ``/api/state`` (and with it the whole page) down.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def agent_digest(agent: str) -> str:
+    """The short hash of a ``User-Agent``, i.e. the second half of a legacy key.
+
+    Kept in one place because "is this the same browser?" is asked in three
+    places (the registry key, the duplicate cleanup, the goodbye path) and two
+    different digests would silently stop matching each other.
+    """
+    return hashlib.sha1((agent or "").encode("utf-8", "replace")).hexdigest()[:8]
+
+
+def bare_device_id(device_id: str) -> str:
+    """A client's device id without a ``web:`` / ``android:`` prefix.
+
+    The prefix belongs to the *key* (``web:<id>``), not to the id: the page
+    stores a bare UUID and the app posts a bare UUID, but a client that copied
+    a key out of a listing must not end up registering as ``web:web:<id>``.
+    """
+    value = str(device_id or "").strip()
+    for prefix in ("web:", "android:"):
+        if value.startswith(prefix) and len(value) > len(prefix):
+            return value[len(prefix):]
+    return value
+
+
+def client_label(client: dict[str, Any]) -> str:
+    """「名字（安卓 App/网页版 · 韧传 版本 · IP）」—— 三个客户端显示的同一句话。
+
+    只写一份：会话列表要显示的名字、以及归并掉的旧身份当时显示过的名字，都
+    由它算出来，两边不许各写一套。
+    """
+    is_app = str(client.get("kind") or "") == "app"
+    parts = ["安卓 App" if is_app else "网页版"]
+    if client.get("version"):
+        parts.append(f"韧传 {client['version']}")
+    if client.get("address"):
+        parts.append(str(client["address"]))
+    return f"{client.get('label') or '手机'}（{' · '.join(parts)}）"
 
 
 def is_app_agent(agent: str) -> bool:
@@ -196,7 +256,7 @@ _MIME_TYPES = {
 
 #: Routes that only accept POST, so a GET can be answered with 405.
 _POST_ONLY_ROUTES = frozenset(
-    {"/api/announce", "/api/scan", "/api/upload", "/api/share", "/api/leave", "/api/hello", "/api/chat/send", "/api/chat/upload", "/api/offer/respond", "/api/cancel", "/api/trust", "/api/peer"}
+    {"/api/announce", "/api/scan", "/api/upload", "/api/share", "/api/leave", "/api/hello", "/api/chat/send", "/api/chat/upload", "/api/offer/respond", "/api/cancel", "/api/trust", "/api/peer", "/api/devices/forget-offline"}
 )
 
 _JSON_TYPE = "application/json; charset=utf-8"
@@ -240,6 +300,11 @@ def device_dict(info: DeviceInfo, **extra: Any) -> dict[str, Any]:
     """The public shape of a device, as every endpoint reports it."""
     data: dict[str, Any] = {
         "id": info.device_id,
+        # 与 knownClients 一样给一个**稳定身份**字段：手机端拿它当设备行的 id
+        # 去和会话成员（存的是设备号）对号入座。以前协议对端没有这个字段，
+        # 安卓端 ``id = peer.identityKey`` 就拿到空串 —— 会话永远匹配不上，
+        # 退化成按显示名猜（真机实测：标题显示成"与 e4233004… 的对话"）。
+        "identityKey": info.device_id,
         "name": info.name,
         "kind": info.kind,
         "platform": info.platform,
@@ -540,6 +605,11 @@ class WebUI:
         #: until the phone says goodbye (「断开连接」) or the user removes it.
         self._known: dict[str, dict[str, Any]] = {}
         self._known_path = os.path.join(engine.config.data_dir, "web_clients.json")
+        #: device_id -> 最后一次见到的设备快照。引擎的发现表是有 TTL 的（几分钟
+        #: 没消息就丢），于是"刚才还在、现在走了"的电脑在页面上会彻底消失 ——
+        #: 用户要求设备列表分「在线 / 离线」，离线那一栏就得有东西可放。
+        #: 这里只记身份与最后在线时间，不参与任何寻址。
+        self._remembered: dict[str, dict[str, Any]] = {}
         #: Cached answer to "is there an Android installer to offer?" (see
         #: :meth:`android_apk`); the page asks on every state poll.
         self._apk_path: str | None = None
@@ -621,13 +691,21 @@ class WebUI:
     def touch_client(self, address: str, agent: str = "", device_id: str = "") -> None:
         """Remember that a client just did something.
 
-        ``device_id`` is what the native app sends on *every* request
-        (``X-EverSend-Device``).  Matching on it instead of the source address is
-        what keeps a phone from "dropping off" the moment its address changes --
-        a phone that roams between Wi-Fi and its own hotspot arrives from a
-        different address, and an address-keyed record then looks offline
-        forever while the app is happily talking to us.
-        
+        One physical device == one record, and the record is keyed by a *stable
+        identity*, never by where the request came from:
+
+        * a client that sends ``X-EverSend-Device`` (the app on every request,
+          the page on every ``fetch``) is keyed ``android:<id>`` / ``web:<id>``;
+          the address is just a field on that record, updated in place, so
+          roaming between Wi-Fi and a hotspot does not mint a second device;
+        * a request *without* that header -- a browser cannot add custom headers
+          to ``GET /`` or ``<script src>`` -- is folded into the device record
+          at the same address with the same User-Agent when one exists
+          (:meth:`_touch_device_at_address`), which is what used to produce two
+          rows called 「Android 上的 Chrome」 for one handset;
+        * only a client that really has no stable identity (a computer's browser
+          that never sends the header, a script) still falls back to the legacy
+          ``address|UA-digest`` key.
 
         Keyed by address **and** User-Agent.  Address alone is not enough: a
         phone reaching us through a port forward (``adb reverse``, a reverse
@@ -646,10 +724,16 @@ class WebUI:
                 return
             if self._touch_web_device(device_id, address, agent, now):
                 return
+        elif self._touch_device_at_address(address, agent, now):
+            # 没有设备号，但这个地址上已经有一台**带设备号**的设备，UA 也对得上：
+            # 是它自己。 浏览器不会给地址栏导航（``GET /``）或 ``<script src>``
+            # 加自定义头，所以"打开页面"这一下永远没有 ``X-EverSend-Device``；
+            # 按地址再建一条，"一台手机"就变成了用户看到的两行
+            # 「Android 上的 Chrome」（一行是设备号记录，一行是地址记录）。
+            return
         if is_app_agent(agent) and self._touch_known_app(address, agent, now):
             return
-        digest = hashlib.sha1((agent or "").encode("utf-8", "replace")).hexdigest()[:8]
-        key = f"{address}|{digest}"
+        key = self.client_key(address, agent)
         remember = False
         label = describe_agent(agent)
         meaningful = label not in ("命令行/脚本", "未知客户端")
@@ -695,31 +779,14 @@ class WebUI:
 
     def _touch_known_device(self, device_id: str, address: str, agent: str, now: float) -> bool:
         """Keep an app-registered device alive, whichever address it came from."""
-        key = f"android:{device_id}"
+        key = f"android:{bare_device_id(device_id)}"
         with self._state_lock:
             client = self._known.get(key)
             if client is None:
                 return False
-            client["lastSeen"] = now
-            client.pop("provisional", None)
-            client["talked"] = True
-            if address:
-                client["address"] = address      # 地址变了就跟着变
+            self._touch_record(key, address, agent, now)
             if agent and not client.get("agent"):
                 client["agent"] = agent[:200]
-            live = self._clients.get(key)
-            if live is None:
-                self._clients[key] = {
-                    "address": address,
-                    "agent": agent[:200],
-                    "label": client.get("label") or "安卓 App",
-                    "since": client.get("firstSeen", now),
-                    "lastSeen": now,
-                }
-            else:
-                live["lastSeen"] = now
-                if address:
-                    live["address"] = address
         return True
 
     def _touch_web_device(self, device_id: str, address: str, agent: str, now: float) -> bool:
@@ -730,7 +797,9 @@ class WebUI:
         -- and therefore keeps *one* conversation -- instead of turning into a
         new client every time its address changes.
         """
+        device_id = bare_device_id(device_id)
         key = f"web:{device_id}"
+        remember = False
         with self._state_lock:
             client = self._known.get(key)
             if client is None:
@@ -744,41 +813,272 @@ class WebUI:
                     "kind": "browser",
                 }
                 self._known[key] = client
-            client["lastSeen"] = now
-            client.pop("provisional", None)
-            client["talked"] = True
-            if address:
-                client["address"] = address
-            live = self._clients.get(key)
-            if live is None:
-                self._clients[key] = {
-                    "address": address,
-                    "agent": agent[:200],
-                    "label": client.get("label") or describe_agent(agent),
-                    "since": client.get("firstSeen", now),
-                    "lastSeen": now,
-                }
-            else:
-                live["lastSeen"] = now
-                if address:
-                    live["address"] = address
+                # 新配对的手机必须马上落盘：以前这条只在别的动作顺手保存时
+                # 才写文件，进程重启一次它就"从没出现过"。
+                remember = True
+            elif address and str(client.get("address") or "") != address:
+                remember = True
+            self._touch_record(key, address, agent, now)
 
             # 历史遗留：网页版以前的身份是"地址 + User-Agent"，浏览器升级一次
             # （或者换内核）就多出一条 —— 用户看到"同一个浏览器两台设备"。
-            # 现在它有了稳定设备号，同一地址上那些**不再活跃**的旧记录就是它
-            # 自己，顺手收拾掉；正在用的别的浏览器（活跃中）不动。
+            # 现在它有了稳定设备号，同一个地址上那些旧记录就是它自己：
+            #   * 已经不在说话的，直接收掉；
+            #   * 还在说话的，只要 UA 摘要和这次请求一模一样，也是它自己
+            #     ——「打开页面」（无自定义头）刚建的那条正是这样，不收掉就
+            #     正好是用户报的两行「Android 上的 Chrome」。
             if address:
                 for other in [
                     legacy
                     for legacy, entry in self._known.items()
                     if legacy != key
-                    and "|" in legacy
+                    and self._is_legacy_key(legacy)
                     and entry.get("address") == address
-                    and legacy not in self._clients
+                    and (
+                        legacy not in self._clients
+                        or (
+                            bool(agent)
+                            and agent_digest(str(entry.get("agent") or "")) == agent_digest(agent)
+                        )
+                    )
                 ]:
-                    self._known.pop(other, None)
-                    self._clients.pop(other, None)
+                    self._merge_record(key, other)
+                    remember = True
+        if remember:
+            self._save_known()
         return True
+
+    def _touch_device_at_address(self, address: str, agent: str, now: float) -> bool:
+        """碰一下"这个地址上那台带设备号的设备"，如果有的话。
+
+        浏览器**不可能**给地址栏导航（``GET /``）或者 ``<script src>`` 加自定义
+        头，所以打开一台已经配对过的手机上的页面时，总会有一次没有
+        ``X-EverSend-Device`` 的请求先到。按"地址 + UA"给它建一条记录，就多出
+        用户看到的那一行「Android 上的 Chrome」，而且两行都算在线。
+
+        判定条件（三条都要满足，缺一不并）：
+          1. 那条记录有稳定设备号（``web:`` / ``android:``），不是地址键记录；
+          2. 记录的 ``address`` 就是这个地址；
+          3. UA 摘要一模一样。
+
+        确实没有设备号的普通浏览器（电脑上直接打开页面、老缓存的旧页面）在这个
+        地址上没有"带设备号的自己"，所以照旧按老办法建档，不会被藏掉。
+        同一地址 + 同 UA + 两台设备号不同（NAT 后面两台同款手机）时只会挑最近
+        说话的那条碰一下 lastSeen，**不会**把两条设备记录并成一条：下一次带设备
+        号的请求仍然各回各家。
+        """
+        if not address or not agent:
+            return False
+        digest = agent_digest(agent)
+        with self._state_lock:
+            best = ""
+            for key, client in self._known.items():
+                if self._is_legacy_key(key) or not str(client.get("deviceId") or ""):
+                    continue
+                if str(client.get("address") or "") != address:
+                    continue
+                known_agent = str(client.get("agent") or "")
+                if not known_agent or agent_digest(known_agent) != digest:
+                    continue
+                if not best or float(client.get("lastSeen") or 0) > float(self._known[best].get("lastSeen") or 0):
+                    best = key
+            if not best:
+                return False
+            self._touch_record(best, address, agent, now)
+        return True
+
+    def _touch_record(self, key: str, address: str, agent: str, now: float) -> None:
+        """把一条已存在的记录碰活，并保证它在"正在说话"的表里。"""
+        client = self._known.get(key)
+        if client is None:
+            return
+        client["lastSeen"] = now
+        client.pop("provisional", None)
+        client["talked"] = True
+        if address:
+            client["address"] = address
+        live = self._clients.get(key)
+        if live is None:
+            self._clients[key] = {
+                "address": address or client.get("address", ""),
+                "agent": agent[:200] or str(client.get("agent") or ""),
+                "label": client.get("label") or describe_agent(agent),
+                "since": client.get("firstSeen", now),
+                "lastSeen": now,
+            }
+        else:
+            live["lastSeen"] = now
+            if address:
+                live["address"] = address
+
+    @staticmethod
+    def _is_legacy_key(key: str) -> bool:
+        """老格式的键：``地址|UA摘要``，只有"网络位置"，没有稳定身份。"""
+        return "|" in str(key)
+
+    def _merge_record(self, target: str, source: str) -> bool:
+        """把 ``source`` 折进 ``target``：同一台设备的第二条记录。
+
+        保留规则：``lastSeen`` 取最新、``firstSeen`` 取最早、地址/UA 取"更近的
+        那条"的（换过网络就用新地址，用户看到的就是它现在在哪）。``source``
+        若正在说话，这份"在线"要转给 ``target`` —— 合并绝不能把"刚刚还连着"
+        变成"离线"，也不能让一条已经配对的手机凭空掉出列表。
+
+        被并掉那条的键会记进 ``target["aliases"]``：会话里存的成员 id 是**当时**
+        那个写法（``web:地址|UA摘要``），记录没了不等于那段聊天里的名字也该没
+        —— 289 条消息的老会话会从「安卓 App」掉成「未知设备」。
+        """
+        dst = self._known.get(target)
+        src = self._known.pop(source, None)
+        if dst is None or src is None:
+            return False
+        src_live = self._clients.pop(source, None)
+        self._carry_aliases(dst, src)
+        src_last = _as_float(src.get("lastSeen"))
+        dst_last = _as_float(dst.get("lastSeen"))
+        if src_last > dst_last:
+            if src.get("address"):
+                dst["address"] = src["address"]
+            if src.get("agent"):
+                dst["agent"] = src["agent"]
+        dst["lastSeen"] = max(dst_last, src_last)
+        firsts = [_as_float(c.get("firstSeen")) for c in (dst, src) if c.get("firstSeen")]
+        if firsts:
+            dst["firstSeen"] = min(firsts)
+        if not dst.get("label") and src.get("label"):
+            dst["label"] = src["label"]
+        if src_live is not None and target not in self._clients:
+            self._clients[target] = {
+                "address": str(dst.get("address") or ""),
+                "agent": str(dst.get("agent") or ""),
+                "label": str(dst.get("label") or ""),
+                "since": dst.get("firstSeen", src_live.get("lastSeen")),
+                "lastSeen": max(_as_float(src_live.get("lastSeen")), dst["lastSeen"]),
+            }
+        return True
+
+    @staticmethod
+    def _record_aliases(client: dict[str, Any]) -> list[str]:
+        """一条记录身上攒下来的旧身份（并进来的那些键）。
+
+        只在 ``aliases`` 真的是个列表时认它：注册表从磁盘读回来，字段被手工
+        改坏（比如写成一个字符串）时按"没有别名"处理，而不是逐字符迭代。
+        """
+        bucket = client.get("aliases")
+        if not isinstance(bucket, list):
+            return []
+        out: list[str] = []
+        for alias in bucket:
+            text = str(alias or "").strip()
+            if text and text not in out:
+                out.append(text)
+        return out
+
+    def _add_alias(self, client: dict[str, Any], alias: str, source: dict[str, Any] | None = None) -> None:
+        """把 ``alias`` 记到 ``client`` 上，供显示层把老会话的成员 id 认回来。
+
+        ``aliases`` 是给**调用方**读的：``core.chat.client_aliases()`` 会把它一起
+        展开成"这台设备可能出现的几种 id"，三个客户端算会话名字时都认。至于旧
+        写法**当时**叫什么名字，记在 ``aliasLabels`` 里，由本文件的
+        :meth:`_Handler._member_label_map` 取用（它会盖过"现在的名字"）。
+
+        ``source`` 是被并掉的那条记录：连同它**当时显示的名字**一起记下来
+        （``aliasLabels``）。会话标题用的是旧名字，归并后换成新记录的名字会
+        让那段 289 条消息的老会话"改名"；记着旧名字，标题就一字不变。
+        """
+        text = str(alias or "").strip()
+        if not text or text == str(client.get("key") or ""):
+            return
+        bucket = client.get("aliases")
+        if not isinstance(bucket, list):
+            bucket = []
+            client["aliases"] = bucket
+        if text not in bucket:
+            bucket.append(text)
+            del bucket[: -self.ALIAS_LIMIT]      # 只留最近几条，记录不该无限长
+        if source is None:
+            return
+        remembered = client.get("aliasLabels")
+        if not isinstance(remembered, dict):
+            remembered = {}
+            client["aliasLabels"] = remembered
+        remembered.setdefault(
+            text,
+            {
+                "label": str(source.get("label") or ""),
+                "kind": str(source.get("kind") or ""),
+                "version": str(source.get("version") or ""),
+                "address": str(source.get("address") or ""),
+            },
+        )
+        while len(remembered) > self.ALIAS_LIMIT:
+            remembered.pop(next(iter(remembered)))
+
+    def _carry_aliases(self, dst: dict[str, Any], src: dict[str, Any]) -> None:
+        """把 ``src`` 攒下的旧身份（连同它们当时显示的名字）搬到 ``dst`` 上。"""
+        self._add_alias(dst, str(src.get("key") or ""), src)
+        for alias in self._record_aliases(src):
+            self._add_alias(dst, alias)
+        remembered = src.get("aliasLabels")
+        if not isinstance(remembered, dict):
+            return
+        mine = dst.get("aliasLabels")
+        if not isinstance(mine, dict):
+            mine = {}
+            dst["aliasLabels"] = mine
+        for alias, info in remembered.items():
+            if isinstance(info, dict):
+                mine.setdefault(str(alias), info)
+        while len(mine) > self.ALIAS_LIMIT:
+            mine.pop(next(iter(mine)))
+
+    def _alias_label(self, client: dict[str, Any], alias: str) -> str:
+        """旧身份 ``alias`` 当时显示的名字（没有记录就退回这条记录的名字）。"""
+        remembered = client.get("aliasLabels")
+        info = remembered.get(alias) if isinstance(remembered, dict) else None
+        if isinstance(info, dict):
+            return client_label(info)
+        return client_label(client)
+
+    #: 一条记录最多带几个旧身份（老会话认得回来就行）。
+    ALIAS_LIMIT = 8
+
+    def _heal_duplicate_devices(self) -> bool:
+        """把已经落盘的重复记录并掉（老数据也要治）。
+
+        只并"无设备号的地址键记录 + 有设备号的记录，且 UA 摘要一致"这一对：
+
+        * 地址也一样时无条件并 —— 这正是"页面首次加载建了一条、页面里的
+          fetch 又建了一条"留下的痕迹，两条都还算在线；
+        * 地址已经不一样时，只并那条**不在说话**的老记录。一个还在轮询的
+          浏览器不会被藏掉，而"上周换过 IP 留下的幽灵行"会被收掉。
+        """
+        with self._state_lock:
+            merged = False
+            for legacy in [k for k in self._known if self._is_legacy_key(k)]:
+                entry = self._known.get(legacy)
+                if entry is None or not entry.get("agent"):
+                    continue
+                digest = agent_digest(str(entry.get("agent") or ""))
+                target = ""
+                for key, client in self._known.items():
+                    if self._is_legacy_key(key) or not str(client.get("deviceId") or ""):
+                        continue
+                    known_agent = str(client.get("agent") or "")
+                    if not known_agent or agent_digest(known_agent) != digest:
+                        continue
+                    same_address = bool(entry.get("address")) and str(client.get("address") or "") == str(
+                        entry.get("address") or ""
+                    )
+                    if not same_address and legacy in self._clients:
+                        continue
+                    if not target or float(client.get("lastSeen") or 0) > float(
+                        self._known[target].get("lastSeen") or 0
+                    ):
+                        target = key
+                if target and self._merge_record(target, legacy):
+                    merged = True
+            return merged
 
     def _touch_known_app(self, address: str, agent: str, now: float) -> bool:
         """Keep an app that already introduced itself on its own entry.
@@ -838,6 +1138,10 @@ class WebUI:
                 "path": path,
                 "added": time.time(),
                 "downloaded": False,
+                #: 手机已经取走多少字节。会话里那条记录的进度条就靠它 ——
+                #: 手机是通过 HTTP 来取的，电脑这一侧是服务端，所以"传到哪了"
+                #: 只有这里知道（发送方没有可推的连接，也就没有 active_transfers）。
+                "sentBytes": 0,
             }
             if only_key:
                 entry["forKey"] = only_key
@@ -875,6 +1179,7 @@ class WebUI:
                     "size": s["size"],
                     "added": s["added"],
                     "downloaded": bool(s.get("downloaded")),
+                    "sentBytes": int(s.get("sentBytes") or 0),
                 }
                 for s in self._shares.values()
                 if not for_key or not s.get("forKey") or s.get("forKey") == for_key
@@ -891,11 +1196,96 @@ class WebUI:
             path = str(entry["path"])
         return path if os.path.isfile(path) else None
 
+    def share_lookup(self, share_id: str) -> tuple[str, str, str]:
+        """``(state, path, name)`` —— 让下载接口说得出**为什么**给不了。
+
+        ``state`` 三种，对应三句不同的中文（用户看的不是状态码）：
+
+        * ``ok``      —— 有这条分享，文件也在；
+        * ``missing`` —— 分享列表里根本没有它：条目过期、被顶掉、或者链接抄错了；
+        * ``gone``    —— 条目还在，但它指向的文件被删掉/移走了。
+
+        以前这两种都是同一个 ``None``，手机只会看到一句笼统的"不在分享列表里"，
+        明明是文件被删了却让人去翻分享列表。
+        """
+        with self._state_lock:
+            entry = self._shares.get(str(share_id))
+            if entry is None:
+                return "missing", "", ""
+            name = str(entry.get("name") or "")
+            path = str(entry.get("path") or "")
+        if not path or not os.path.isfile(path):
+            return "gone", path, name
+        return "ok", path, name
+
+    def find_share_for_message(self, message: dict[str, Any]) -> str:
+        """这条聊天消息对应哪一条分享（找不到就空串）。
+
+        桌面发布文件与写聊天记录用的是**同一个绝对路径**（分享条目的 ``path``
+        ↔ 消息的 ``mediaSource``），所以先按路径比；路径丢了（老记录、文件挪过
+        位置）再按 名字 + 大小 比。不需要改数据库结构，也不需要桌面端先加字段。
+
+        万一以后桌面真的往记录里写了 ``shareId``（phone-transfer 那边加字段），
+        这里优先认它 —— 字段名 ``shareId`` / ``share_id`` 两种写法都认。
+        """
+        direct = str(message.get("shareId") or message.get("share_id") or "")
+        if direct:
+            with self._state_lock:
+                if direct in self._shares:
+                    return direct
+        source = str(message.get("mediaSource") or "")
+        wanted_path = os.path.realpath(source) if source else ""
+        name = str(message.get("mediaName") or "")
+        try:
+            size = int(message.get("mediaSize") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        with self._state_lock:
+            entries = [(key, dict(value)) for key, value in self._shares.items()]
+        if wanted_path:
+            for share_id, entry in entries:
+                candidate = str(entry.get("path") or "")
+                if candidate and os.path.realpath(candidate) == wanted_path:
+                    return share_id
+        if name:
+            for share_id, entry in entries:
+                if str(entry.get("name") or "") != name:
+                    continue
+                if not size or int(entry.get("size") or 0) == size:
+                    return share_id
+        return ""
+
     def mark_share_downloaded(self, share_id: str) -> None:
+        """手机把整个文件取走了 —— 这是"回执"，电脑端据此才敢写「已取走」。
+
+        只在**第一次**转成已下载时发事件：同一条分享可能被重复取（用户又点了一次
+        下载），事件发一次就够，事件流上不必跟着重复。
+        """
+        became = False
+        name = ""
+        size = 0
         with self._state_lock:
             entry = self._shares.get(str(share_id))
             if entry is not None:
+                became = not bool(entry.get("downloaded"))
                 entry["downloaded"] = True
+                entry["sentBytes"] = int(entry.get("size") or entry.get("sentBytes") or 0)
+                name = str(entry.get("name") or "")
+                size = int(entry.get("size") or 0)
+        if became:
+            self.engine.events.emit(
+                "share_taken", share_id=str(share_id), name=name, size=size
+            )
+
+    def note_share_progress(self, share_id: str, sent_bytes: int) -> None:
+        """手机正在取这个文件，已经发出去多少字节。
+
+        只增不减：Range 续传会分成几次请求，界面要看到的是"总体取到哪了"。
+        """
+        with self._state_lock:
+            entry = self._shares.get(str(share_id))
+            if entry is not None:
+                entry["sentBytes"] = max(int(entry.get("sentBytes") or 0), int(sent_bytes))
 
     def clear_shares(self) -> None:
         with self._state_lock:
@@ -903,8 +1293,20 @@ class WebUI:
 
     @staticmethod
     def client_key(address: str, agent: str = "") -> str:
-        digest = hashlib.sha1((agent or "").encode("utf-8", "replace")).hexdigest()[:8]
-        return f"{address}|{digest}"
+        return f"{address}|{agent_digest(agent)}"
+
+    def identity_key(self, client: dict[str, Any]) -> str:
+        """这台设备的稳定身份 —— 三个客户端拿它做防御性去重。
+
+        有设备号就是 ``web:<deviceId>`` / ``android:<deviceId>``（跟地址无关，
+        换网络、换 IP 都不变）；没有设备号的老记录只能退回它自己的键
+        （``地址|UA摘要``），那种记录本来就没有稳定身份可言。
+        """
+        key = str(client.get("key") or "")
+        device_id = str(client.get("deviceId") or "")
+        if not device_id:
+            return key
+        return key if not self._is_legacy_key(key) else f"web:{device_id}"
 
     def known_clients(self) -> list[dict[str, Any]]:
         """Every phone this desktop has paired with, newest activity first.
@@ -912,7 +1314,16 @@ class WebUI:
         Unlike :meth:`clients` this does not expire: the phone keeps its place
         in the device list while its screen is off, while it is in another app,
         or while its page is closed.  ``online`` says whether it is talking to
-        us *right now*.
+        us *right now* (``key in self._clients``).
+
+        一台物理设备只有一条记录：记录以稳定设备号（``web:<id>`` /
+        ``android:<id>``）为键，地址只是它身上会变的一个字段。老数据里同一台
+        设备的第二条（``地址|UA摘要``）在这里被并掉，所以升级后名单也不会
+        继续显示两行。
+
+        注册表是直接从磁盘读回来的，字段可能残缺（手工改过、旧版本写的）：
+        这里全部按 ``.get`` + 默认值读，一行坏数据不能让 ``/api/state`` 整页
+        500 —— 那样连"哪台设备坏了"都看不见。
         """
         now = time.time()
         dropped = False
@@ -922,32 +1333,46 @@ class WebUI:
             for key in [
                 key
                 for key, client in self._clients.items()
-                if now - float(client.get("lastSeen", 0)) > CLIENT_TTL
+                if now - _as_float(client.get("lastSeen")) > CLIENT_TTL
             ]:
                 self._clients.pop(key, None)
             for key in [
                 key
                 for key, client in self._known.items()
                 if client.get("provisional")
-                and now - float(client.get("lastSeen", 0)) > self.PROVISIONAL_TTL
+                and now - _as_float(client.get("lastSeen")) > self.PROVISIONAL_TTL
             ]:
                 self._known.pop(key, None)
                 self._clients.pop(key, None)
                 dropped = True
-            found = [dict(c) for c in self._known.values()]
-            live = {k: c["lastSeen"] for k, c in self._clients.items()}
+            if self._heal_duplicate_devices():
+                dropped = True
+            # 连着注册表的键一起取出来：记录里万一没有 key 字段（手工改坏的
+            # 文件），也得有一条能用的键，否则界面上那一行点了没反应。
+            found = [(key, dict(c)) for key, c in self._known.items()]
+            live = {k: _as_float(c.get("lastSeen")) for k, c in self._clients.items()}
         if dropped:
             self._save_known()
-        for client in found:
-            client["isLocal"] = client["address"] in ("127.0.0.1", "::1")
-            client["secondsAgo"] = round(max(0.0, now - client["lastSeen"]), 1)
-            client["online"] = client["key"] in live
+        for record_key, client in found:
+            key = str(client.get("key") or record_key or "")
+            address = str(client.get("address") or "")
+            last_seen = _as_float(client.get("lastSeen"))
+            client["key"] = key
+            client["address"] = address
+            client["lastSeen"] = last_seen
+            client["firstSeen"] = _as_float(client.get("firstSeen")) or last_seen
+            client["isLocal"] = address in ("127.0.0.1", "::1")
+            client["secondsAgo"] = round(max(0.0, now - last_seen), 1)
+            client["online"] = key in live
             # One word for "what is this": the phone lists its peers with a
             # status chip, and it must not have to guess from the User-Agent.
             client["clientKind"] = "app" if str(client.get("kind") or "") == "app" else "browser"
             client["platform"] = "android" if client["clientKind"] == "app" else "browser"
-        found.sort(key=lambda c: c["lastSeen"], reverse=True)
-        return found
+            # 稳定身份：同一台设备的两条记录（见 _merge_record）靠它对上号。
+            # 桌面端 / 网页版 / 安卓都可以拿它再兜一层去重，别只信行数。
+            client["identityKey"] = self.identity_key(client)
+        found.sort(key=lambda item: _as_float(item[1].get("lastSeen")), reverse=True)
+        return [client for _record_key, client in found]
 
     def register_app(
         self,
@@ -1002,6 +1427,10 @@ class WebUI:
                 and str(client.get("name") or "") == str(entry.get("name") or "")
                 and other not in self._clients
             ]:
+                # 收掉旧记录，但它的键（和它当时显示的名字）要留在新记录上：
+                # 老会话的成员 id 用的是当时那个写法
+                # （``web:地址|摘要`` / ``android:<旧uuid>``）。
+                self._carry_aliases(entry, self._known.get(stale) or {})
                 self._known.pop(stale, None)
                 self._clients.pop(stale, None)
             # An earlier build of the app did not introduce itself at all, so it
@@ -1016,6 +1445,7 @@ class WebUI:
                     and client.get("address") == address
                     and is_app_agent(str(client.get("agent", "")))
                 ]:
+                    self._carry_aliases(entry, self._known.get(stale) or {})
                     self._known.pop(stale, None)
                     self._clients.pop(stale, None)
             # Serve it as a live client too, so everything that reads
@@ -1057,19 +1487,55 @@ class WebUI:
             if stored is not None and not stored.get("talked"):
                 stored["provisional"] = True
 
-    def forget_client(self, address: str, agent: str = "") -> bool:
-        """Forget one browser entirely — the phone's 「断开连接」 button.
+    def forget_client(self, address: str, agent: str = "", device_id: str = "") -> bool:
+        """Forget one browser entirely —— the phone's 「断开连接」 button.
 
         Both the live list and the remembered one: the user asked to be
         disconnected, so the desktop must stop listing it as its phone.
+
+        Since a paired browser is remembered under its device id (``web:<id>``)
+        and no longer under ``地址|UA摘要``, saying goodbye has to remove the
+        device record too -- otherwise 「断开连接」 looks like it did nothing and
+        the phone is back in the list on the next poll.  When the caller has no
+        device id (an old cached page), fall back to "the records at this
+        address whose User-Agent is this one".
         """
-        key = self.client_key(address, agent)
+        device_id = bare_device_id(device_id)
+        keys = [self.client_key(address, agent)]
+        if device_id:
+            keys += [f"web:{device_id}", f"android:{device_id}"]
+        else:
+            digest = agent_digest(agent)
+            with self._state_lock:
+                keys += [
+                    key
+                    for key, client in self._known.items()
+                    if not self._is_legacy_key(key)
+                    and bool(agent)
+                    and str(client.get("address") or "") == address
+                    and agent_digest(str(client.get("agent") or "")) == digest
+                ]
         with self._state_lock:
-            gone = self._clients.pop(key, None) is not None
-            gone = self._known.pop(key, None) is not None or gone
+            gone = False
+            for key in dict.fromkeys(keys):
+                gone = self._clients.pop(key, None) is not None or gone
+                gone = self._known.pop(key, None) is not None or gone
         if gone:
             self._save_known()
         return gone
+
+    def forget_offline_devices(self) -> int:
+        """清空"以前见过、现在不在线"的设备名单（桌面端的「清空离线设备」）。
+
+        只清这一份记忆，不动聊天记录、不动配对过的手机 —— 用户要的是"列表干净"，
+        不是"把历史删掉"。在线设备不受影响（它们下一次被发现又会回来）。
+        """
+        live = {peer.info.device_id for peer in self.engine.devices()}
+        with self._state_lock:
+            gone = [key for key in self._remembered if key not in live]
+            for key in gone:
+                self._remembered.pop(key, None)
+        return len(gone)
 
     def remove_client(self, key: str) -> bool:
         """Forget a remembered browser by key (the desktop's 移除 action)."""
@@ -1111,13 +1577,26 @@ class WebUI:
         """Browsers with the page open right now, newest activity first."""
         cutoff = time.time() - ttl
         with self._state_lock:
-            for key in [k for k, c in self._clients.items() if c["lastSeen"] < cutoff]:
+            for key in [k for k, c in self._clients.items() if _as_float(c.get("lastSeen")) < cutoff]:
                 del self._clients[key]
-            found = [dict(c) for c in self._clients.values()]
+            # 「正在说话」的表同样只能有一条：老数据里同一台设备的第二条记录
+            # 在这里被并掉，否则 /api/state 的第一份 webClients 会先于
+            # knownClients 把它露出去（state() 就是先取 clients() 的）。
+            healed = self._heal_duplicate_devices()
+            # ``_clients`` 的行本来没有 key 字段，算身份时按注册表的键补上。
+            found = [
+                dict(c, identityKey=self.identity_key(self._known.get(key) or dict(c, key=key)))
+                for key, c in self._clients.items()
+            ]
+        if healed:
+            self._save_known()
+        now = time.time()
         for client in found:
-            client["isLocal"] = client["address"] in ("127.0.0.1", "::1")
-            client["secondsAgo"] = round(max(0.0, time.time() - client["lastSeen"]), 1)
-        found.sort(key=lambda c: c["lastSeen"], reverse=True)
+            address = str(client.get("address") or "")
+            client["address"] = address
+            client["isLocal"] = address in ("127.0.0.1", "::1")
+            client["secondsAgo"] = round(max(0.0, now - _as_float(client.get("lastSeen"))), 1)
+        found.sort(key=lambda c: _as_float(c.get("lastSeen")), reverse=True)
         return found
 
     @property
@@ -1301,8 +1780,13 @@ class WebUI:
             isSelf=True,
             local=True,
             label="本机",
+            # 连本机也带这个字段：页面按 online 分「在线 / 离线」两段，
+            # 少一个键就得靠 `!== false` 兜，谁少写一处谁那一段就错。
+            online=True,
         )
         out: list[dict[str, Any]] = [local]
+        now = time.time()
+        live: set[str] = set()
         for peer in self.engine.devices():
             # A self-send makes the engine discover itself; never list it
             # twice, and never let it masquerade as a remote device.
@@ -1316,12 +1800,102 @@ class WebUI:
             # out loud, and it needs "how long ago", so it can show the same
             # 在线 / 未连接 distinction the desktop shows.
             entry["online"] = True
-            entry["secondsAgo"] = round(max(0.0, time.time() - float(entry.get("lastSeen") or 0)), 1)
+            entry["secondsAgo"] = round(max(0.0, now - float(entry.get("lastSeen") or 0)), 1)
+            live.add(str(entry.get("id") or ""))
             out.append(entry)
+            self._remember_device(entry, now)
+        # 离线：以前见过、现在不在发现表里的设备。页面把它们放在「离线」那一栏，
+        # 点开还能看到"最后在线什么时候"。
+        for device_id, snapshot in self._offline_devices(live, now):
+            out.append(snapshot)
+        # 手动添加过的地址一旦握手成功，引擎会用**真实设备号**再登记一条；那条
+        # `manual:<地址>:<端口>` 占位记录就成了幽灵行 —— 用户看到的是"同一台设备
+        # 两行"（C4）。被真实行覆盖的占位行在这里丢掉，并记进 live，免得它又从
+        # 「离线」那份记忆里冒出来。
+        out, dropped = self._drop_manual_phantoms(out)
+        live.update(dropped)
+        # 两台设备真的重名时给个编号（RealProbe / RealProbe #2）——两行一模一样的
+        # 名字，用户分不清点的是哪一台（C4 / E1，和电脑端共用 core.model 里的
+        # disambiguate_names）。
+        names = disambiguate_names(out)
+        for entry in out:
+            label = names.get(str(entry.get("id") or ""))
+            if label:
+                entry["name"] = label
         # Remote devices with a reachable web UI first, then by name: the list
         # is a picker, and the wanted entry is almost always near the top.
         out[1:] = sorted(out[1:], key=lambda d: (not d.get("webUrl", ""), d.get("name", "").lower()))
         return out
+
+    @staticmethod
+    def _drop_manual_phantoms(
+        rows: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], set[str]]:
+        """丢掉被真实设备记录覆盖掉的「手动添加」占位行。
+
+        判定要求**同端口**，并且手动那条的地址是回环地址、或者就出现在真实那条的
+        地址里 —— 一个端口不可能同时属于两台机器；加上地址这一层，局域网里两台
+        设备碰巧都用同一个端口也不会被误并（宁可留两行，也不能把两台设备并成一台）。
+        """
+        real: dict[int, set[str]] = {}
+        for row in rows:
+            if str(row.get("source") or "") == "manual":
+                continue
+            port = int(row.get("tcpPort") or row.get("port") or 0)
+            if not port:
+                continue
+            bucket = real.setdefault(port, set())
+            bucket.add(str(row.get("address") or ""))
+            for extra in row.get("addresses") or []:
+                bucket.add(str(extra))
+        kept: list[dict[str, Any]] = []
+        dropped: set[str] = set()
+        for row in rows:
+            if str(row.get("source") or "") == "manual":
+                port = int(row.get("tcpPort") or row.get("port") or 0)
+                address = str(row.get("address") or "")
+                peers = real.get(port) or set()
+                loopback = address in ("127.0.0.1", "::1", "localhost", "")
+                if peers and (loopback or address in peers):
+                    dropped.add(str(row.get("id") or ""))
+                    continue
+            kept.append(row)
+        return kept, dropped
+
+    #: 离线设备最多记这么多台、最多记这么久（内存里的一点点历史，不是数据库）。
+    REMEMBER_LIMIT = 24
+    REMEMBER_TTL = 24 * 3600.0
+
+    def _remember_device(self, entry: dict[str, Any], now: float) -> None:
+        device_id = str(entry.get("id") or "")
+        if not device_id:
+            return
+        with self._state_lock:
+            self._remembered[device_id] = {
+                "entry": dict(entry),
+                "lastSeen": now,
+            }
+            if len(self._remembered) > self.REMEMBER_LIMIT:
+                oldest = sorted(self._remembered.items(), key=lambda item: item[1]["lastSeen"])
+                for key, _value in oldest[: len(self._remembered) - self.REMEMBER_LIMIT]:
+                    self._remembered.pop(key, None)
+
+    def _offline_devices(self, live: set[str], now: float) -> list[tuple[str, dict[str, Any]]]:
+        found: list[tuple[str, dict[str, Any]]] = []
+        with self._state_lock:
+            for device_id, record in list(self._remembered.items()):
+                age = now - float(record.get("lastSeen") or 0)
+                if age > self.REMEMBER_TTL:
+                    self._remembered.pop(device_id, None)
+                    continue
+                if device_id in live:
+                    continue
+                entry = dict(record["entry"])
+                entry["online"] = False
+                entry["secondsAgo"] = round(max(0.0, age), 1)
+                found.append((device_id, entry))
+        found.sort(key=lambda item: item[1].get("secondsAgo", 0.0))
+        return found
 
     def state(self) -> dict[str, Any]:
         """Everything the app needs to draw a full frame."""
@@ -1481,6 +2055,57 @@ class WebUI:
             os.replace(spool, final)
         return final
 
+    def land_upload(
+        self,
+        spool: str,
+        name: str,
+        device_id: str = "",
+        *,
+        from_id: str = "",
+        from_name: str = "",
+    ) -> dict[str, Any]:
+        """把一次"发给自己"的上传落到接收目录，并记成已完成。
+
+        这条路上**没有对端**：不生成传输、不调 ``engine.send``。以前它会掉进
+        ``_run_send`` → ``engine.send(self_peer)`` 被"对端没有接收服务"拒掉 →
+        ``finally`` 把文件删掉，用户那边是"手机说发出去了，电脑上一个文件都没有"。
+
+        ``from_id`` / ``from_name`` 是**发件人**（那台手机）。以前这里不带发件人，
+        电脑端的「接收」列表与会话都看不到"谁给我发了什么" —— 文件落了盘却查无此人。
+        """
+        os.makedirs(self.receive_dir, exist_ok=True)
+        with self._upload_lock:
+            final = unique_path(os.path.join(self.receive_dir, os.path.basename(name)))
+            os.replace(spool, final)
+        upload = {
+            "id": uuid.uuid4().hex,
+            "name": os.path.basename(final),
+            "size": os.path.getsize(final),
+            "deviceId": device_id,
+            "deviceName": self.engine.info.name,
+            "fromId": str(from_id or ""),
+            "fromName": str(from_name or ""),
+            "status": "done",
+            "error": "",
+            "path": final,
+            "started": time.time(),
+            "finished": time.time(),
+        }
+        self._complete_upload(upload)
+        try:
+            self.engine.events.emit(
+                "web_upload_finished",
+                upload_id=upload["id"],
+                name=upload["name"],
+                path=final,
+                size=upload["size"],
+                from_id=str(from_id or ""),
+                from_name=str(from_name or ""),
+            )
+        except Exception:  # pragma: no cover - best effort
+            pass
+        return upload
+
     def start_send(self, peer: Peer, path: str, pin: str, upload: dict[str, Any]) -> str:
         """Hand a spooled file to the engine and return its transfer id.
 
@@ -1508,7 +2133,11 @@ class WebUI:
             ok = self.engine.send(peer, [path], pin=pin)
             upload["status"] = "done" if ok else "failed"
             if not ok:
-                upload["error"] = "对方拒绝或传输失败"
+                upload["error"] = (
+                    "对方没有接收这次传输：确认它正在运行韧传、和你在同一局域网；"
+                    "如果它是一台手机，请用「传输 → 接收」里的分享条目等它来取。"
+                )
+                self._emit_upload_failed(upload)
         except Exception as exc:
             upload["status"] = "failed"
             upload["error"] = str(exc)
@@ -1527,16 +2156,86 @@ class WebUI:
         finally:
             upload["finished"] = time.time()
             if not self.keep_uploads:
-                try:
-                    os.unlink(path)
-                    # Leave no trace in the user's receive directory.
-                    os.rmdir(os.path.dirname(path))
-                except OSError:
-                    pass
-            with self._state_lock:
-                self._uploads.pop(upload.get("id", ""), None)
-                self._uploads_done.append(dict(upload))
-                del self._uploads_done[:-50]
+                if upload.get("status") == "done":
+                    # 送达了：spool 只是过程文件，删掉不留痕。
+                    try:
+                        os.unlink(path)
+                        os.rmdir(os.path.dirname(path))
+                    except OSError:
+                        pass
+                else:
+                    # **失败不许销毁证据**（宪章 E3）：以前这里失败也 unlink，
+                    # 用户看到的是"上传成功但对面没收到、文件也没了"。
+                    # 现在把文件挪进接收目录，记录里写明它落在哪，用户能找到、能重试。
+                    kept = self.keep_failed_upload(path)
+                    upload["path"] = kept
+                    upload["hint"] = "文件已留在电脑的接收目录里：" + kept
+                    self._emit_upload_failed(upload)
+            self._complete_upload(upload)
+
+    def _emit_upload_failed(self, upload: dict[str, Any]) -> None:
+        """把失败推到事件流上（页面据此弹提示）——失败必须看得见。"""
+        try:
+            self.engine.events.emit(
+                "web_upload_failed",
+                upload_id=upload.get("id", ""),
+                transfer_id=upload.get("transferId", ""),
+                name=upload.get("name", ""),
+                error=str(upload.get("error") or ""),
+                path=str(upload.get("path") or ""),
+            )
+        except Exception:  # pragma: no cover - event bus is best effort
+            pass
+
+    def _complete_upload(self, upload: dict[str, Any]) -> None:
+        """一条上传记录的收尾：从"进行中"挪进"最近记录"（页面读它画那一行）。"""
+        with self._state_lock:
+            self._uploads.pop(upload.get("id", ""), None)
+            self._uploads_done.append(dict(upload))
+            del self._uploads_done[:-50]
+
+    def keep_failed_upload(self, path: str) -> str:
+        """发送失败时把文件从 spool 挪进接收目录，返回最终路径。
+
+        spool 目录是隐藏的、会被清理的临时区；失败的文件留在那里等于丢了。
+        """
+        try:
+            os.makedirs(self.receive_dir, exist_ok=True)
+            with self._upload_lock:
+                final = unique_path(os.path.join(self.receive_dir, os.path.basename(path)))
+                os.replace(path, final)
+            return final
+        except OSError:
+            return path
+
+    def classify_upload_target(self, device_id: str, address: str = "", port: int = 0) -> dict[str, Any]:
+        """这次上传是发给谁的：``self`` / ``client``（手机）/ ``peer``（协议对端）/ ``unknown``。
+
+        三条路以前挤在一条上，结果"发给自己"和"发给手机"都会掉进
+        ``engine.send``，被拒之后 spool 又被删 —— 用户看到的正是"电脑说发了、
+        手机那边什么都没有"。
+        """
+        wanted = bare_device_id(device_id)
+        mine = str(self.engine.info.device_id or "")
+        if wanted and wanted == bare_device_id(mine):
+            return {"kind": "self", "name": self.engine.info.name}
+        if wanted:
+            for client in list(self.known_clients()) + list(self.clients()):
+                if bare_device_id(client.get("deviceId")) != wanted:
+                    continue
+                return {
+                    "kind": "client",
+                    "key": str(client.get("key") or ""),
+                    "name": str(client.get("label") or client.get("name") or "手机"),
+                }
+        if device_id.startswith(("web:", "android:")):
+            # 有设备号但注册表里还没有它（刚打开页面）：按客户端处理，
+            # 发布时不指定接收方 —— 让所有已连接设备都能看到，总比文件丢了强。
+            return {"kind": "client", "key": "", "name": "手机"}
+        peer = self._find_peer(device_id, address, port)
+        if peer is not None:
+            return {"kind": "peer", "peer": peer, "name": peer.info.name}
+        return {"kind": "unknown"}
 
     def register_upload(self, upload: dict[str, Any]) -> None:
         with self._state_lock:
@@ -1712,6 +2411,27 @@ class _ThreadingServer(ThreadingHTTPServer):
     #: range does not leave a handler thread parked on a dead socket.
     request_queue_size = 128
 
+    def handle_error(self, request: Any, client_address: Any) -> None:  # noqa: D102
+        """客户端中途断连**不是错误**，别把 traceback 打到用户终端。
+
+        `socketserver` 默认在 `handle_error` 里 `traceback.print_exc()`，于是
+        "手机把请求取消了""手机切走了 Wi-Fi"这类完全正常的事，会在用户终端里
+        刷出一整段二十行的红字 —— 用户会以为程序坏了（真实反馈："终端里有很多报错"）。
+
+        这里把三类**正常的连接结束**降成一行 debug：连接被对方重置、管道断开、
+        读写超时（安卓的 HTTP 客户端在后台被冻结时就是这个样子）。其余异常仍走
+        我们的 logger 记 warning + traceback，方便真出问题时排查 ——
+        但**不再直接吐到 stderr**，用户终端保持干净。
+        """
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)):
+            log.debug("客户端断开（正常）：%s", client_address)
+            return
+        if isinstance(exc, (TimeoutError, socket.timeout)):
+            log.debug("连接超时（正常）：%s", client_address)
+            return
+        log.warning("处理请求时出错（%s）：%s", client_address, exc, exc_info=True)
+
 
 class _Handler(BaseHTTPRequestHandler):
     """One request.
@@ -1872,6 +2592,19 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/devices":
             self._send_json(HTTPStatus.OK, {"ok": True, "devices": ui._devices()})
             return
+        if path == "/api/shares":
+            # 手机（网页版与 App）的取文件入口：一份只说"有哪些文件等你取"的小响应。
+            # forKey 语义与 /api/state 一致 —— 指定给某台设备的分享只有它看得见，
+            # 没指定接收方的（电脑端「发送给手机」）所有已连接设备都能看到。
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "shares": ui.shares(for_key=self._self_client_key(ui)),
+                    "total": len(ui._shares),
+                },
+            )
+            return
         if path == "/api/files":
             files = ui.list_files()
             self._send_json(
@@ -1935,7 +2668,12 @@ class _Handler(BaseHTTPRequestHandler):
                 forgotten = self.server_ui.forget_client(
                     self.client_address[0] if self.client_address else "",
                     self.headers.get("User-Agent", ""),
+                    device_id=self.headers.get("X-EverSend-Device", ""),
                 )
+                self._send_json(HTTPStatus.OK, {"ok": True, "forgotten": forgotten})
+                return
+            if path == "/api/devices/forget-offline":
+                forgotten = ui.forget_offline_devices()
                 self._send_json(HTTPStatus.OK, {"ok": True, "forgotten": forgotten})
                 return
             if path == "/api/upload":
@@ -2137,8 +2875,12 @@ class _Handler(BaseHTTPRequestHandler):
         body = json.dumps(payload, ensure_ascii=False, default=_jsonable).encode("utf-8")
         self._send_bytes(status, body, _JSON_TYPE)
 
-    def _fail(self, status: int, message: str) -> None:
+    def _fail(self, status: int, message: str, extra: dict[str, Any] | None = None) -> None:
         """Errors are JSON for the API and text for everything else.
+
+        ``extra`` 是给客户端的**可执行信息**（宪章 E3：失败要带下一步）：
+        手机端拿它把一句"失败"变成用户看得懂、能照做的一句话。``error`` 这个键
+        本身一个字都不改 —— 老客户端读的就是它。
 
         A failed request may still have an unread body; keeping the connection
         alive would make the next parse read those bytes as a request, so the
@@ -2146,7 +2888,10 @@ class _Handler(BaseHTTPRequestHandler):
         """
         if self.command == "POST":
             self.close_connection = True
-        body = json.dumps({"ok": False, "error": message}, ensure_ascii=False).encode("utf-8")
+        payload: dict[str, Any] = {"ok": False, "error": message}
+        if extra:
+            payload.update(extra)
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         content_type = _JSON_TYPE
         if not (self.path or "").startswith("/api/"):
             body = message.encode("utf-8")
@@ -2216,8 +2961,14 @@ class _Handler(BaseHTTPRequestHandler):
             extra={
                 # A stale page would carry a stale CSRF token, so the shell is
                 # never cached; the assets it pulls in are.
+                #
+                # media-src / img-src 的 blob: 必须显式写出来（Chromium 不把
+                # blob: 算进 'self'）：待发文件是本机选的，缩略图、视频封面帧、
+                # 预览都走 blob URL。不写这两条时 <video>/<audio>/<img> 全都加载
+                # 不了，浏览器只报 "Media load rejected by URL safety check"。
                 "Content-Security-Policy": (
-                    "default-src 'none'; img-src 'self' data:; "
+                    "default-src 'none'; img-src 'self' data: blob:; "
+                    "media-src 'self' blob:; "
                     "style-src 'self' 'unsafe-inline'; script-src 'self'; "
                     "connect-src 'self'; base-uri 'none'; form-action 'none'; "
                     "frame-ancestors 'none'"
@@ -2271,17 +3022,66 @@ class _Handler(BaseHTTPRequestHandler):
     # -- downloads ---------------------------------------------------------
 
     def _send_share(self, share_id: str) -> None:
-        """Stream a file the desktop published for the browser.
+        """手机来取一个电脑发布出来的文件（`GET /api/share/<id>`）。
 
-        Marked as downloaded once the whole file has gone out, so the desktop
-        can show "手机已取走" instead of guessing.
+        **进度语义**（这一条是本轮真机问题的核心）：手机是纯 HTTP 客户端，
+        电脑推不过去，所以"传到哪了"只有服务端知道。这里把
+        ``start + 本次已发出的字节数`` 报给 `note_share_progress` —— 分几次
+        Range 请求续传时，它是**总体进度**，不是某一段的进度；而且
+        `note_share_progress` 本身只增不减（乱序重试、从头重下都不会让进度倒退）。
+
+        **什么时候算"取完了"**：只有整个文件都发出去过才算 —— 一次只发了
+        中间一段（Range 206）就写 `downloaded=True` 是错的，电脑端会显示
+        "手机已取走"，而手机只拿到半截。
         """
+        ui = self.server_ui
         share_id = urllib.parse.unquote(share_id)
-        path = self.server_ui.share_path(share_id)
-        if path is None:
-            self._fail(HTTPStatus.NOT_FOUND, "这个文件已经不在分享列表里了")
+        state, path, name = ui.share_lookup(share_id)
+        if state == "missing":
+            self._fail(
+                HTTPStatus.NOT_FOUND,
+                "这个文件已经不在分享列表里了（分享条目过期或被顶掉），让电脑重新发一次。",
+            )
             return
-        self._stream_file(path, on_complete=lambda: self.server_ui.mark_share_downloaded(share_id))
+        if state == "gone":
+            self._fail(
+                HTTPStatus.NOT_FOUND,
+                "文件「" + (name or "这个文件") + "」已经不在了：它在电脑上被删掉或移走了，让电脑重新发一次。",
+            )
+            return
+
+        try:
+            total = int(os.path.getsize(path))
+        except OSError:
+            self._fail(HTTPStatus.NOT_FOUND, "文件读不到了：请让电脑重新发一次。")
+            return
+
+        # 这次请求要发的是哪一段（和 _stream_file 用同一个解析器，判定不会打架）。
+        start, end = 0, max(0, total - 1)
+        range_header = self.headers.get("Range", "")
+        if range_header and _range_unsatisfiable(range_header, total):
+            # 这一段要不到：让 _stream_file 回 416 + 中文说明（含 Content-Range）。
+            self._stream_file(path, on_progress=None)
+            return
+        if range_header:
+            parsed = _parse_range(range_header, total)
+            if parsed is not None:
+                start, end = parsed
+            # 解析不出来（多段、写坏了）就当整文件发：whole=True，进度照样对。
+
+        def note(sent_now: int) -> None:
+            # 总体进度 = 这一段的起点 + 这一段已经发出去多少。
+            ui.note_share_progress(share_id, min(total, start + sent_now) if total else start + sent_now)
+            if total and start + sent_now >= total:
+                # 续传把最后一段补齐了：这才是真的取完。
+                ui.mark_share_downloaded(share_id)
+
+        whole = start == 0 and end >= max(0, total - 1)
+        self._stream_file(
+            path,
+            on_complete=(lambda: ui.mark_share_downloaded(share_id)) if whole else None,
+            on_progress=note,
+        )
 
     def _send_apk(self) -> None:
         """``GET /apk``: hand the Android installer to a phone.
@@ -2310,7 +3110,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._stream_file(path)
 
-    def _stream_file(self, path: str, on_complete=None) -> None:
+    def _stream_file(self, path: str, on_complete=None, on_progress=None) -> None:
         """Send one local file, honouring a single-range ``Range`` header."""
         try:
             size = os.path.getsize(path)
@@ -2321,18 +3121,27 @@ class _Handler(BaseHTTPRequestHandler):
         start, end = 0, size - 1
         status = HTTPStatus.OK
         range_header = self.headers.get("Range", "")
+        if range_header and _range_unsatisfiable(range_header, size):
+            # 规则上要不到的那一段：416 + 一句中文 + Content-Range（标准做法）。
+            # 以前这里回的是空 body，手机只看到状态码，日志里也说不出所以然。
+            message = (
+                "Range " + range_header + " 要不到：这个文件一共 " + str(size) + " 字节，"
+                "请从 0 到 " + str(max(0, size - 1)) + " 之间取，或者不带 Range 直接下整个文件。"
+            )
+            self._send_bytes(
+                HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
+                message.encode("utf-8"),
+                "text/plain; charset=utf-8",
+                extra={"Content-Range": f"bytes */{size}", "Accept-Ranges": "bytes"},
+            )
+            return
         if range_header:
             parsed = _parse_range(range_header, size)
-            if parsed is None:
-                self._send_bytes(
-                    HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
-                    b"",
-                    "text/plain; charset=utf-8",
-                    extra={"Content-Range": f"bytes */{size}", "Accept-Ranges": "bytes"},
-                )
-                return
-            start, end = parsed
-            status = HTTPStatus.PARTIAL_CONTENT
+            if parsed is not None:
+                start, end = parsed
+                status = HTTPStatus.PARTIAL_CONTENT
+            # 解析不出来（多段 / 写坏了）就忽略这个头、整个文件照发 —— HTTP 的规矩，
+            # 也是下载管理器（它们爱发多段）不被打回 416 的原因。
 
         length = max(0, end - start + 1)
         filename = os.path.basename(path)
@@ -2372,6 +3181,12 @@ class _Handler(BaseHTTPRequestHandler):
                         break
                     self.wfile.write(block)
                     remaining -= len(block)
+                    if on_progress is not None:
+                        # 报进度本身不能把传输搞挂：手机那边断了就算了。
+                        try:
+                            on_progress(length - remaining)
+                        except Exception:
+                            on_progress = None
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             self.close_connection = True
         if remaining == 0 and on_complete is not None:
@@ -2415,17 +3230,36 @@ class _Handler(BaseHTTPRequestHandler):
                 + "\n\n"
             )
             last_beat = time.monotonic()
+            # 一条**开着的**事件流就说明"这台设备还在"。
+            #
+            # 以前只有离散的 HTTP 请求才会 touch_client，于是手机端那个保活服务
+            # 一旦把 SSE 挂上（它设计上就该一直挂着），主循环就阻塞在事件流里、
+            # 心跳请求再也发不出去；而这边 15 秒没收到请求就判离线 —— 用户看到的
+            # 是"手机明明连着、电脑端却显示未连接 / 最后在线 X 分钟前"，发给它的
+            # 文件被当成离线留着。安卓仪器测试 keepAliveServiceStaysOnline 抓的
+            # 就是这个。
+            #
+            # 每 CLIENT_TTL 的一半碰一次，留一倍余量：不能只在 ping 的时候碰，
+            # SSE_HEARTBEAT(15s) 并不比 CLIENT_TTL(15s) 短。
+            last_touch = 0.0
             while not ui._stop.is_set():
                 try:
                     event = mailbox.get(timeout=1.0)
                 except queue.Empty:
                     event = None
+                now = time.monotonic()
+                if now - last_touch >= CLIENT_TTL / 2:
+                    last_touch = now
+                    ui.touch_client(
+                        self.client_address[0] if self.client_address else "",
+                        self.headers.get("User-Agent", ""),
+                        device_id=self.headers.get("X-EverSend-Device", ""),
+                    )
                 if event is not None:
                     self._sse_write(
                         "data: " + json.dumps(event_dict(event), ensure_ascii=False, default=_jsonable) + "\n\n"
                     )
                     continue
-                now = time.monotonic()
                 if now - last_beat >= SSE_HEARTBEAT:
                     last_beat = now
                     # The heartbeat is what keeps NAT tables and Android's
@@ -2447,6 +3281,30 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- mutating endpoints ------------------------------------------------
 
+    def _accept_upload_body(self, ui, spool: str, declared: int | None) -> int | None:
+        """把上传的请求体流式写进 ``spool``；失败时清理并抛出。
+
+        三类目标（self / client / peer）都要先把字节收下来，所以只写这一份。
+        返回写入的字节数；``declared`` 是 Content-Length（可能没有）。
+        """
+        written = 0
+        try:
+            with open(spool, "wb", buffering=0) as handle:
+                for chunk in self._iter_body(ui.max_upload_bytes):
+                    handle.write(chunk)
+                    written += len(chunk)
+            if written == 0 and declared != 0:
+                raise _BadRequest("请求体为空")
+        except BaseException:
+            # Any failure -- a sleeping phone, a disk error, a refused body --
+            # must not leave a spool file behind.
+            try:
+                os.unlink(spool)
+            except OSError:
+                pass
+            raise
+        return written
+
     def _receive_upload(self, query: dict[str, list[str]]) -> None:
         """``POST /api/upload``: the body *is* the file.
 
@@ -2465,7 +3323,6 @@ class _Handler(BaseHTTPRequestHandler):
         # -- the caller never names a path on this machine, which is what keeps
         # this safe to expose to the LAN (unlike /api/share, which is loopback
         # only for exactly that reason).
-        phone_key = device_id[4:] if device_id.startswith("web:") else ""
         try:
             port = int((query.get("port") or ["0"])[0] or 0)
         except ValueError:
@@ -2475,12 +3332,21 @@ class _Handler(BaseHTTPRequestHandler):
         if not clean:
             raise _BadRequest("缺少合法的文件名 (name)")
 
-        peer = ui._find_peer(device_id, address, port)
-        if peer is None:
-            self._fail(HTTPStatus.NOT_FOUND, "未找到目标设备，请让对方保持在线后重新扫描")
+        # 目标分三类，路由完全不同（以前只有"对端"这一类，另外两类都掉进
+        # engine.send 里，然后 spool 被 finally 删掉 —— 用户看到"202 之后文件蒸发"）：
+        #   self   → 发给自己 = **本地落地**，不走网络；
+        #   client → 发给手机（App / 浏览器）：它没有接收服务，只能发布到分享表等它来取；
+        #   peer   → 协议对端，才是真正的一次 engine.send。
+        target = ui.classify_upload_target(device_id, address, port)
+        if target["kind"] == "unknown":
+            self._fail(
+                HTTPStatus.NOT_FOUND,
+                "未找到目标设备，请让对方保持在线后重新扫描",
+                extra={"hint": "让对方打开韧传（或手机页面）再点一次「扫描」；也可以用「扫描 ▾ › 手动输入地址」直接填它的 IP。"},
+            )
             return
 
-        # Refuse before writing a byte if the disk cannot hold the file.
+        # 空间预检与 spool 准备对所有目标都一样：**先拒绝再写**，比写一半失败好。
         declared = self._body_length()
         if declared is not None:
             available = free_space(ui.receive_dir)
@@ -2490,46 +3356,61 @@ class _Handler(BaseHTTPRequestHandler):
                     f"接收目录剩余空间不足（需要 {declared} 字节，可用 {available} 字节）",
                 )
                 return
-
         spool = ui.spool_path(clean)
-        written = 0
-        try:
-            with open(spool, "wb", buffering=0) as handle:
-                for chunk in self._iter_body(ui.max_upload_bytes):
-                    handle.write(chunk)
-                    written += len(chunk)
-            if written == 0 and declared != 0:
-                raise _BadRequest("请求体为空")
-            final = ui.finish_upload(spool)
-        except BaseException:
-            # Any failure -- a sleeping phone, a disk error, a refused body --
-            # must not leave a spool file behind.
-            try:
-                os.unlink(spool)
-            except OSError:
-                pass
-            raise
+        written = self._accept_upload_body(ui, spool, declared)
+
+        if target["kind"] == "self":
+            # "发给我自己" = 本地落地：不生成传输、不调 engine.send。
+            # 带上发件人（那台手机），否则电脑端「接收」列表里这一行没有来源。
+            sender_id = self._self_client_id(ui)
+            sender_name = self._self_client_name(ui)
+            upload = ui.land_upload(
+                spool,
+                clean,
+                device_id=str(ui.engine.info.device_id),
+                from_id=sender_id,
+                from_name=sender_name,
+            )
+            self._send_json(
+                HTTPStatus.ACCEPTED,
+                {"ok": True, "uploadId": upload["id"], "name": upload["name"],
+                 "size": upload["size"], "path": upload.get("path", ""), "local": True},
+            )
+            return
+
+        peer = target.get("peer")
+        final = ui.finish_upload(spool)
 
         upload = {
             "id": uuid.uuid4().hex,
             "name": os.path.basename(final),
             "size": written,
             "deviceId": peer.info.device_id if peer is not None else device_id,
-            "deviceName": peer.info.name if peer is not None else "手机",
+            "deviceName": peer.info.name if peer is not None else str(target.get("name") or "手机"),
             "status": "queued",
             "error": "",
             "started": time.time(),
             "finished": 0.0,
         }
-        if peer is None and phone_key:
-            shared = ui.share_files([final], only_key=phone_key)
+        if target["kind"] == "client":
+            # 手机没有接收服务：发布到分享表，等它自己来取（进度、回执都在那条路上）。
+            shared = ui.share_files([final], only_key=str(target.get("key") or ""))
             if not shared:
-                self._fail(HTTPStatus.NOT_FOUND, "这台手机不在已配对的列表里")
+                self._fail(
+                    HTTPStatus.NOT_FOUND,
+                    "文件没能发布给这台手机：" + str(target.get("name") or device_id),
+                    extra={"hint": "让它在设备列表里显示为「已连接」，然后重发一次。"},
+                )
                 return
             upload["status"] = "handed-off"
+            upload["deviceName"] = str(target.get("name") or "手机")
+            upload["shareId"] = shared[0]["id"]
             upload["finished"] = time.time()
             ui.register_upload(upload)
-            self._send_json(HTTPStatus.ACCEPTED, {"ok": True, "upload": upload, "handedOff": True})
+            self._send_json(
+                HTTPStatus.ACCEPTED,
+                {"ok": True, "upload": upload, "handedOff": True, "shareId": shared[0]["id"]},
+            )
             return
         ui.register_upload(upload)
         transfer_id = ui.start_send(peer, final, pin, upload)
@@ -2547,6 +3428,29 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- chat --------------------------------------------------------------
 
+    def _self_client_name(self, ui) -> str:
+        """这台手机自称的名字（``V2408A``），拿不到才退回"安卓 App/网页版"。
+
+        以前消息署名直接用 ``describe_agent(User-Agent)``，于是手机发来的每一句
+        都写着「安卓 App」—— 用户看到的却是设备列表里的 V2408A，同一个人两个名字。
+        """
+        try:
+            clients = ui.known_clients()
+        except Exception:
+            clients = []
+        address = self.client_address[0] if self.client_address else ""
+        device_id = bare_device_id(self.headers.get("X-EverSend-Device", ""))
+        agent = self.headers.get("User-Agent", "")
+        for client in clients:
+            same_device = device_id and str(client.get("deviceId") or "") == device_id
+            same_address = bool(address) and str(client.get("address") or "") == address
+            if not (same_device or same_address):
+                continue
+            name = str(client.get("name") or "").strip()
+            if name and name not in ("未知设备",):
+                return name
+        return describe_agent(agent) or "手机"
+
     def _self_client_id(self, ui) -> str:
         """A stable id for *this* phone inside conversations.
 
@@ -2556,12 +3460,23 @@ class _Handler(BaseHTTPRequestHandler):
         """
         address = self.client_address[0] if self.client_address else ""
         agent = self.headers.get("User-Agent", "")
-        device_id = self.headers.get("X-EverSend-Device", "").strip()
+        device_id = bare_device_id(self.headers.get("X-EverSend-Device", ""))
         if device_id:
             # 稳定身份：换网络、换 IP 都还是这台设备，会话不会分身。
             # （原生 App 走 /api/hello 登记成 android:<id>，网页版这里就是
-            #   web:<id>，两边各自稳定。）
+            #   web:<id>，两边各自稳定。）前缀只留一个，不能拼成 web:web:<id>。
             return "web:" + device_id
+        # 没带设备号的请求：如果这个地址上登记过一台 App，就用它的设备号 ——
+        # 否则同一个手机在这一条请求上会写成"地址:空摘要"，聊天记录又多一段。
+        try:
+            for client in ui.known_clients():
+                if str(client.get("address") or "") != address:
+                    continue
+                known_id = str(client.get("deviceId") or "")
+                if known_id:
+                    return "web:" + known_id
+        except Exception:
+            pass
         key = ui.client_key(address, agent)
         return "web:" + key
 
@@ -2619,17 +3534,25 @@ class _Handler(BaseHTTPRequestHandler):
         for client in ui.known_clients():
             if not client.get("key"):
                 continue
-            is_app = str(client.get("kind") or "") == "app"
-            parts = ["安卓 App" if is_app else "网页版"]
-            if client.get("version"):
-                parts.append(f"韧传 {client['version']}")
-            if client.get("address"):
-                parts.append(str(client["address"]))
-            label = f"{client.get('label') or '手机'}（{' · '.join(parts)}）"
+            label = client_label(client)
             # 会话里的成员 id 可能是 android:<id>、web:<id> 或 地址|UA摘要，
             # 都指同一台手机 —— 见 core.chat.client_aliases 的注释。
+            # （``client_aliases()`` 现在也会把记录里的 ``aliases`` 一起展开，
+            #   所以这一轮会把老键也写成"现在的名字"。）
             for alias in client_aliases(client):
                 labels[alias] = label
+            # 归并掉的旧身份（``aliases``）：那条记录已经不在了，会话里存的还是
+            # 当时的写法（``web:127.0.0.1|d2445430``）。名字要用**当时**那个
+            # （``aliasLabels``），那段 289 条消息的老会话才不会因为一次归并就
+            # 改名。当前身份（key/deviceId）仍然用现在的名字。
+            #
+            # 必须**盖在**上面那一轮之后，而且用赋值不能用 ``setdefault``：
+            # ``client_aliases()`` 已经把老键写进 labels 了，setdefault 永远
+            # 不会生效 —— 老会话就会显示成这台设备现在的名字。
+            for alias in ui._record_aliases(client):
+                alias_label = ui._alias_label(client, alias)
+                for name in client_aliases({"key": alias}):
+                    labels[name] = alias_label
         for peer in engine.devices():
             info = peer.info
             parts = [str(info.platform or "未知系统")]
@@ -2745,7 +3668,7 @@ class _Handler(BaseHTTPRequestHandler):
                 },
                 "msg": {
                     "sender": sender,
-                    "senderName": describe_agent(self.headers.get("User-Agent", "")) or "手机",
+                    "senderName": self._self_client_name(ui),
                     "kind": kind,
                     "text": text,
                 },
@@ -2805,7 +3728,7 @@ class _Handler(BaseHTTPRequestHandler):
         # The message goes through the engine so it lands in exactly the same
         # store (and reaches the same peers) as one typed on the desktop.
         sender = self._self_client_id(ui)
-        sender_name = describe_agent(self.headers.get("User-Agent", "")) or "手机"
+        sender_name = self._self_client_name(ui)
         conv = engine.chat.conversation(conv_id) or {}
         members = list(conv.get("members") or [engine.info.device_id, sender])
         if sender not in members:
@@ -2837,19 +3760,65 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.ACCEPTED, {"ok": True, **result})
 
     def _send_chat_media(self, message_id: str) -> None:
-        """Serve an attachment by message id (Range-capable)."""
+        """按消息 id 取附件（Range 可用）。
+
+        **文件类消息的字节走的是分享通道**（电脑发布 → 手机来取）：真机上抓到过
+        一条 `kind=file` 的消息 `media_rel=''`（桌面还没把相对路径写进来），而同一份
+        文件**已经在分享表里**，于是 App 的「保存」永远 404 —— 用户看到的是"电脑
+        说发了、我这儿没有"。
+
+        现在的查找顺序（一个入口，不是两条各说各话的路）：
+
+        1. 消息有 ``mediaRel`` → 照旧从接收目录流式返回（聊天附件一直是这条路）；
+        2. 没有 ``mediaRel``（或它指向的文件不在了）但**分享表里有同一份文件**
+           （按 ``mediaSource`` 绝对路径，退一步按 名字+大小 匹配）→ 交给
+           :meth:`_send_share` 发：进度、Range 续传、完成回执都在那条路上，
+           不会出现"另一个入口没有进度"；
+        3. 都没有 → 404，但带 ``hint`` / ``shareId``，让 App 能说出下一步。
+        """
         ui = self.server_ui
         message = ui.engine.chat.message(urllib.parse.unquote(message_id))
-        if message is None or not message.get("mediaRel"):
-            self._fail(HTTPStatus.NOT_FOUND, "没有这条附件")
+        if message is None:
+            self._fail(
+                HTTPStatus.NOT_FOUND,
+                "没有这条消息：它可能已经被清理了。",
+                extra={"hint": "刷新会话列表；如果记录还在，让电脑重新发一次。", "shareId": None},
+            )
             return
-        path = os.path.join(ui.receive_dir, message["mediaRel"])
-        real = os.path.realpath(path)
-        root = os.path.realpath(ui.receive_dir)
-        if not (real == root or real.startswith(root + os.sep)) or not os.path.isfile(real):
-            self._fail(HTTPStatus.NOT_FOUND, "附件不在接收目录里")
-            return
-        self._stream_file(real)
+
+        share_id = ui.find_share_for_message(message)
+        if share_id:
+            state, _path, name = ui.share_lookup(share_id)
+            if state == "ok":
+                self._send_share(share_id)
+                return
+            if state == "gone":
+                self._fail(
+                    HTTPStatus.NOT_FOUND,
+                    "文件「" + (name or message.get("mediaName") or "这个文件") + "」在电脑上被删掉或移走了。",
+                    extra={"hint": "让电脑重新发一次。", "shareId": share_id},
+                )
+                return
+
+        relative = str(message.get("mediaRel") or "")
+        if relative:
+            path = os.path.join(ui.receive_dir, relative)
+            real = os.path.realpath(path)
+            root = os.path.realpath(ui.receive_dir)
+            if (real == root or real.startswith(root + os.sep)) and os.path.isfile(real):
+                self._stream_file(real)
+                return
+
+        # 走到这里：既没有可服务的相对路径，分享表里也没有它。
+        self._fail(
+            HTTPStatus.NOT_FOUND,
+            "这条消息没有可下载的附件。",
+            extra={
+                "hint": "文件可能还在电脑上。让电脑重新发一次，或者在「传输 → 接收」里找它的分享条目。",
+                "shareId": share_id or None,
+                "name": str(message.get("mediaName") or ""),
+            },
+        )
 
     def _is_loopback_client(self) -> bool:
         """True when this request came from this very machine."""
@@ -2935,12 +3904,33 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, {"ok": True, "device": peer_dict(peer)})
 
 
-def _parse_range(header: str, size: int) -> tuple[int, int] | None:
-    """Parse a single-range ``Range`` header, or ``None`` if unsatisfiable.
+def _range_unsatisfiable(header: str, size: int) -> bool:
+    """这个 Range 头是不是"格式对、但要的那一段不存在"（该回 416 的那种）。
 
-    Multi-range requests are answered with the whole file instead: the phone
-    downloads a single file at a time and a correct multipart/byteranges reply
-    is a lot of code for a case that never happens.
+    HTTP 里两件事必须分开（以前都当成 416，下载管理器发个多段请求就拿到一个
+    看不懂的错误）：
+
+    * **不合法/用不上**（不是 bytes=、多段、写坏了）→ 忽略它，整个文件照发（200）；
+    * **合法但要不到**（起点 ≥ 文件长度、后缀长度为 0）→ 416 + 中文说明 + Content-Range。
+    """
+    if not header.startswith("bytes=") or "," in header:
+        return False
+    spec = header[len("bytes=") :].strip()
+    start_text, _, end_text = spec.partition("-")
+    try:
+        if not start_text:                      # 后缀范围：最后 N 字节
+            return int(end_text) <= 0
+        return int(start_text) >= size
+    except ValueError:
+        return False
+
+
+def _parse_range(header: str, size: int) -> tuple[int, int] | None:
+    """Parse a single-range ``Range`` header, or ``None`` if it cannot be used.
+
+    ``None`` 的含义是"忽略这个头、按整个文件发"（多段请求也走这条路：手机一次
+    只下一个文件，为它写一个完整的 multipart/byteranges 不值当）。真正"要不到"
+    的情况由 :func:`_range_unsatisfiable` 判定，回 416。
     """
     if not header.startswith("bytes=") or "," in header:
         return None

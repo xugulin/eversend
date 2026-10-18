@@ -1,0 +1,850 @@
+{
+  "label": "m9-final2",
+  "when": "2026-09-26 21:52:04",
+  "repo": {
+    "when": "2026-09-26 21:52:04",
+    "loadavg": [
+      0.61,
+      0.87,
+      0.96
+    ],
+    "cpu_count": 16,
+    "head": "c3245e6",
+    "dirty_count": 170,
+    "dirty": [
+      "README.md",
+      "android/app/src/androidTest/java/cn/eversend/app/DiscoveryAndActionsTest.kt",
+      "android/app/src/androidTest/java/cn/eversend/app/EverSendInstrumentedTest.kt",
+      "android/app/src/androidTest/java/cn/eversend/app/FetchAndSaveTest.kt",
+      "android/app/src/main/AndroidManifest.xml",
+      "android/app/src/main/java/cn/eversend/app/ApiClient.kt",
+      "android/app/src/main/java/cn/eversend/app/Discovery.kt",
+      "android/app/src/main/java/cn/eversend/app/EverSendApp.kt",
+      "android/app/src/main/java/cn/eversend/app/Fetch.kt",
+      "android/app/src/main/java/cn/eversend/app/LinkService.kt",
+      "android/app/src/main/java/cn/eversend/app/MainActivity.kt",
+      "docs/ENTERPRISE_CHARTER.md",
+      "docs/PROTOCOL.md",
+      "docs/REAL_DEVICE_FINDINGS.md",
+      "docs/UI_LAYOUT.md",
+      "docs/screenshots/01-send.png",
+      "docs/screenshots/01-session.png",
+      "docs/screenshots/02-transfers.png",
+      "docs/screenshots/03-receive.png",
+      "docs/screenshots/04-settings.png",
+      "docs/screenshots/05-qr.png",
+      "docs/screenshots/06-chat.png",
+      "docs/screenshots/07-preview.png",
+      "docs/screenshots/08-preview-image.png",
+      "docs/screenshots/09-emoji-and-sections.png",
+      "docs/screenshots/10-offline-devices.png",
+      "docs/screenshots/11-sections-collapsed.png",
+      "docs/screenshots/12-emoji-in-bubble.png",
+      "docs/screenshots/12-transfers-failed.png",
+      "docs/screenshots/13-one-row-per-file.png",
+      "docs/screenshots/13-settings-top.png",
+      "docs/screenshots/14-transfer-record-in-chat.png",
+      "docs/screenshots/15-settings-maintenance.png",
+      "docs/screenshots/16-one-phone-one-row.png",
+      "docs/screenshots/android-app-auto-discovery-drawer.png",
+      "docs/screenshots/android-app-auto-discovery.png",
+      "docs/screenshots/android-app-chat.png",
+      "docs/screenshots/android-app-clear-offline-empty.png",
+      "docs/screenshots/android-app-clear-offline.png",
+      "docs/screenshots/android-app-composer-tiles.png",
+      "docs/screenshots/android-app-conversation.png",
+      "docs/screenshots/android-app-device-sections-offline.png",
+      "docs/screenshots/android-app-device-sections.png",
+      "docs/screenshots/android-app-emoji-message.png",
+      "docs/screenshots/android-app-emoji-pad.png",
+      "docs/screenshots/android-app-file-actions.png",
+      "docs/screenshots/android-app-image-viewer.png",
+      "docs/screenshots/android-app-one-device-one-row.png",
+      "docs/screenshots/android-app-one-row-per-file.png",
+      "docs/screenshots/android-app-preview-image.png",
+      "docs/screenshots/android-app-preview-text.png",
+      "docs/screenshots/android-app-preview-video.png",
+      "docs/screenshots/android-app-sections-collapsed.png",
+      "docs/screenshots/android-app-settings.png",
+      "docs/screenshots/android-app-sidebar.png",
+      "docs/screenshots/android-app-transfer-row-actions.png",
+      "docs/screenshots/android-app-transfers-send.png",
+      "docs/screenshots/android-app-transfers.png",
+      "docs/screenshots/android-app-wide-sidebar.png",
+      "docs/screenshots/android-instrumented.txt",
+      "docs/screenshots/archive-preoverhaul/",
+      "docs/screenshots/before-after-01-session-before.jpg",
+      "docs/screenshots/before-after-02-transfers-before.jpg",
+      "docs/screenshots/before-after-03-session-after.jpg",
+      "docs/screenshots/qa-web-mobile.png",
+      "docs/screenshots/qa-web-settings.png",
+      "docs/screenshots/qa-web-transfers.png",
+      "docs/screenshots/qa-web-wide.png",
+      "docs/screenshots/web-01-session-wide.png",
+      "docs/screenshots/web-02-transfers-wide.png",
+      "docs/screenshots/web-03-session-narrow.png",
+      "docs/screenshots/web-04-transfers-narrow.png",
+      "docs/screenshots/web-05-drawer-narrow.png",
+      "docs/screenshots/web-06-settings-wide.png",
+      "docs/screenshots/web-07-file-menu-wide.png",
+      "docs/screenshots/web-08-failed-transfer-wide.png",
+      "docs/screenshots/web-09-connect-phone-qr.png",
+      "docs/screenshots/web-10-upload-in-progress-wide.png",
+      "docs/screenshots/web-11-settings-light.png",
+      "src/eversend/core/chat.py",
+      "src/eversend/core/chunkstore.py",
+      "src/eversend/core/constants.py",
+      "src/eversend/core/discovery.py",
+      "src/eversend/core/engine.py",
+      "src/eversend/core/hashing.py",
+      "src/eversend/core/mdns.py",
+      "src/eversend/core/model.py",
+      "src/eversend/core/platform_open.py",
+      "src/eversend/core/server.py",
+      "src/eversend/core/transfer.py",
+      "src/eversend/desktop/app.py",
+      "src/eversend/desktop/bridge.py",
+      "src/eversend/desktop/chat_view.py",
+      "src/eversend/desktop/i18n.py",
+      "src/eversend/desktop/icons.py",
+      "src/eversend/desktop/main_window.py",
+      "src/eversend/desktop/peer_header.py",
+      "src/eversend/desktop/preview.py",
+      "src/eversend/desktop/session_view.py",
+      "src/eversend/desktop/sidebar.py",
+      "src/eversend/desktop/theme.py",
+      "src/eversend/desktop/transfers_view.py",
+      "src/eversend/desktop/widgets.py",
+      "src/eversend/web/assets/app.css",
+      "src/eversend/web/assets/app.js",
+      "src/eversend/web/assets/index.html",
+      "src/eversend/web/assets/theme.js",
+      "src/eversend/web/selftest.py",
+      "src/eversend/web/server.py",
+      "tests/reports/",
+      "tests/screenshots/01-send.png",
+      "tests/screenshots/01-session.png",
+      "tests/screenshots/02-transfers-send.png",
+      "tests/screenshots/02-transfers.png",
+      "tests/screenshots/03-receive.png",
+      "tests/screenshots/03-transfers-receive.png",
+      "tests/screenshots/04-settings.png",
+      "tests/screenshots/05-qr.png",
+      "tests/screenshots/06-chat.png",
+      "tests/screenshots/07-preview.png",
+      "tests/screenshots/08-preview-image.png",
+      "tests/screenshots/09-emoji-and-sections.png",
+      "tests/screenshots/10-offline-devices.png",
+      "tests/screenshots/11-sections-collapsed.png",
+      "tests/screenshots/12-emoji-in-bubble.png",
+      "tests/screenshots/12-transfers-failed.png",
+      "tests/screenshots/13-one-row-per-file.png",
+      "tests/screenshots/13-settings-bottom.png",
+      "tests/screenshots/13-settings-top.png",
+      "tests/screenshots/14-transfer-record-in-chat.png",
+      "tests/screenshots/15-settings-maintenance.png",
+      "tests/screenshots/16-one-phone-one-row.png",
+      "tests/screenshots/17-header-phone-activity.png",
+      "tests/screenshots/17-sidebar-phone-first.png",
+      "tests/screenshots/17-transfers-phone.png",
+      "tests/screenshots/20-preview-image.png",
+      "tests/screenshots/20b-preview-image-actual.png",
+      "tests/screenshots/21-preview-text.png",
+      "tests/screenshots/22-preview-binary.png",
+      "tests/screenshots/23-session-bubbles-and-queue.png",
+      "tests/screenshots/24-staged-tiles.png",
+      "tests/screenshots/25-bubble-file-menu.png",
+      "tests/screenshots/26-file-properties.png",
+      "tests/screenshots/27-device-list-names.png",
+      "tests/screenshots/27-device-rows.png",
+      "tests/screenshots/conversation-list.png",
+      "tests/screenshots/qa-01-device-list.png",
+      "tests/screenshots/qa-02-transfers.png",
+      "tests/screenshots/qa-03-transfers-fail-before.png",
+      "tests/screenshots/qa-03-transfers-fail.png",
+      "tests/screenshots/qa-04-settings-diag.png",
+      "tests/screenshots/qa-05-preview-image.png",
+      "tests/screenshots/qa-06-preview-text.png",
+      "tests/screenshots/qa-07-preview-binary.png",
+      "tests/screenshots/qa-08-chat-pending.png",
+      "tests/test_chat.py",
+      "tests/test_enterprise_acceptance.py",
+      "tests/test_gui_actions.py",
+      "tests/test_gui_render.py",
+      "tests/test_loopback.py",
+      "tests/test_real_device.py",
+      "tests/test_resilience.py",
+      "tools/cdp_shot.py",
+      "tools/ci_android_interop.py",
+      "tools/clean_test_data.py",
+      "tools/manual_scan_veth.py",
+      "tools/qa_cold_start.py",
+      "tools/qa_screenshots.py",
+      "tools/qa_web_server.py",
+      "tools/records_data_check.py"
+    ],
+    "mtimes": {
+      "README.md": 1790336052.1,
+      "android/app/src/androidTest/java/cn/eversend/app/DiscoveryAndActionsTest.kt": 1790335265.7,
+      "android/app/src/androidTest/java/cn/eversend/app/EverSendInstrumentedTest.kt": 1790270744.9,
+      "android/app/src/androidTest/java/cn/eversend/app/FetchAndSaveTest.kt": 1790345154.2,
+      "android/app/src/main/AndroidManifest.xml": 1790332972.7,
+      "android/app/src/main/java/cn/eversend/app/ApiClient.kt": 1790346003.9,
+      "android/app/src/main/java/cn/eversend/app/Discovery.kt": 1790343054.9,
+      "android/app/src/main/java/cn/eversend/app/EverSendApp.kt": 1790343109.0,
+      "android/app/src/main/java/cn/eversend/app/Fetch.kt": 1790344880.2,
+      "android/app/src/main/java/cn/eversend/app/LinkService.kt": 1790346066.1,
+      "android/app/src/main/java/cn/eversend/app/MainActivity.kt": 1790427014.8,
+      "docs/ENTERPRISE_CHARTER.md": 1790336981.5,
+      "docs/PROTOCOL.md": 1790336992.8,
+      "docs/REAL_DEVICE_FINDINGS.md": 1790430396.8,
+      "docs/UI_LAYOUT.md": 1790334541.2,
+      "docs/screenshots/01-session.png": 1790339437.6,
+      "docs/screenshots/02-transfers.png": 1790339437.9,
+      "docs/screenshots/03-receive.png": 1790339438.3,
+      "docs/screenshots/04-settings.png": 1790339438.6,
+      "docs/screenshots/05-qr.png": 1790339443.1,
+      "docs/screenshots/06-chat.png": 1790339438.9,
+      "docs/screenshots/07-preview.png": 1790339443.6,
+      "docs/screenshots/08-preview-image.png": 1790339444.2,
+      "docs/screenshots/09-emoji-and-sections.png": 1790339439.4,
+      "docs/screenshots/10-offline-devices.png": 1790339440.1,
+      "docs/screenshots/11-sections-collapsed.png": 1790339439.8,
+      "docs/screenshots/12-emoji-in-bubble.png": 1790339440.5,
+      "docs/screenshots/12-transfers-failed.png": 1790339442.2,
+      "docs/screenshots/13-one-row-per-file.png": 1790339440.8,
+      "docs/screenshots/13-settings-top.png": 1790339442.5,
+      "docs/screenshots/14-transfer-record-in-chat.png": 1790339441.2,
+      "docs/screenshots/15-settings-maintenance.png": 1790339441.6,
+      "docs/screenshots/16-one-phone-one-row.png": 1790339441.9,
+      "docs/screenshots/android-app-auto-discovery-drawer.png": 1790335641.2,
+      "docs/screenshots/android-app-auto-discovery.png": 1790335641.2,
+      "docs/screenshots/android-app-chat.png": 1790238185.5,
+      "docs/screenshots/android-app-clear-offline-empty.png": 1790264997.1,
+      "docs/screenshots/android-app-clear-offline.png": 1790264752.5,
+      "docs/screenshots/android-app-composer-tiles.png": 1790242478.9,
+      "docs/screenshots/android-app-conversation.png": 1790238185.5,
+      "docs/screenshots/android-app-device-sections-offline.png": 1790248099.9,
+      "docs/screenshots/android-app-device-sections.png": 1790247973.3,
+      "docs/screenshots/android-app-emoji-message.png": 1790252983.7,
+      "docs/screenshots/android-app-emoji-pad.png": 1790252983.7,
+      "docs/screenshots/android-app-file-actions.png": 1790259919.2,
+      "docs/screenshots/android-app-image-viewer.png": 1790238185.5,
+      "docs/screenshots/android-app-one-device-one-row.png": 1790269453.8,
+      "docs/screenshots/android-app-one-row-per-file.png": 1790258587.8,
+      "docs/screenshots/android-app-preview-image.png": 1790242254.6,
+      "docs/screenshots/android-app-preview-text.png": 1790242254.6,
+      "docs/screenshots/android-app-preview-video.png": 1790242254.6,
+      "docs/screenshots/android-app-sections-collapsed.png": 1790251487.4,
+      "docs/screenshots/android-app-settings.png": 1790237766.9,
+      "docs/screenshots/android-app-sidebar.png": 1790245996.7,
+      "docs/screenshots/android-app-transfer-row-actions.png": 1790258301.8,
+      "docs/screenshots/android-app-transfers-send.png": 1790237766.9,
+      "docs/screenshots/android-app-transfers.png": 1790237766.9,
+      "docs/screenshots/android-app-wide-sidebar.png": 1790248642.2,
+      "docs/screenshots/android-instrumented.txt": 1790270881.8
+    },
+    "note": "仓库处于写入中"
+  },
+  "adb_serial": "2430d3c",
+  "phone_online": true,
+  "summary": {
+    "A0": "PASS",
+    "A1": "FAIL",
+    "A2": "FAIL",
+    "A9": "UNDECIDED",
+    "A6": "PASS",
+    "A7": "FAIL",
+    "A8": "FAIL"
+  },
+  "results": [
+    {
+      "id": "A0",
+      "title": "现场：真机在线、三个端口空闲、测试目录就绪",
+      "status": "PASS",
+      "error": "",
+      "subs": [
+        {
+          "name": "A0.1 adb 设备 2430d3c 在线",
+          "ok": true,
+          "expected": "devices 列表里是 device",
+          "actual": "List of devices attached / 2430d3c\tdevice",
+          "note": "手机掉线时后续各项一律标「未判定」，不许当绿"
+        },
+        {
+          "name": "A0.0 现场准备",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "已清上一轮的测试文件；App 不在前台，已拉起"
+        },
+        {
+          "name": "A0.phone_ip",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "inet 192.168.110.27/24"
+        },
+        {
+          "name": "A0.2 手机屏幕开着（不是锁屏状态）",
+          "ok": true,
+          "expected": "能读到窗口焦点",
+          "actual": "已读到",
+          "note": ""
+        },
+        {
+          "name": "A0.3 电脑端三个端口由本进程独占（同一时刻只有一个实例）",
+          "ok": true,
+          "expected": "",
+          "actual": "起实例前探测={'tcp': True, 'web': True, 'discovery': True}（True=当时空闲）",
+          "note": "TCP 52117 / 网页 52119 / UDP 52118；起完由本测试进程占着"
+        },
+        {
+          "name": "A0.4 测试数据目录在 /home（不在 /tmp）",
+          "ok": true,
+          "expected": "以 /home 开头",
+          "actual": "/home/xgl/qa-real",
+          "note": ""
+        },
+        {
+          "name": "A0.disk_home",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "/home 可用 132.2 GiB"
+        },
+        {
+          "name": "A0.download_before",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "/sdcard/Download 现有 5 项：['A7-手机发来-512k.bin', 'A7-手机发来.png', 'cn.org.bjca.signet.coss.app.zip', 'phone-to-pc-1mb.bin', '麻豆传媒_V1.7.0.apk']"
+        },
+        {
+          "name": "A0.5 产品能被 import（不是别人写作途中的中间态）",
+          "ok": true,
+          "expected": "",
+          "actual": "engine import ok",
+          "note": ""
+        },
+        {
+          "name": "~耗时",
+          "ok": true,
+          "expected": "",
+          "actual": "5.5s",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "A1",
+      "title": "电脑发小文件（<1 MB）→ 手机磁盘 + sha256",
+      "status": "FAIL",
+      "error": "",
+      "subs": [
+        {
+          "name": "A1.phone",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "MI 9 id=web:d4a8869b-cb08-49fd-9e6b-0acbce08a20f online=True"
+        },
+        {
+          "name": "A1.file",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "A1-小文件-524288.bin 0.5 MiB sha256=b72a28cdebac6320…"
+        },
+        {
+          "name": "A1.a 发送前手机磁盘上没有这个文件",
+          "ok": true,
+          "expected": "不在",
+          "actual": "False",
+          "note": ""
+        },
+        {
+          "name": "A1.b 文件进了待发列表",
+          "ok": true,
+          "expected": "含 '/home/xgl/qa-real/files/A1-小文件-524288.bin'",
+          "actual": "['/home/xgl/qa-real/files/A1-小文件-524288.bin']",
+          "note": ""
+        },
+        {
+          "name": "A1.c 已点「发送」",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "21:52:11"
+        },
+        {
+          "name": "A1.d 文件走的是**文件通道**（服务端已发布该文件）",
+          "ok": true,
+          "expected": "web UI 的分享表里出现这个文件名",
+          "actual": "shares=['A1-小文件-524288.bin']",
+          "note": "责任人 phone-transfer：点「发送」走了聊天通道时，这里会是空的"
+        },
+        {
+          "name": "A1.e 活动传输",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "0 个"
+        },
+        {
+          "name": "A1.f0 点发送之后、手机取走之前的状态",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "['sent', 'sending']（conv=d:6acecaad468d538ec614c0cf06bce20a|web:689308bf-6ec9-4a48-858c-2dc15d3ec9a4）"
+        },
+        {
+          "name": "A1.f 手机取走之前，记录状态不是 sent",
+          "ok": false,
+          "expected": "sending/queued/waiting…（手机取走后才允许 sent）",
+          "actual": "states=['sent', 'sending']",
+          "note": "责任人 net-discovery：真实取走前写 sent 就是「界面说谎」的根"
+        },
+        {
+          "name": "A1.g 手机页面上出现了这个卡片",
+          "ok": true,
+          "expected": "",
+          "actual": "A1-小文件-524288.bin",
+          "note": ""
+        },
+        {
+          "name": "A1.h 点了手机上的",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "'保存' @ (195, 1859)"
+        },
+        {
+          "name": "A1.d2 服务端记录到手机真的取走了字节（sentBytes > 0）",
+          "ok": true,
+          "expected": "sentBytes > 0（必要不充分：还要 sha256 相等）",
+          "actual": "share=MVq5_1x1 sentBytes=524288",
+          "note": "责任人 web-ui：手机在取但服务端没有字节计数时，这里红"
+        },
+        {
+          "name": "A1.i 手机上真的出现了这个文件（adb ls）",
+          "ok": true,
+          "expected": "/sdcard/Download/A1-小文件-524288.bin",
+          "actual": "size=524288；目录里现有 ['.pending-1791035539-A1-小文件-524288.bin', 'A1-小文件-524288.bin', 'A7-手机发来-512k.bin', 'A7-手机发来.png', 'cn.org.bjca.signet.coss.app.zip', 'phone-to-pc-1mb.bin', '麻豆传媒_V1.7.0.apk']",
+          "note": "责任人 android-ui：App 收到却落盘失败时这里会红（曾见 0 字节 .pending-*）"
+        },
+        {
+          "name": "A1.j 从手机拉回来的 sha256 与源文件相等",
+          "ok": true,
+          "expected": "b72a28cdebac6320e1cf4e83d5c1878f81e63da0bb4d3a8ef207da7405c8635c",
+          "actual": "b72a28cdebac6320e1cf4e83d5c1878f81e63da0bb4d3a8ef207da7405c8635c（手机上 524288 字节，源 524288 字节）",
+          "note": "**ls 看到名字不算成功，只有 sha256 相等才算**"
+        },
+        {
+          "name": "A1.k 手机上文件大小与源一致",
+          "ok": true,
+          "expected": "524288",
+          "actual": "524288",
+          "note": ""
+        },
+        {
+          "name": "A1.n 手机真的取走之后，记录状态才变成 sent",
+          "ok": true,
+          "expected": "取走后 state ∈ {sent}",
+          "actual": "states=['sent', 'sent']",
+          "note": ""
+        },
+        {
+          "name": "A1.l 电脑端截图",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "/home/xgl/qa-real/shots/A1-desktop-progress.png"
+        },
+        {
+          "name": "A1.m 手机截图",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "/home/xgl/qa-real/shots/A1-phone.png"
+        },
+        {
+          "name": "~耗时",
+          "ok": true,
+          "expected": "",
+          "actual": "9.5s",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "A2",
+      "title": "电脑发中等文件（约 100 MB）→ 手机磁盘 + sha256",
+      "status": "FAIL",
+      "error": "",
+      "subs": [
+        {
+          "name": "A2.phone",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "MI 9 id=web:d4a8869b-cb08-49fd-9e6b-0acbce08a20f online=True"
+        },
+        {
+          "name": "A2.file",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "A2-中文件-104857600.bin 100.0 MiB sha256=53006a84214a65f6…"
+        },
+        {
+          "name": "A2.a 发送前手机磁盘上没有这个文件",
+          "ok": true,
+          "expected": "不在",
+          "actual": "False",
+          "note": ""
+        },
+        {
+          "name": "A2.b 文件进了待发列表",
+          "ok": true,
+          "expected": "含 '/home/xgl/qa-real/files/A2-中文件-104857600.bin'",
+          "actual": "['/home/xgl/qa-real/files/A2-中文件-104857600.bin']",
+          "note": ""
+        },
+        {
+          "name": "A2.c 已点「发送」",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "21:52:20"
+        },
+        {
+          "name": "A2.d 文件走的是**文件通道**（服务端已发布该文件）",
+          "ok": true,
+          "expected": "web UI 的分享表里出现这个文件名",
+          "actual": "shares=['A2-中文件-104857600.bin', 'A1-小文件-524288.bin']",
+          "note": "责任人 phone-transfer：点「发送」走了聊天通道时，这里会是空的"
+        },
+        {
+          "name": "A2.e 活动传输",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "0 个"
+        },
+        {
+          "name": "A2.f0 点发送之后、手机取走之前的状态",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "['sent', 'sending']（conv=d:6acecaad468d538ec614c0cf06bce20a|web:689308bf-6ec9-4a48-858c-2dc15d3ec9a4）"
+        },
+        {
+          "name": "A2.f 手机取走之前，记录状态不是 sent",
+          "ok": false,
+          "expected": "sending/queued/waiting…（手机取走后才允许 sent）",
+          "actual": "states=['sent', 'sending']",
+          "note": "责任人 net-discovery：真实取走前写 sent 就是「界面说谎」的根"
+        },
+        {
+          "name": "A2.g 手机页面上出现了这个卡片",
+          "ok": true,
+          "expected": "",
+          "actual": "A2-中文件-104857600.bin",
+          "note": ""
+        },
+        {
+          "name": "A2.h 点了手机上的",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "'保存' @ (195, 1859)"
+        },
+        {
+          "name": "A2.d2 服务端记录到手机真的取走了字节（sentBytes > 0）",
+          "ok": true,
+          "expected": "sentBytes > 0（必要不充分：还要 sha256 相等）",
+          "actual": "share=lGKTBwXx sentBytes=104857600",
+          "note": "责任人 web-ui：手机在取但服务端没有字节计数时，这里红"
+        },
+        {
+          "name": "A2.i 手机上真的出现了这个文件（adb ls）",
+          "ok": true,
+          "expected": "/sdcard/Download/A2-中文件-104857600.bin",
+          "actual": "size=104857600；目录里现有 ['.pending-1791035549-A2-中文件-104857600.bin', 'A1-小文件-524288 (1).bin', 'A1-小文件-524288.bin', 'A2-中文件-104857600.bin', 'A7-手机发来-512k.bin', 'A7-手机发来.png', 'cn.org.bjca.signet.coss.app.zip', 'phone-to-pc-1mb.bin']",
+          "note": "责任人 android-ui：App 收到却落盘失败时这里会红（曾见 0 字节 .pending-*）"
+        },
+        {
+          "name": "A2.j 从手机拉回来的 sha256 与源文件相等",
+          "ok": true,
+          "expected": "53006a84214a65f6d72e938b569e1bec44e1d3ef51d7bef85740d4fe06420673",
+          "actual": "53006a84214a65f6d72e938b569e1bec44e1d3ef51d7bef85740d4fe06420673（手机上 104857600 字节，源 104857600 字节）",
+          "note": "**ls 看到名字不算成功，只有 sha256 相等才算**"
+        },
+        {
+          "name": "A2.k 手机上文件大小与源一致",
+          "ok": true,
+          "expected": "104857600",
+          "actual": "104857600",
+          "note": ""
+        },
+        {
+          "name": "A2.n 手机真的取走之后，记录状态才变成 sent",
+          "ok": true,
+          "expected": "取走后 state ∈ {sent}",
+          "actual": "states=['sent', 'sent']",
+          "note": ""
+        },
+        {
+          "name": "A2.l 电脑端截图",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "/home/xgl/qa-real/shots/A2-desktop-progress.png"
+        },
+        {
+          "name": "A2.m 手机截图",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "/home/xgl/qa-real/shots/A2-phone.png"
+        },
+        {
+          "name": "~耗时",
+          "ok": true,
+          "expected": "",
+          "actual": "11.8s",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "A9",
+      "title": "电脑发大文件（约 1 GB，可选）→ 手机磁盘 + sha256",
+      "status": "UNDECIDED",
+      "error": "",
+      "subs": [
+        {
+          "name": "A9 1 GB 大文件",
+          "ok": true,
+          "expected": "（负载下未判定）",
+          "actual": "默认跳过；设 EVERSEND_REAL_BIG=1 打开",
+          "note": ""
+        },
+        {
+          "name": "~耗时",
+          "ok": true,
+          "expected": "",
+          "actual": "0.0s",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "A6",
+      "title": "反作弊：界面说「已收到」时手机磁盘必须真的有（否则判红）",
+      "status": "PASS",
+      "error": "",
+      "subs": [
+        {
+          "name": "A6.claims",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "界面上的完成标记 2 个，涉及文件 ['A1-小文件-524288.bin', 'A2-中文件-104857600.bin']"
+        },
+        {
+          "name": "A6.1 界面说已收到的文件，磁盘上都有",
+          "ok": true,
+          "expected": "每个都出现在 /sdcard/Download",
+          "actual": "缺失=[]；磁盘现有 ['A1-小文件-524288 (1).bin', 'A1-小文件-524288.bin', 'A2-中文件-104857600 (1).bin', 'A2-中文件-104857600.bin', 'A7-手机发来-512k.bin', 'A7-手机发来.png', 'cn.org.bjca.signet.coss.app.zip', 'phone-to-pc-1mb.bin', '麻豆传媒_V1.7.0.apk']",
+          "note": "责任人 android-ui：App 侧「已收到」写早了 —— 它只表示消息投递成功，不表示文件落盘。E3「无静默失败」同类问题"
+        },
+        {
+          "name": "A6.2 界面说已收到的文件，磁盘上都不是 0 字节",
+          "ok": true,
+          "expected": "大小 > 0",
+          "actual": "0 字节=[]",
+          "note": "实测见过 4 个 .pending-179086558x-README.txt 是 0 字节残留"
+        },
+        {
+          "name": "A6.pending",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "手机目录里的 .pending-* 临时文件：0 个"
+        },
+        {
+          "name": "A6.3 手机目录里没有 0 字节的 .pending-* 残留",
+          "ok": true,
+          "expected": "[]",
+          "actual": "[]",
+          "note": "责任人 android-ui：`MainActivity.kt saveToDownloads` 在 sink 抛异常时没有把 IS_PENDING 清 0，于是留下永远 pending 的 0 字节行 —— 这条断言直接盯住「下载失败了但没人收拾」（Lead 挖到的根因）"
+        },
+        {
+          "name": "A6.4 手机目录里没有任何 0 字节的已下载文件",
+          "ok": true,
+          "expected": "[]",
+          "actual": "[]",
+          "note": "这条盯「下载了但一个字节都没写进去」的文件；点开头的临时文件由 A6.3 管"
+        },
+        {
+          "name": "~耗时",
+          "ok": true,
+          "expected": "",
+          "actual": "2.3s",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "A7",
+      "title": "手机发文件给电脑 → 电脑接收目录 + sha256",
+      "status": "FAIL",
+      "error": "",
+      "subs": [
+        {
+          "name": "A7.digest",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "A7-手机发来.png 370 KiB sha256=18214f0c7b8e8f5f…"
+        },
+        {
+          "name": "A7.a 测试文件已经在手机上（adb push）",
+          "ok": true,
+          "expected": "/sdcard/Download/A7-手机发来.png",
+          "actual": "True",
+          "note": ""
+        },
+        {
+          "name": "A7.prepare",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "已清上一轮的测试文件"
+        },
+        {
+          "name": "A7.b0 App 在会话页（底部有「📎 传输文件」）",
+          "ok": true,
+          "expected": "会话页",
+          "actual": "界面文本=['💻', 'QA-真机验收', 'linux · 192.168.110.41:52119 · 发现方式：单播应答', '在线', '已信任', '打开接收文件夹', '⋯', '图片取不回来：http://192.168.110.41:52119/api/chat/media/4a1e3ade52cf4afaa5ac']",
+          "note": ""
+        },
+        {
+          "name": "A7.b App 里点开了「传输文件」",
+          "ok": true,
+          "expected": "底部工具栏那个「📎 传输文件」",
+          "actual": "候选=['点「📎 传输文件」选要发的文件：方块排在这里，点方块可以先看一眼。', '📎 传输文件']",
+          "note": ""
+        },
+        {
+          "name": "A7.c 在选择器里选中了这个文件",
+          "ok": true,
+          "expected": "列表里出现 A7-手机发来.png",
+          "actual": "界面文本=['💻', 'QA-真机验收', 'linux · 192.168.110.41:52119 · 发现方式：单播应答', '在线', '已信任', '打开接收文件夹', '⋯', '已选 1 个文件，点「发送」发给 QA-真机验收']",
+          "note": ""
+        },
+        {
+          "name": "A7.d 文件进了待发区（回到 App 了）",
+          "ok": true,
+          "expected": "界面上出现 A7-手机发来.png",
+          "actual": "['✕', 'A7-手机发来.png', '共 1 项 · 370.9 KB', '📎 传输文件', '😊', '🎤', '说点什么…', '发送']",
+          "note": ""
+        },
+        {
+          "name": "A7.e 设备勾选",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "已勾选；行=['☑ QA-真机验收']"
+        },
+        {
+          "name": "A7.f 点了「发送」",
+          "ok": true,
+          "expected": "",
+          "actual": "找到并点击「发送」",
+          "note": ""
+        },
+        {
+          "name": "A7.g 电脑接收目录里真的出现了这个文件",
+          "ok": true,
+          "expected": "/home/xgl/qa-real/received/A7-手机发来.png",
+          "actual": "目录里现有 ['.eversend-uploads', 'A7-手机发来.png']",
+          "note": ""
+        },
+        {
+          "name": "A7.h 落地文件的 sha256 与源文件相等",
+          "ok": true,
+          "expected": "18214f0c7b8e8f5f8244f2e1405463e488ea68748d0e386127a808afb0e0ddcd",
+          "actual": "18214f0c7b8e8f5f8244f2e1405463e488ea68748d0e386127a808afb0e0ddcd",
+          "note": "**收到名字不算成功，只有 sha256 相等才算**"
+        },
+        {
+          "name": "A7.i 落地文件大小与源一致",
+          "ok": true,
+          "expected": "379819",
+          "actual": "379819",
+          "note": ""
+        },
+        {
+          "name": "A7.j 电脑端的记录里有这条入站文件（状态 done）",
+          "ok": false,
+          "expected": "done",
+          "actual": "True",
+          "note": "手机 POST 上来落盘的路径必须留下一条记录，否则用户翻不到谁发过什么"
+        },
+        {
+          "name": "A7.shot",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "/home/xgl/qa-real/shots/A7-desktop-received.png"
+        },
+        {
+          "name": "~耗时",
+          "ok": true,
+          "expected": "",
+          "actual": "31.8s",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "A8",
+      "title": "双向中文 + emoji 消息，两端都能看到",
+      "status": "FAIL",
+      "error": "",
+      "subs": [
+        {
+          "name": "A8.1 电脑发的中文+emoji 消息出现在手机界面上",
+          "ok": false,
+          "expected": "手机界面含 'QA 真机消息 🚀 中文+emoji 30786'",
+          "actual": "手机界面片段=['💻', 'QA-真机验收', 'linux · 192.168.110.41:52119 · 发现方式：单播应答', '在线', '已信任', '打开接收文件夹', '⋯', '已发给 1 台设备（QA-真机验收）', 'QA-真机验收', '与 6acecaad468d538ec614c0cf06bce20a 的对话（这台设备现在不在列表里）', '← 会话', 'QA 真机消息 🚀 中文+emoji 30499']",
+          "note": ""
+        },
+        {
+          "name": "A8.desktop_rows",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "电脑端会话行数=2"
+        },
+        {
+          "name": "A8.phone_shot",
+          "ok": true,
+          "expected": "",
+          "actual": "",
+          "note": "/home/xgl/qa-real/shots/A8-phone-message.png"
+        },
+        {
+          "name": "~耗时",
+          "ok": true,
+          "expected": "",
+          "actual": "50.8s",
+          "note": ""
+        }
+      ]
+    }
+  ]
+}
