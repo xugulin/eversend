@@ -228,6 +228,11 @@ _LATER_INDEXES = (
 #: asking anyone to delete the file: ``name -> DDL fragment``.
 _LATER_COLUMNS = {
     "media_source": "TEXT NOT NULL DEFAULT ''",
+    #: 这条文件消息对应的**分享条目 id**（手机点气泡「保存」时走哪个下载任务）。
+    #: 以前是服务端按"路径/名字+大小"事后猜（find_share_for_message），同一个文件
+    #: 重复发多次时老消息会被猜成新分享，手机端历史卡片跟着显示当前进度。
+    #: 发送时就把 share id 写进记录，手机端拿到的是**精确**关联。
+    "share_id": "TEXT NOT NULL DEFAULT ''",
     "record_key": "TEXT NOT NULL DEFAULT ''",
     "attempts": "INTEGER NOT NULL DEFAULT 0",
 }
@@ -634,6 +639,9 @@ class ChatStore:
         media_size: int = 0,
         media_mime: str = "",
         media_source: str = "",
+        #: 这条文件消息对应的分享条目 id（手机点「保存」走哪个下载任务）。
+        #: 桌面"交给手机"时由发送路径传进来；普通聊天/接收消息留空。
+        share_id: str = "",
         duration_ms: int = 0,
         direction: str = "out",
         state: str = "sent",
@@ -682,6 +690,9 @@ class ChatStore:
             # stripped from the HTTP API, because a path like
             # /home/me/相册/假期.jpg says a lot about this computer.
             "mediaSource": str(media_source),
+            #: 分享条目 id（桌面发布给手机时记下）。服务端给手机下发时用它做
+            #: 精确关联；为空时退回"按路径/名字+大小"的老匹配。
+            "shareId": str(share_id),
             "durationMs": int(duration_ms or 0),
             "ts": float(ts if ts is not None else time.time()),
             "direction": direction,
@@ -746,6 +757,7 @@ class ChatStore:
                     "media_size": entry["mediaSize"],
                     "media_mime": entry["mediaMime"],
                     "media_source": entry["mediaSource"],
+                    "share_id": entry["shareId"],
                     "duration_ms": entry["durationMs"],
                     "ts": entry["ts"],
                     "direction": entry["direction"],
@@ -755,11 +767,11 @@ class ChatStore:
                 }
                 db.execute(
                     "INSERT OR REPLACE INTO messages (id, conv, sender, sender_name, kind, text,"
-                    " media_name, media_rel, media_size, media_mime, media_source, duration_ms, ts,"
-                    " direction, state, record_key, attempts)"
+                    " media_name, media_rel, media_size, media_mime, media_source, share_id,"
+                    " duration_ms, ts, direction, state, record_key, attempts)"
                     " VALUES (:id, :conv, :sender, :sender_name, :kind, :text, :media_name, :media_rel,"
-                    " :media_size, :media_mime, :media_source, :duration_ms, :ts, :direction, :state,"
-                    " :record_key, :attempts)",
+                    " :media_size, :media_mime, :media_source, :share_id, :duration_ms, :ts,"
+                    " :direction, :state, :record_key, :attempts)",
                     row,
                 )
                 entry["attempts"] = merged_attempts
@@ -867,6 +879,9 @@ class ChatStore:
             "mediaRel": "media_rel",
             "mediaMime": "media_mime",
             "mediaSource": "media_source",
+            #: 重新投递同一文件时换成**这一次**的分享 id（手机点老气泡「保存」
+            #: 也不会去下已经作废的那一份，见 web/server.py 的 find_share_for_message）。
+            "shareId": "share_id",
         }
         assignment: dict[str, Any] = {
             "state": str(entry.get("state") or current_state or "sent"),
@@ -1697,6 +1712,9 @@ class ChatStore:
             # Local-only: the bubble previews the file you sent from wherever
             # you sent it, instead of looking for it in the receive folder.
             "mediaSource": row["media_source"] if "media_source" in row.keys() else "",
+            #: 分享条目 id：手机点气泡「保存」时用它做**精确**关联（见 web/server.py
+            #: 的 find_share_for_message；为空才退回按路径/名字+大小匹配）。
+            "shareId": (row["share_id"] if "share_id" in row.keys() else "") or "",
             "durationMs": int(row["duration_ms"] or 0),
             "ts": row["ts"],
             "direction": row["direction"],

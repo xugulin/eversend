@@ -2384,10 +2384,10 @@ class MainWindow(QMainWindow):
             # 会话里那一笔：**先把文件放进对话框**，状态是 sending ——
             # 手机真正取走之前绝不写 sent（见 _refresh_phone_shares）。
             # 记录不带 mediaRel（那是"接收目录里的相对路径"，发给手机的文件不在
-            # 那儿）；手机点气泡上的「保存」时，服务端按 mediaSource 在分享表里
-            # 找到同一份文件、走分享通道发出去（web/server.py 的
-            # ``find_share_for_message``，2026-09 与 web-ui 定死的口径）。
-            self._announce_sent_files(peer, [path], share_id)
+            # 那儿）；share_ids 把**这次刚创建的分享 id** 直接写进记录，手机点
+            # 气泡上的「保存」就能精确找到这一份（不再靠服务端按路径/名字事后猜）。
+            self._announce_sent_files(peer, [path], share_id,
+                                      share_ids={os.path.abspath(path): share_id})
             self.chat_view.set_transfer_progress(
                 name,
                 None,
@@ -3148,6 +3148,9 @@ class MainWindow(QMainWindow):
         rel: str = "",
         sender_name: str = "",
         other_member: str = "",
+        #: 这条记录对应的分享条目 id（桌面把文件交给手机时才有）。手机端
+        #: 点气泡「保存」靠它精确找到下载任务；不传时服务端退回按路径/名字匹配。
+        share_id: str = "",
     ) -> str:
         """给一次传输在会话里留一条记录（有就复用，没有就新建）。
 
@@ -3202,6 +3205,7 @@ class MainWindow(QMainWindow):
                             media_name=name,
                             media_rel=rel,
                             media_source=path if direction == "out" else "",
+                            share_id=share_id,
                             media_size=size,
                             direction=direction,
                             state=state or str(existing.get("state") or "sending"),
@@ -3231,6 +3235,7 @@ class MainWindow(QMainWindow):
                 media_name=name,
                 media_rel=rel,
                 media_source=path if direction == "out" else "",
+                share_id=share_id,
                 media_size=size,
                 direction=direction,
                 state=state or "done",
@@ -3315,7 +3320,14 @@ class MainWindow(QMainWindow):
             other_member=other_member,
         )
 
-    def _announce_sent_files(self, peer: Peer, paths: list[str], key: str, rel: str = "") -> None:
+    def _announce_sent_files(
+        self,
+        peer: Peer,
+        paths: list[str],
+        key: str,
+        rel: str = "",
+        share_ids: dict[str, str] | None = None,
+    ) -> None:
         """自己用「传输文件」发出去的文件：会话里也要有一行记录 + 进度。
 
         ``key`` 是这一行的传输号（发送请求发出前是 ``__pending__…``，之后会被
@@ -3326,7 +3338,13 @@ class MainWindow(QMainWindow):
         里的引用才知道去哪儿取（``share:<分享号>`` 见 ``web/server.py`` 的
         ``/api/chat/media/<消息号>``）。发送方自己本机那份文件仍然记在
         ``mediaSource`` 里，桌面端预览/打开靠它。
+
+        ``share_ids``：``{绝对路径: 分享条目 id}``。桌面把文件**交给手机**时，
+        分享条目是发送时刚创建的；把 share id 直接写进聊天记录，手机点气泡
+        「保存」就能精确找到这一份（不再靠服务端按路径/名字+大小事后猜，
+        同一文件重复发多次时老气泡也不会被猜成新分享）。
         """
+        mapping = {os.path.abspath(k): str(v) for k, v in (share_ids or {}).items() if v}
         # 还没跟这台设备说过话也要记：用户发的第一个东西可能就是文件，
         # 会话里没有这一笔，传输页一清空就再也看不到"我给谁发过什么"。
         _key, canonical = self._member_device_key(peer.info.device_id)
@@ -3347,6 +3365,7 @@ class MainWindow(QMainWindow):
                 peer=peer,
                 state="sending",
                 rel=rel,
+                share_id=mapping.get(os.path.abspath(path), ""),
                 other_member=self._member_device_key(peer.info.device_id)[1] or peer.info.device_id,
             )
             if message_id:

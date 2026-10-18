@@ -207,6 +207,63 @@ def main() -> int:
         ui.stop()
         ui = None
 
+        # ---- 6. 记录里写明 share_id 时必须精确认它（不要按名字猜新分享） ----
+        print("\n[6] 消息记录里的 shareId 精确优先")
+        source4 = root / "同名重发.bin"
+        source4.write_bytes(os.urandom(8192))
+        ui, base = make_ui(engine, data_dir)
+        first = ui.share_files([str(source4)])
+        first_id = str(first[0]["id"]) if first else ""
+        conv2 = "d:testconv2|web:unit"
+        engine.chat.upsert_conversation(conv2, title="精确关联", members=["testconv2", "web:unit"])
+        engine.chat.add_message(
+            conv2,
+            sender="testconv2",
+            sender_name="单元测试",
+            kind="file",
+            media_name=source4.name,
+            media_size=source4.stat().st_size,
+            media_source=str(source4),
+            share_id=first_id,
+            direction="out",
+            state="sent",
+            record=False,
+        )
+        # 同一个路径/名字/大小**再发一次**：服务端分享表里出现新的分享 id
+        second = ui.share_files([str(source4)])
+        second_id = str(second[0]["id"]) if second else ""
+        check("6.1 同名重发产生了新的分享 id", second_id and second_id != first_id,
+              f"{first_id} / {second_id}")
+        status, _headers, body = get(base + "/api/chat?conv=" + conv2)
+        payload = json.loads(body) if body else {}
+        target2 = next((m for m in payload.get("messages") or []
+                        if m.get("mediaName") == source4.name), None)
+        check("6.2 老消息仍返回它自己记录的 shareId（不被新分享顶替）",
+              target2 is not None and target2.get("shareId") == first_id,
+              str(target2)[:220])
+        # 数据库重启后（新 WebUI + 同一 chat.db）精确关联仍然成立
+        ui.stop()
+        ui = None
+        ui, base = make_ui(engine, data_dir)
+        status, _headers, body = get(base + "/api/chat?conv=" + conv2)
+        payload = json.loads(body) if body else {}
+        target3 = next((m for m in payload.get("messages") or []
+                        if m.get("mediaName") == source4.name), None)
+        check("6.3 重启后记录的 shareId 仍能精确下发",
+              target3 is not None and target3.get("shareId") == first_id,
+              str(target3)[:220])
+        # 清空分享表 → 记录里那个 id 已作废：不再下发它，也不许拿新分享顶替
+        ui.clear_shares()
+        status, _headers, body = get(base + "/api/chat?conv=" + conv2)
+        payload = json.loads(body) if body else {}
+        target4 = next((m for m in payload.get("messages") or []
+                        if m.get("mediaName") == source4.name), None)
+        check("6.4 分享作废后不再下发 shareId（老气泡不跟新下载串进度）",
+              target4 is not None and not target4.get("shareId"),
+              str(target4)[:220])
+        ui.stop()
+        ui = None
+
         print("\n" + "=" * 60)
         if _failures:
             print(f"{FAIL} {len(_failures)} 项失败：")

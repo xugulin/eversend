@@ -1237,14 +1237,17 @@ class WebUI:
         ↔ 消息的 ``mediaSource``），所以先按路径比；路径丢了（老记录、文件挪过
         位置）再按 名字 + 大小 比。不需要改数据库结构，也不需要桌面端先加字段。
 
-        万一以后桌面真的往记录里写了 ``shareId``（phone-transfer 那边加字段），
-        这里优先认它 —— 字段名 ``shareId`` / ``share_id`` 两种写法都认。
+        桌面端新版本会把分享 id **直接写进消息记录**（``shareId`` 字段，见
+        ``core/chat.py`` 的 share_id 列）：这时只认它 —— 记录里写明了就是精确
+        关联；如果它已经过期（分享表被清空/条目被顶掉），返回空而不是拿同一个
+        文件的**新**分享去顶替，否则老气泡会跟着新下载显示进度。
         """
         direct = str(message.get("shareId") or message.get("share_id") or "")
         if direct:
             with self._state_lock:
                 if direct in self._shares:
                     return direct
+            return ""
         source = str(message.get("mediaSource") or "")
         wanted_path = os.path.realpath(source) if source else ""
         name = str(message.get("mediaName") or "")
@@ -3967,12 +3970,14 @@ class _Handler(BaseHTTPRequestHandler):
         下载队列（FetchManager）拿到进度/速度/ETA/「已保存」；而分享 id 是服务端
         发布文件时生成的，手机侧无法自行推导。分享 id 本来就在手机下载 URL 里出现，
         下发它不泄露本机路径（``mediaSource`` 仍然不出去）。
+
+        注意这里**无条件覆盖** ``shareId``：消息记录里那个 id 可能已经作废
+        （分享表被清空/条目被顶掉），find_share_for_message 返回空时就要下发空，
+        不能把记录里的旧值原样带出去 —— 否则手机会拿一个不存在的分享 id 去下载。
         """
         payload = {key: value for key, value in message.items() if key != "mediaSource"}
         if payload.get("mediaName"):
-            share_id = ui.find_share_for_message(message)
-            if share_id:
-                payload["shareId"] = share_id
+            payload["shareId"] = ui.find_share_for_message(message)
         return payload
 
     def _chat_message_payload(self, ui) -> tuple[str, str]:
