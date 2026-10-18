@@ -90,7 +90,36 @@ ADB = (
     or shutil.which("adb")
     or "/home/xgl/android-dev/sdk/platform-tools/adb"
 )
-SERIAL = os.environ.get("EVERSEND_ADB_SERIAL", "10AEBS3L74002AA")
+SERIAL = os.environ.get("EVERSEND_ADB_SERIAL", "")
+
+
+def _detect_serial() -> str:
+    """没显式指定设备号时自动挑：写死的默认值可能属于别的机器/别的手机。
+
+    以前默认值是 ``10AEBS3L74002AA``（另一台设备的号），换到本机 MI 9 上如果
+    忘了设 ``EVERSEND_ADB_SERIAL``，所有 adb 命令都会打在"不存在的设备"上，
+    报 ``device '…' not found``，表现为 UI 全空、导航乱按——很难第一眼看出是
+    设备号问题（本轮真机探针就被这个坑了一次）。所以：环境变量 > 唯一在线设备
+    > 旧默认值。
+    """
+    fallback = "10AEBS3L74002AA"
+    try:
+        proc = subprocess.run([ADB, "devices"], capture_output=True, timeout=20)
+        lines = [
+            row.split("\t")[0]
+            for row in (proc.stdout or b"").decode("utf-8", "replace").splitlines()[1:]
+            if "\tdevice" in row
+        ]
+    except Exception:
+        lines = []
+    if fallback in lines:
+        return fallback
+    if len(lines) == 1:
+        return lines[0]
+    return fallback
+
+
+SERIAL = SERIAL or _detect_serial()
 
 #: 手机上的下载目录。App 落盘到这里，测试只认这里。
 PHONE_DOWNLOAD = "/sdcard/Download"
@@ -219,34 +248,51 @@ class UiNode:
         return f"<{self.cls.split('.')[-1]} {self.text[:24]!r} {self.bounds}>"
 
 
-def phone_ui() -> list[UiNode]:
-    """The current view hierarchy, flat, with bounds."""
-    try:
-        adb("shell", "uiautomator", "dump", "/sdcard/qa_ui.xml", timeout=60)
-        raw = adb("shell", "cat", "/sdcard/qa_ui.xml", timeout=60)
-    except Exception:
-        return []
-    start = raw.find("<?xml")
-    if start < 0:
-        return []
-    try:
-        root = ET.fromstring(raw[start:])
-    except ET.ParseError:
-        return []
-    nodes: list[UiNode] = []
-    for node in root.iter("node"):
-        bounds = node.get("bounds") or ""
-        match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
-        if not match:
-            continue
-        nodes.append(UiNode(
-            (node.get("text") or "").strip(),
-            (node.get("content-desc") or "").strip(),
-            tuple(int(x) for x in match.groups()),  # type: ignore[arg-type]
-            node.get("clickable") == "true",
-            node.get("class") or "",
-        ))
-    return nodes
+def phone_ui(attempts: int = 3) -> list[UiNode]:
+    """The current view hierarchy, flat, with bounds.
+
+    真机实测 ``uiautomator dump`` 偶发空转（同一页面连续 dump 会返回空文件/解析
+    失败，刚唤醒屏幕或刚切页时尤其明显）。空结果会被上层当成"页面不对"，进而
+    按 BACK 乱退甚至退出 App（A1.g 在桌面文本上失败的根因链）。这里自带唤醒
+    + 重试，只有连续失败才返回空。
+    """
+    raw = ""
+    for _attempt in range(max(1, attempts)):
+        try:
+            adb("shell", "uiautomator", "dump", "/sdcard/qa_ui.xml", timeout=60)
+            raw = adb("shell", "cat", "/sdcard/qa_ui.xml", timeout=60)
+        except Exception:
+            raw = ""
+        start = raw.find("<?xml")
+        if start >= 0:
+            try:
+                root = ET.fromstring(raw[start:])
+            except ET.ParseError:
+                root = None
+            if root is not None:
+                nodes: list[UiNode] = []
+                for node in root.iter("node"):
+                    bounds = node.get("bounds") or ""
+                    match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
+                    if not match:
+                        continue
+                    nodes.append(UiNode(
+                        (node.get("text") or "").strip(),
+                        (node.get("content-desc") or "").strip(),
+                        tuple(int(x) for x in match.groups()),  # type: ignore[arg-type]
+                        node.get("clickable") == "true",
+                        node.get("class") or "",
+                    ))
+                if nodes:
+                    return nodes
+        # 空转/失败：先唤醒屏幕、解除锁屏，再重试一次。
+        try:
+            adb("shell", "input", "keyevent", "KEYCODE_WAKEUP", timeout=15)
+            adb("shell", "wm", "dismiss-keyguard", timeout=15)
+        except Exception:
+            pass
+        time.sleep(0.8)
+    return []
 
 
 def phone_tap(x: int, y: int) -> None:
@@ -492,35 +538,74 @@ def make_png(path: Path, side: int = 512) -> str:
     return sha256_file(path)
 
 
+def app_foreground() -> bool:
+    """App 是否在前台。
+
+    只看顶层 ``topResumedActivity`` —— ``dumpsys window`` 里连通知/输入法/最近
+    任务都会带包名，拿它判断会误以为 App 在前台（实测撞过：前台是桌面/推广页，
+    后面所有按坐标的点都点到了别人身上）。拿不到判定结果时按"在前台"处理。
+    """
+    try:
+        focus = adb("shell", "dumpsys", "activity", "activities", timeout=30)
+    except Exception:
+        return True
+    if "topResumedActivity" not in focus:
+        return True
+    return PACKAGE in focus.split("topResumedActivity", 1)[1][:200]
+
+
+def ensure_app_foreground() -> bool:
+    """App 被 BACK 退出/被系统切走时把它拉回前台。
+
+    导航过程必须用 BACK 关抽屉/回上一层，一旦那一下退出了 App，后面所有基于
+    UI 文本的导航都会在桌面/其它应用上打转（A1.g "卡片没出现"的现场就是桌面
+    文本）。每轮导航前先确认前台，必要时 monkey 拉起。
+    """
+    if app_foreground():
+        return True
+    try:
+        adb("shell", "monkey", "-p", PACKAGE, "-c", "android.intent.category.LAUNCHER", "1",
+            timeout=60)
+        time.sleep(4.0)
+        return True
+    except Exception:
+        return False
+
+
 def ensure_phone_chat_page(timeout: float = 40.0) -> bool:
     """把 App 带到**会话页**（底部有「📎 传输文件」的那一页）。
 
     A7 的驱动踩过这个坑：``ensure_phone_connected`` 只保证"连上了"，App 可能停在
     首页设备列表上 —— 那一页根本没有"传输文件"这个按钮，直接点就会"候选为空"。
-    另一种真机实测状态：App 被重启后停在**设备详情页**（有「打开接收文件夹 /
-    ⋯ / 会话」），点错「会话」这个标签什么都不发生 —— 连续两轮没进展就按一次
-    BACK 回到设备列表页，再从「和电脑聊天」进入。
+    真机实测还有三种状态要处理：
+      * 抽屉（设备详情侧栏）开着 —— 主页面 ☰ 被盖住，点坐标关不掉，必须 BACK；
+      * 停在会话列表页 —— 点「和电脑聊天」/设备卡片进会话；
+      * App 被 BACK 退到桌面 —— 先用 monkey 拉回前台，否则所有文本都在认桌面。
     """
     deadline = time.monotonic() + timeout
     rounds = 0
     while time.monotonic() < deadline:
         rounds += 1
-        nodes = phone_ui()
-        if any(n.text and "传输文件" in n.text for n in nodes):
-            return True
-        # 抽屉（设备详情侧栏）开着：里面只有"打开接收文件夹/⋯/设备行"，没有
-        # 「和电脑聊天」。点左上角 ☰ 把它关掉，回到会话主页面。
-        if any(n.text and "打开接收文件夹" in n.text for n in nodes):
-            phone_tap(108, 249)
+        if not ensure_app_foreground():
             time.sleep(2.0)
             continue
-        # 首页有「和电脑聊天」就直接进去；设备详情页有「会话」按钮；都没有就点设备卡片。
+        nodes = phone_ui()
+        texts = [n.text for n in nodes if n.text]
+        if any("传输文件" in text for text in texts):
+            return True
+        if any("新建群聊" in text for text in texts):
+            # 抽屉开着（判据必须用「新建群聊」：主页面头部也有「打开接收文件夹」，
+            # 拿它判断会在正常页面上误按 BACK，把 App 退出到桌面）。
+            # 抽屉盖住主页面 ☰，只能 BACK 关（点 (108,249) 会点进抽屉）。
+            adb("shell", "input", "keyevent", "KEYCODE_BACK")
+            time.sleep(2.0)
+            continue
         hit = next((n for n in nodes if n.text and "和电脑聊天" in n.text), None)
         if hit is None:
-            hit = next((n for n in nodes if n.text and n.text.strip() in ("会话", "← 会话")), None)
+            hit = next((n for n in nodes if n.text and "← 会话" in n.text), None)
         if hit is None:
-            # 设备列表页：点那台电脑的**卡片**。要排除"自动发现 1 台：QA-真机验收"
-            # 这种说明文字 —— 点它什么都不会发生（实测卡在这里，A1/A2 永远等不到卡片）。
+            # 设备列表/详情页：点那台电脑的**卡片**。要排除"自动发现 1 台：QA-真机验收"
+            # 这种说明文字 —— 点它什么都不会发生。
             hit = next(
                 (n for n in nodes
                  if n.text and PC_NAME in n.text
@@ -531,24 +616,17 @@ def ensure_phone_chat_page(timeout: float = 40.0) -> bool:
             hit = next((n for n in nodes if n.text and n.text.strip().startswith(("☐", "☑"))), None)
         if hit is not None:
             phone_tap(*hit.center)
-        elif rounds >= 2:
-            # 连续两轮都没找到可用入口（真机实测：App 重启后停在设备详情页，
-            # 「会话」那行是标签不是按钮，点了没反应）→ BACK 回设备列表页，
-            # 下一轮就能看到「和电脑聊天」。
-            adb("shell", "input", "keyevent", "KEYCODE_BACK")
-        else:
-            card = next(
-                (n for n in nodes
-                 if n.text and n.text.startswith(("☐", "☑"))),
-                None,
-            )
-            if card is None:
-                # 再退一步：左上角那个按钮是"回会话 / 开抽屉"，先回一次。
-                phone_tap(108, 249)
-            else:
-                phone_tap(*card.center)
-        time.sleep(2.5)
-    return any(n.text and "传输文件" in n.text for n in phone_ui())
+            time.sleep(2.5)
+            continue
+        if any("从左边选一台设备" in text for text in texts):
+            # 首页空态：设备列表在抽屉里，点 ☰ 打开抽屉，下一轮点设备行。
+            phone_tap(108, 249)
+            time.sleep(2.5)
+            continue
+        # 停在"会话"标签这种无按钮页：BACK 回上一层（前台已确认，不会退到桌面）。
+        adb("shell", "input", "keyevent", "KEYCODE_BACK")
+        time.sleep(2.0)
+    return any("传输文件" in text for text in phone_ui_texts())
 
 
 @check("A0", "现场：真机在线、三个端口空闲、测试目录就绪")
@@ -639,17 +717,30 @@ def ensure_phone_connected(pc: dict, *, timeout: float = 120.0):
     deadline = time.monotonic() + timeout
     tapped = False
     while time.monotonic() < deadline:
+        if not ensure_app_foreground():
+            time.sleep(2.0)
+            continue
         peer = phone_peer_of(pc)
         if peer is not None and peer.info.capabilities.get("online"):
             return peer
         nodes = phone_ui()
+        texts = [n.text for n in nodes if n.text]
         target = next((n for n in nodes if n.text == PC_NAME), None)
         if target is not None:
+            # 设备行（会话列表的设备卡 / 抽屉里的设备行）—— 点一下连它。
             phone_tap(*target.center)
             tapped = True
-        elif not tapped:
-            # 会话页要先回到设备列表：左上角那个按钮（bounds 约 [36,177][180,321]）
+        elif any("新建群聊" in text for text in texts):
+            # 抽屉开着（主页面头部也有「打开接收文件夹」，不能当判据）：先 BACK 关掉。
+            adb("shell", "input", "keyevent", "KEYCODE_BACK")
+            time.sleep(2.0)
+        elif not tapped and any("从左边选一台设备" in text for text in texts):
+            # 首页空态：设备列表在抽屉里 —— 点 ☰ 打开抽屉，下一轮点设备行。
             phone_tap(108, 249)
+            tapped = True
+        elif not tapped:
+            # 会话页要先回到设备列表。
+            adb("shell", "input", "keyevent", "KEYCODE_BACK")
             tapped = True
         time.sleep(4.0)
     return phone_peer_of(pc)

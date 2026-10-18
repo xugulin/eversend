@@ -200,3 +200,27 @@ v5 三处修：
 **残留（后续轮次）**：A2 传输中真机帧仍无实时百分比，logcat `分享自动下载：pending=1 auto=true tasks=0`
 说明此刻自动下载/保存路径仍未创建 FetchTask；下一步在真机上加日志打 `shareId` 与 `fetcher.tasks`
 的即时值，确认是"shareId 为空"还是"offer/start 被 inFlight 拦住"。
+
+## 7. v9–v11 收尾：PG-1/PG-2/PG-3 的真根因 —— 下载队列 `publish()` 是 update-only
+
+前几轮"保存改走队列 / 服务端下发 shareId / 连接状态自愈"都只修到一半。v9 在 `FetchManager`
+加诊断日志后一次真机运行即定位：
+
+```
+D EverSend: start id=… inFlightAdded=true
+D EverSend: start published id=… tasksNow=0     ← 发布后列表长度仍是 0
+```
+
+`Fetch.kt` 里 `publish(task) { update(task.shareId) { task } }`，而 `update()` 是
+`_tasks.value.map { … }` —— **只更新已存在项、不插入新项**。所以每个新 share 的任务都没进
+`ui.fetches`：下载线程照跑（文件真的落盘），界面却永远没有百分比/速度/完成态。
+修复：`publish()` 改为 upsert（存在则替换、不存在则追加）。修复后 `tasksNow=1`，
+真机探针截图 PG-1/PG-2 达成（`gui-probe-after-v11b/0004.png`、`0007.png`）。
+
+同时：
+- 气泡匹配 FetchTask 改为 **shareId 精确匹配优先**，文件名兜底仅限"无 shareId 的旧消息 + 任务开始
+  时间与消息时间相差 <180s"，避免同名历史卡片一起显示新任务进度；
+- 测试驱动修四处（ADB serial 自动探测、uiautomator 空转重试、抽屉判据用「新建群聊」、
+  导航前确认 App 前台）；
+- 最终 APK v11 sha256 `3a0ef6495c94f10f37ee1b7845bbda3c7078d97730f33adabf4d21a1b4c9aea0`，
+  v11 全量真机 6/6 PASS（`real_device_v11-final.md`）。

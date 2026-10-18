@@ -176,6 +176,12 @@ class FetchManager private constructor(private val appContext: Context) {
             val size = share.optLong("size")
             val downloaded = share.optBoolean("downloaded", false)
             val known = current[id]
+            // PG-2/PG-3 取证：每次 offer 决策都要能回答"为什么没起任务"。
+            Log.d(
+                TAG,
+                "offer id=$id name=$name size=$size downloaded=$downloaded " +
+                    "known=${known?.state ?: "-"} auto=$auto tasks=${_tasks.value.size}",
+            )
             if (downloaded) {
                 // 电脑说这份已经被取走了：本机没有记录就补一条"已完成"，
                 // 让会话/传输表能对上账（真实字节在电脑上，这里只是个历史）。
@@ -209,6 +215,7 @@ class FetchManager private constructor(private val appContext: Context) {
 
     /** 手动「下载到手机」/「重试」。 */
     fun fetchNow(api: ApiClient, shareId: String, name: String, size: Long) {
+        Log.d(TAG, "fetchNow id=$shareId name=$name size=$size")
         cancelled.remove(shareId)
         start(api, FetchTask(shareId = shareId, name = name, size = size))
     }
@@ -234,9 +241,12 @@ class FetchManager private constructor(private val appContext: Context) {
     // ------------------------------------------------------------------ 下载
 
     private fun start(api: ApiClient, task: FetchTask) {
-        if (!inFlight.add(task.shareId)) return
+        val added = inFlight.add(task.shareId)
+        Log.d(TAG, "start id=${task.shareId} inFlightAdded=$added name=${task.name} size=${task.size}")
+        if (!added) return
         cancelled.remove(task.shareId)
         publish(task.copy(state = FetchState.Downloading, startedAt = System.currentTimeMillis(), error = ""))
+        Log.d(TAG, "start published id=${task.shareId} tasksNow=${_tasks.value.size}")
         scope.launch { run(api, task) }
     }
 
@@ -392,8 +402,22 @@ class FetchManager private constructor(private val appContext: Context) {
 
     // ------------------------------------------------------------------ 状态
 
+    /**
+     * 落一条下载任务到 UI 状态（**insert-or-update**）。
+     *
+     * 以前这里实现成了 update-only（`_tasks.value.map { ... }`）：新 share 的任务
+     * 根本不会进入列表 → `ui.fetches` 恒为空 → 真机表现为
+     * 「传输中无百分比/速度、批量条目一直『正在排队』、完成后没有『已保存』」
+     * （PG-1/PG-2/PG-3 的总根因，v9 诊断日志 `start published ... tasksNow=0` 实锤）。
+     * 下载线程本身是对的（`start()` 直接 `run()`），坏的只是"状态没有登记"。
+     */
     private fun publish(task: FetchTask) {
-        update(task.shareId) { task }
+        val current = _tasks.value
+        _tasks.value = if (current.any { it.shareId == task.shareId }) {
+            current.map { if (it.shareId == task.shareId) task else it }
+        } else {
+            current + task
+        }
     }
 
     private fun update(shareId: String, change: (FetchTask) -> FetchTask) {

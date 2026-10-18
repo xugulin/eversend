@@ -16,7 +16,7 @@
 | **大文件断点续传** | 上传/下载都是"一次请求"，中途断网全废（真机 100MiB 传到 73MiB abort 后从 0 重来） | 上传：新增 `/api/upload` 续传协议（202/409/status/幂等，旧客户端兼容）；下载：Range 续传 + 本地 `.part` 缓存重试，真机实测 offset 不回退 | `test_http_resume.py` 20 项、`android-fixes.md` |
 | **传输内核 CPU/IO** | AEAD 前后 2 次全量拷贝；fsync 在 PartFile **锁内**（慢盘 p99 达 11.8s）；加密会话接收端重复 crc32；每块 O(n) 扫描 | AEAD 零拷贝（1MiB seal **0.76→3.67 GiB/s** 负载下 A/B）、fsync 后台线程（注入慢盘 p99 **11.8s→0.70ms**）、crc32 调用 **512→256**、索引 **80.8ms→0.13ms**、socket 缓冲自检、 cipher 协商（消掉跨架构 100% tag 失败隐患） | `transport-fixes.md` |
 | **桌面/网页 GUI 准确性** | 接收完成 1 次传输出现 **2 行**（一行 0 B）；接收表**没有进度/速度/ETA**；100% 后仍显示"传输中"数秒；单位 1024 进制标成 KB/MB；页头"未知设备 #hash"；每次接收抛 `UnboundLocalError` | 8 项修复：单行"已完成"、接收表新增 进度/速度/剩余 三列、100% 后显示"校验中…"、KiB/MiB 口径三端统一、页头名称回退链、接收文件真正进会话库、重启恢复记录 | `gui-audit.md`、`gui-fixes.md` |
-| **手机 GUI 准确性** | 下载完成 3.7s 后卡片仍"接收中…"、传输中无任何百分比/速度、批量条目一直"正在排队"、会话标题露内部设备 id | v3→v8 四轮修复：单位口径、**会话标题不再露裸 id（PG-5 已修）**、**已完成卡片自愈为"已在其它客户端取走"**（PG-1 部分）；**传输中实时百分比/批量状态仍未达成**（真机探针证据，根因见 §5.4） | `gui-probe-after-v3/v6/v7/v8.md`、真机截图时间线 |
+| **手机 GUI 准确性** | 下载完成 3.7s 后卡片仍"接收中…"、传输中无任何百分比/速度、批量条目一直"正在排队"、会话标题露内部设备 id | **v11 全部达成**：传输中显示「接收中 66% + 进度条」（真值 70%）、完成后「✅ 已保存到手机」+ 按钮变「已保存」、标题不再露裸 id；根因是下载队列 `publish()` 被写成 update-only（新任务从不进 UI 状态列表），见 §5.5 | `gui-probe-after-v11b.md` 截图 0004/0007、logcat `start published tasksNow=1` |
 | **真机全量验收** | 旧 APK：A7 FAIL（令牌） | v3 新 APK：**见 §5 验收表** | `acceptance-final.*` |
 
 ---
@@ -298,13 +298,18 @@ v5 在快照连续失败时把 `ui.client` 置空重连，但 `connectSession()`
 A7 恢复 PASS。
 
 ### 5.4.4 手机 GUI 探针复测（v6 / v7 / v8，同一探针 `--only A2`）
-| 项 | v3 基线 | v8 实测 | 判定 |
+| 项 | v3 基线 | v11 实测 | 判定 |
 |---|---|---|---|
 | PG-5 会话标题露内部设备 id | 有 | 「与 一台设备 的对话…」（按 deviceId 反查成员名，绝不露裸 id） | ✅ 已修 |
-| PG-1 完成后卡片状态自愈 | 无 | 已完成卡片显示「已在其它客户端取走」（截图 `gui-probe-shots/after-v8/0003.png`、`0006.png`） | ✅ 部分修好（历史卡片自愈）；"已保存到手机"文案仍取决于是否经 FetchTask |
-| PG-2 传输中百分比/速度 | 无 | **仍未达成**：真机帧里卡片没有实时百分比；logcat `分享自动下载：pending=1 auto=true tasks=0` 证明此刻仍没产生 FetchTask | ❌ 残留 |
-| PG-3 批量条目状态 | 「正在排队」 | 仍显示「正在排队」（同一根因） | ❌ 残留 |
+| PG-1 完成后卡片状态 | 完成后仍「接收中…」+「点击保存到手机」 | 完成后卡片「✅ 已保存到手机」+ 按钮变「已保存」（不可点），历史卡片自愈为「已在其它客户端取走」 | ✅ 已修（截图 `after-v11b/0007.png`） |
+| PG-2 传输中百分比/速度 | 无 | 「接收中 66% + 进度条」（同一时刻服务器真值 70%，采样/截图有 ~1.4s 时间差），`gui-probe-after-v11b/0004.png` | ✅ 已修 |
+| PG-3 批量条目状态 | 「共 100.0 MiB，正在排队」 | 代码路径已修（`ui.fetches` 非空 → `running=true`），但本轮截图因列表自动滚到底部未覆盖批量卡片 | ⚠️ 代码已修/待补截图 |
 | PG-6 单位口径 | KB/MB | KiB/MiB/GiB | ✅ 已修 |
+
+PG-1/PG-2/PG-3 的总根因见 **§5.5**（不是 UI 绑定、不是 shareId 匹配，而是队列状态 `publish` 只更新不插入）。
+残留小问题：同一个文件重复发过多次时，服务端 `find_share_for_message` 会按"路径/名字+大小"把**历史消息**
+映射到**新分享**，于是历史卡片会跟着显示当前下载进度（§5.5.3 已缩小匹配窗口，仍可能跨轮串台；
+彻底修法：桌面发送时把 `shareId` 直接写进消息记录，而不是事后按名字/路径匹配）。
 
 PG-2 残留的最短复现与下一步（给后续轮次）：在 A2 流程中抓 `fetcher.tasks.value` 与
 `shareId` 是否为空/是否被 inFlight 卡住；目前证据指向"自动下载/保存路径此刻未创建 FetchTask"，
@@ -319,8 +324,8 @@ PG-2 残留的最短复现与下一步（给后续轮次）：在 A2 流程中�
    `SO_REUSEADDR`（TIME_WAIT 假"端口被占用"曾连续挡住真机复验）；上传续传探针首次在真机端到端跑通。
 3. **下载重试策略**（android-device v5）：6 次尝试、退避 0.5/1/2/4/8/8s、失败保留 `.part` 供续传、
    >1 天陈旧 `.part` 清理、失败文案带断点大小。
-4. **最终 APK（v8）**：`app-arm64-v8a-debug.apk` 72,261,918 B，
-   sha256 `448585275c7c515e1c170c4ed4834c8bf517fd0d57f7717a142161d5d578fe6c`（install -r 保留数据）。
+4. **中间 APK（v8）**：`448585275c7c515e1c170c4ed4834c8bf517fd0d57f7717a142161d5d578fe6c`；
+   **最终交付 APK 见 §5.5.4（v11）**。
 
 | 收尾轮验证 | 结果 |
 |---|---|
@@ -329,6 +334,74 @@ PG-2 残留的最短复现与下一步（给后续轮次）：在 A2 流程中�
 | `tests/test_share_persistence.py` | 14/14 PASS |
 | web selftest / http resume / share 回归 | 356 项 PASS / 20 项 PASS |
 | A/B 性能（tmpfs，5 轮中位） | CPU s/MiB 平均 **-9.7%**、吞吐平均 +4.5%（`bench-before-after.md`） |
+
+## 5.5 收尾轮（v9–v11）：手机下载状态永远为空的真根因 —— `publish()` 写成了 update-only
+
+### 5.5.1 现象与误判链
+手机下载电脑发来的文件：**传输确实在跑**（电脑端 `sentBytes` 在涨、手机磁盘文件 sha256 正确），
+但手机 UI 上完全没有进度/速度/完成态。前几轮先后怀疑过"保存走了直连旁路"（v5 改成走队列）、
+"服务端没下发 shareId"（v6/v7 补下发与解析）、"连接状态没刷新"（v8 修 `ui.client`），
+每次都只修到一半 —— 因为**任务从来没有进入 UI 订阅的列表**。
+
+### 5.5.2 实锤与修复（v9 诊断 → v10/v11 修复）
+v9 在 `FetchManager` 加诊断日志后，A2 真机一次运行就抓住：
+
+```
+D EverSend: start id=LkgkIxklklsi inFlightAdded=true
+D EverSend: start published id=LkgkIxklklsi tasksNow=0      ← publish 完列表还是 0
+```
+
+根因在 `Fetch.kt`：
+
+```kotlin
+private fun publish(task: FetchTask) { update(task.shareId) { task } }
+private fun update(shareId: String, change: (FetchTask) -> FetchTask) {
+    _tasks.value = _tasks.value.map { if (it.shareId == shareId) change(it) else it }
+}
+```
+
+`update()` 是 **map-only（只更新已存在项，不插入）**；`publish()` 复用它，于是每个新 share 的
+任务都进不了 `_tasks`。下载线程本身不依赖这个列表（`start()` 直接 `scope.launch { run() }`），
+所以"文件能下、状态全无"；`run()` 里的进度 `update()` 也全部打空。修复：`publish()` 改为
+**insert-or-update（upsert）**：
+
+```kotlin
+private fun publish(task: FetchTask) {
+    val current = _tasks.value
+    _tasks.value = if (current.any { it.shareId == task.shareId }) {
+        current.map { if (it.shareId == task.shareId) task else it }
+    } else {
+        current + task
+    }
+}
+```
+
+修复后 logcat：`start published ... tasksNow=1`、后续 `offer ... known=Downloading`。
+真机 GUI 探针 `gui-probe-after-v11b` 证明 PG-1/PG-2 达成（见 §5.4.4 表）。
+
+### 5.5.3 顺带修掉的二次问题
+1. **同名历史消息进度串台**：气泡按文件名匹配 FetchTask 的兜底过松，同一个文件重复发 N 次时
+   所有历史卡片一起显示新任务的进度。改为：优先 shareId 精确匹配；仅"没有任何 shareId 的旧消息"
+   才退回文件名匹配，且要求任务开始时间与消息时间相差 <180s。
+2. **服务端把旧消息映射到新分享**：`find_share_for_message` 按路径/名字+大小匹配，同名文件重发时
+   老消息也会拿到新 shareId。本轮已缩小影响；彻底修法是桌面发送时把 shareId 写进消息记录。
+3. **测试驱动四个坑**（否则真机复验一直假红/假绿）：
+   * `EVERSEND_ADB_SERIAL` 默认值写死成另一台机器的号 → adb 命令打在"不存在的设备"上，UI 全空；
+     改为**自动探测唯一在线设备**；
+   * `uiautomator dump` 偶发空转被当成"页面不对"→ 按 BACK 乱退甚至退出 App；改为**唤醒+重试 3 次**；
+   * 抽屉判据误用「打开接收文件夹」（主页面头部也有这行）→ 在正常页面误按 BACK 退出 App；
+     改用只存在于抽屉的「新建群聊」；
+   * 导航前不确认 App 在前台 → 在桌面文本上按坐标。新增 `app_foreground()/ensure_app_foreground()`。
+
+### 5.5.4 最终验证（v11 APK）
+- 全量真机 **A0/A1/A2/A6/A7/A8 = 6/6 PASS**（`real_device_v11-final.md`）。
+- GUI 探针（同机同时刻真值时间线 × 手机截图）：
+  - 传输中：`after-v11b/0004.png` 卡片「100.0 MiB · **接收中 66%**」+ 进度条（真值 70%，采样时间差 ~1.4s）；
+  - 完成后：`after-v11b/0007.png`「✅ 100.0 MiB · 已保存到手机」+ 按钮「已保存」；历史卡片「已在其它客户端取走」；
+  - 标题：「与 一台设备 的对话」（无裸 id）。
+- 上传断点续传 v8/v11 真机探针 PASS（断网 2.5s 后续传 sha256 一致）。
+- **最终 APK（v11）**：`app-arm64-v8a-debug.apk` 72,262,603 B，
+  sha256 `3a0ef6495c94f10f37ee1b7845bbda3c7078d97730f33adabf4d21a1b4c9aea0`（install -r 保留数据，FGS 运行中）。
 
 ## 6. 兼容性 / 安全 / 边界
 
@@ -343,7 +416,9 @@ PG-2 残留的最短复现与下一步（给后续轮次）：在 A2 流程中�
      `data_dir/shares.json`、启动恢复并丢弃文件已不存在的条目（`tests/test_share_persistence.py` 14 项）；
   3. 上传续传的"完成响应丢失 + 电脑端重启"极端边界会重复落盘 `(1)` 文件（完成记录未持久化）；
   4. 桌面 G-07（状态栏"正在接收"）、引擎显式 `phase=verifying`、网页实页/DPI/浅色截图未做；
-  5. `netem` 高 RTT 下的窗口自适应（T6）缺可信数据，留待下轮先测后改；
+  5. 手机端 PG-3（批量「正在接收」文案）代码路径已修但本轮截图未覆盖；同一文件重发时历史卡片可能
+     跟着显示当前进度（根因与彻底修法见 §5.5.3）；
+  6. `netem` 高 RTT 下的窗口自适应（T6）缺可信数据，留待下轮先测后改；
   6. Windows/macOS 本轮未上真机（CI 覆盖内核/互传）；macOS GUI 仍未验证。
 
 ---
@@ -402,7 +477,7 @@ bash tests/reports/opt-1017/ab-run.sh
 | 新增测试 | `tests/test_http_resume.py`（上传续传 20 项）、`tests/test_share_persistence.py`（分享持久化+shareId 下发 14 项） |
 | 测试设施修正 | `tests/test_real_device.py`（ADB 自适应、A7.j 泵事件循环、端口探测 SO_REUSEADDR、抽屉页导航）、`tools/realdevice_probe.py`（同端口修复）、`tests/test_gui_actions.py`（列下标→列名） |
 | 收尾轮新增报告 | `real_device_v8-final.md`、`gui-probe-after-v{5,6,7,8}.md`、`resume-probe-v{4,8}.md`、`bench-before-after.md` |
-| 最终 APK | `android/app/build/outputs/apk/debug/app-arm64-v8a-debug.apk`，72,261,918 B，sha256 `448585275c7c515e1c170c4ed4834c8bf517fd0d57f7717a142161d5d578fe6c` |
+| 最终 APK（v11） | `android/app/build/outputs/apk/debug/app-arm64-v8a-debug.apk`，72,262,603 B，sha256 `3a0ef6495c94f10f37ee1b7845bbda3c7078d97730f33adabf4d21a1b4c9aea0` |
 | 报告 | `tests/reports/opt-1017/` 全部；APK sha256 见 §5 |
 
 ---

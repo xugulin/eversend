@@ -3945,9 +3945,17 @@ fun Bubble(
     // 分享 id 来源有两个：① 传输记录气泡由调用方给的 target.key；② 普通聊天消息
     // 由服务端 /api/chat 下发 `shareId`（消息之所以能走下载队列而不是旧直连旁路）。
     val shareId = (target?.key.orEmpty()).removePrefix("share-").ifBlank { message.mediaShareId }
-    val fetch = fetches.firstOrNull {
-        (shareId.isNotBlank() && it.shareId == shareId) ||
-            (message.mediaName.isNotBlank() && it.name == message.mediaName)
+    // 找本机下载状态：优先按 shareId 精确匹配；只有"旧消息"（既没有 shareId、
+    // 也不是传输记录条目）才退回按文件名匹配，并且要求任务开始时间与消息时间接近——
+    // 否则同一个文件重复发过 N 次时，历史卡片会被**新任务的进度一起带跑**
+    // （真机 v10 截图上 4 张同名历史卡片同时显示"接收中 39%"就是这么来的）。
+    val fetch = fetches.firstOrNull { task ->
+        (shareId.isNotBlank() && task.shareId == shareId) ||
+            (
+                shareId.isBlank() && target == null && message.mediaName.isNotBlank() &&
+                    task.name == message.mediaName && message.ts > 0.0 &&
+                    kotlin.math.abs(task.startedAt / 1000.0 - message.ts) < 180.0
+                )
     }
     val fetchRunning = fetch?.active == true
     val fetchDone = fetch?.state == FetchState.Done
@@ -4157,6 +4165,13 @@ fun Bubble(
                                     // 才退回旧直连下载（普通聊天附件保存）。
                                     val effectiveShare = shareId
                                     val isShare = effectiveShare.isNotBlank()
+                                    // PG-2/PG-3 取证：点「保存」时到底带没带 shareId、走的哪条路。
+                                    Log.d(
+                                        "EverSend",
+                                        "保存点击 share='$effectiveShare' target='${target?.key}' " +
+                                            "msgShare='${message.mediaShareId}' fileKey='${file?.key}' " +
+                                            "name='${message.mediaName}' client=${active != null}",
+                                    )
                                     if (active == null) {
                                         onError("还没有连上电脑")
                                     } else if (isShare) {

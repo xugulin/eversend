@@ -1,0 +1,1243 @@
+{
+  "label": "after-v11b",
+  "only": "A2",
+  "interval": 1.2,
+  "when": "2026-10-18 02:10:48",
+  "env": {
+    "adb": "2430d3c",
+    "work": "/home/xgl/qa-real",
+    "loadavg": [
+      0.83984375,
+      0.8994140625,
+      1.392578125
+    ]
+  },
+  "harness_exit": 0,
+  "harness_report": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/real_device_probe-after-v11b.md",
+  "harness_summary": "| A2 | 电脑发中等文件（约 100 MB）→ 手机磁盘 + sha256 | ✅ PASS | — |\n",
+  "samples": [
+    {
+      "t": 0.0,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v11b/0000.png",
+      "truth": null
+    },
+    {
+      "t": 1.51,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v11b/0001.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "downlink-check.bin",
+            "sentBytes": 0,
+            "size": 2097152,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 3.01,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v11b/0002.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "downlink-check.bin",
+            "sentBytes": 0,
+            "size": 2097152,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 4.51,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v11b/0003.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 28573696,
+            "size": 104857600,
+            "downloaded": false
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "downlink-check.bin",
+            "sentBytes": 0,
+            "size": 2097152,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 6.01,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v11b/0004.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 73924608,
+            "size": 104857600,
+            "downloaded": false
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "downlink-check.bin",
+            "sentBytes": 0,
+            "size": 2097152,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 7.51,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v11b/0005.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 104857600,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "downlink-check.bin",
+            "sentBytes": 0,
+            "size": 2097152,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 9.0,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v11b/0006.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 104857600,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "downlink-check.bin",
+            "sentBytes": 0,
+            "size": 2097152,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 10.49,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v11b/0007.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 104857600,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "downlink-check.bin",
+            "sentBytes": 0,
+            "size": 2097152,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 11.98,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v11b/0008.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 104857600,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "downlink-check.bin",
+            "sentBytes": 0,
+            "size": 2097152,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 13.48,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v11b/0009.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 104857600,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 40108032,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "downlink-check.bin",
+            "sentBytes": 0,
+            "size": 2097152,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          }
+        ],
+        "transfers": []
+      }
+    },
+    {
+      "t": 15.2,
+      "shot": "/home/xgl/我的项目/自制软件/韧传/eversend/tests/reports/opt-1017/gui-probe-shots/after-v11b/0010.png",
+      "truth": {
+        "shares": [
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 104857600,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 88866816,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A1-小文件-524288.bin",
+            "sentBytes": 0,
+            "size": 524288,
+            "downloaded": true
+          },
+          {
+            "name": "downlink-check.bin",
+            "sentBytes": 0,
+            "size": 2097152,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          },
+          {
+            "name": "A2-中文件-104857600.bin",
+            "sentBytes": 0,
+            "size": 104857600,
+            "downloaded": true
+          }
+        ],
+        "transfers": []
+      }
+    }
+  ]
+}
