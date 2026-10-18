@@ -453,9 +453,16 @@ class DiscoveryAndActionsTest {
                         "界面 dump：$dump",
                 )
             }
+            // 顶部那行先出现（只含名字），设备行的「发现来源」要等下一次重组才画；
+            // 慢一点的模拟器上紧跟其后断言会假失败（CI 实测），所以等一会儿。
             assertTrue(
                 "每一行都要写清「发现来源」",
-                device.hasObject(androidx.test.uiautomator.By.textContains("组播")),
+                device.wait(
+                    androidx.test.uiautomator.Until.hasObject(
+                        androidx.test.uiautomator.By.textContains("组播")
+                    ),
+                    10_000,
+                ),
             )
             try {
                 device.takeScreenshot(File(context.getExternalFilesDir(null), "android-app-auto-discovery.png"))
