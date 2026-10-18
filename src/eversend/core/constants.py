@@ -20,7 +20,7 @@ PROTOCOL_VERSION = 1
 #: Human readable version of the application.
 APP_NAME = "EverSend"
 APP_NAME_CN = "韧传"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
 # ---------------------------------------------------------------------------
 # Ports

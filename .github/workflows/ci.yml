@@ -200,14 +200,14 @@ jobs:
 
       - name: 结构验证（文件齐全、启动器指向真实存在的路径）
         shell: bash
-        run: python tools/verify_green.py tools/.build/EverSend-1.0.0-windows.zip --platform windows
+        run: python tools/verify_green.py tools/.build/EverSend-1.1.0-windows.zip --platform windows
 
       - name: 解压到带空格和中文的目录（真实用户的路径就长这样）
         shell: pwsh
         run: |
           $dest = "$env:RUNNER_TEMP\我的 U 盘"
           New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          Expand-Archive -Path "tools\.build\EverSend-1.0.0-windows.zip" -DestinationPath $dest
+          Expand-Archive -Path "tools\.build\EverSend-1.1.0-windows.zip" -DestinationPath $dest
           Get-ChildItem "$dest\EverSend" | Select-Object Name
 
       - name: 用包里的解释器跑一遍（加密、传输、界面）

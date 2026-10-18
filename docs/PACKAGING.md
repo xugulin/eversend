@@ -496,3 +496,33 @@ job 在真 Windows runner 上完成（Wine 下也手工验证过）：
 | `tools/verify_green.py` | 端到端验证：外来机器模拟、移动后重跑、只读介质、`$HOME` 零污染 |
 | `tools/.cache/` | 下载缓存与暂存目录（可删，已 gitignore） |
 | `tools/.build/` | 构建输出（`EverSend/` 目录树 + `EverSend-<版本>-<平台>.zip`，已 gitignore） |
+
+---
+
+## 12. 发布新版本（维护者流程）
+
+以 `v1.1.0` 为例，完整顺序如下（发布前先确认 `git status` 干净）：
+
+1. **改版本号**（一处改漏就会导致 CI 名称对不上）：
+   - `src/eversend/core/constants.py` 的 `APP_VERSION` —— 绿色包命名、`/api/state`、窗口标题都读它；
+   - `android/app/build.gradle.kts` 的 `versionCode`（+1）与 `versionName`；
+   - `.github/workflows/ci.yml` 里硬编码的绿色包文件名 `EverSend-<版本>-windows.zip`（共两处）；
+   - `README.md` 里的 APK 文件名与「最新版本」标注。
+2. **写发布说明**：新增 `docs/RELEASE_<版本>.md`（稳定性/速度/GUI 改动、兼容升级、已知限制、证据索引）。
+3. **跑冒烟**：`PYTHONPATH=src python3 -m eversend --cli selftest`、`python3 -m compileall -q src tests`；
+   有条件再跑 `python3 tools/acceptance_opt1017.py`（含真机步骤）。打包验证：
+   `python3 tools/build_green.py --platform linux --out tools/.build`。
+4. **提交并打 tag**：`git commit -am 'release: vX.Y.Z'`；`git tag -a vX.Y.Z -m '…'`（tag 指向发布提交本身）。
+5. **推送**：`git push origin main && git push origin vX.Y.Z`。
+   ⚠ `origin` 若配置的是 gh-proxy 之类的镜像，多数镜像**只代理读**；推送要么直连
+   `https://github.com/<user>/eversend.git`（PAT / credential helper），要么走 SSH
+   `git@github.com:<user>/eversend.git`（先把本机公钥加到 GitHub → Settings → SSH and GPG keys）。
+   本机实测：https 直连 `github.com` 可用、SSH 22 端口可达（但需要账号里的公钥）。
+6. **GitHub Release**：仓库 → Releases → Draft a new release，选中刚推的 tag，
+   正文粘贴 `docs/RELEASE_<版本>.md`；附件可上传
+   `tools/.build/EverSend-<版本>-linux.zip`、`EverSend-<版本>-windows.zip` 与
+   `android/app/build/outputs/apk/debug/app-arm64-v8a-debug.apk`（或取 CI 产物）。
+   gh CLI 一条命令：`gh release create vX.Y.Z --title '韧传 vX.Y.Z' --notes-file docs/RELEASE_<版本>.md`。
+7. **等 CI 绿灯**：push 到 main 会触发三平台自检（`ci.yml`）、安卓模拟器测试（`android-app.yml`）
+   与两两互传（`interop.yml`）；发布页贴出的版本应至少这三个 workflow 通过。
+

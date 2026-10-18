@@ -25,8 +25,8 @@ android {
         applicationId = "cn.eversend.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // The desktop the app should talk to; overridden at runtime (discovery,
         // typed address, or an intent extra in the CI test).

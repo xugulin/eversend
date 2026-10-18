@@ -19,6 +19,10 @@
 
 </div>
 
+> **最新版本：v1.1.0**（2026-10-19）—— 传输稳定性 / 速度 / GUI 显示准确性系统优化，
+> 手机 App 与桌面/网页界面同步更新。完整说明见 [发布说明 v1.1.0](docs/RELEASE_1.1.0.md)。
+> 绿色版与 APK 从 [Releases](https://github.com/xugulin/eversend/releases) 下载。
+
 ![韧传 · 会话界面](docs/screenshots/01-session.png)
 
 ## 🏆 企业级改造（2026-09）
@@ -289,7 +293,7 @@ App 真机截图（CI 上真模拟器跑完测试后自动截的，Emoji 由系�
 |---|---|---|
 | ![安卓 App 会话](docs/screenshots/android-app-chat.png) | ![安卓 App 聊天](docs/screenshots/android-app-conversation.png) | ![安卓 App 看图](docs/screenshots/android-app-image-viewer.png) |
 
-装法：下载 `EverSend-1.0.0-android.apk` 安装即可（**debug 签名**，自用/测试没问题；
+装法：下载 `EverSend-1.1.0-android.apk` 安装即可（**debug 签名**，自用/测试没问题；
 正式分发请用自己的密钥重新签名）。打开后点「搜索电脑」自动发现，也可以手填地址。
 
 这个 APK 是 **arm64-v8a 单 ABI**（内置 libVLC，含自己的 FFmpeg 解码器，装到手机上
