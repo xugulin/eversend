@@ -395,7 +395,11 @@ def test_cancel() -> None:
             # Cancelling means "give up", so the space must come back now --
             # this used to be the opposite assertion: the full-size part was
             # kept "for a later resume" that no one had asked for.
-            wait_for(lambda: not part.exists(), timeout=10.0)
+            # 等 .part **和** .journal 都消失再扫目录：取消清理是两步（先删 .part 再删
+            # journal），Windows 上第二步慢几毫秒，只等 .part 会扫到还没删完的 journal
+            # （CI 实测：残片还剩 huge.bin.eversend.journal）。
+            journal = recv_dir / "huge.bin.eversend.journal"
+            wait_for(lambda: not part.exists() and not journal.exists(), timeout=10.0)
             leftovers = sorted(
                 p.name for p in recv_dir.iterdir() if p.name.endswith((".eversend.part", ".eversend.journal"))
             )
