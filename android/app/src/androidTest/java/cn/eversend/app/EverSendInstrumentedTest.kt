@@ -221,11 +221,19 @@ class EverSendInstrumentedTest {
             }
             assertTrue("聊天里的图片必须真的渲染出来（不是一行文件名）", picture != null)
             if (picture != null) {
-                picture.click()
-                val viewer = device.wait(
-                    androidx.test.uiautomator.Until.hasObject(androidx.test.uiautomator.By.text("关闭")),
-                    8_000,
-                )
+                // 点开大图要先把原图从电脑端取回来再建窗口；前面几条测试连着捶过
+                // 电脑端，CI 模拟器冷启动时 8s 会假失败（实测抓到）。放宽到 20s，
+                // 并且第一次点击没反应就再点一次（模拟器偶发丢帧/点击未落到控件上）。
+                var viewer = false
+                repeat(2) { attempt ->
+                    picture.click()
+                    viewer = device.wait(
+                        androidx.test.uiautomator.Until.hasObject(androidx.test.uiautomator.By.text("关闭")),
+                        20_000,
+                    )
+                    if (viewer || attempt == 1) return@repeat
+                    Thread.sleep(800)
+                }
                 assertTrue("点开图片要出现全屏查看器", viewer)
                 shoot("android-app-image-viewer.png")
                 device.pressBack()

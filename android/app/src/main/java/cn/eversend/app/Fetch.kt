@@ -495,7 +495,9 @@ fun mimeForName(name: String): String {
  * 所以这里按同一套字段造一份 —— 界面代码一行都不用改，三端的观感也就一致了。
  */
 fun fetchTransfers(fetches: List<FetchTask>): List<JSONObject> = fetches.mapNotNull { task ->
-    if (!task.active) return@mapNotNull null
+    // 只有真的在下载的才算「接收中」：排队中的任务由气泡显示「排队中」，
+    // 不能占「接收中 X%」那一行（否则排队和下载中在界面上无法区分）。
+    if (task.state != FetchState.Downloading) return@mapNotNull null
     try {
         JSONObject()
             .put("transferId", "fetch-" + task.shareId)

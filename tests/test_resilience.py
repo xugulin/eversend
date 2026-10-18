@@ -84,7 +84,8 @@ def disk_usage(path: Path) -> int:
             info = entry.stat()
         except OSError:
             continue
-        total += (info.st_blocks * 512) if info.st_blocks else info.st_size
+        blocks = getattr(info, "st_blocks", 0)
+        total += blocks * 512 if blocks else info.st_size
     return total
 
 
@@ -578,12 +579,20 @@ def test_cancel_reclaims_disk() -> None:
             ):
                 time.sleep(0.02)
             reserved = 0
+            part_size = 0
             if part.exists():
                 info = part.stat()
-                reserved = (info.st_blocks * 512) if info.st_blocks else info.st_size
+                part_size = info.st_size
+                blocks = getattr(info, "st_blocks", 0)
+                reserved = blocks * 512 if blocks else info.st_size
             active = rig.engine_b.active_transfers()
-            check("取消时接收正在跑，.part 已按整份文件预分配", bool(active) and reserved >= size // 2,
-                  f"active={bool(active)} 实占={reserved / 1048576:.0f} MiB")
+            # 「按整份文件预分配」= .part 的**逻辑大小**已经是整个文件的大小。
+            # 不能用物理块数（st_blocks）当判据：APFS 等文件系统的预分配是稀疏的，
+            # macOS 实测 200 MiB 的 .part 只报 31 MiB 物理块，会误杀（CI 抓到的）。
+            check("取消时接收正在跑，.part 已按整份文件预分配",
+                  bool(active) and part_size >= size,
+                  f"active={bool(active)} 逻辑大小={part_size / 1048576:.0f} MiB "
+                  f"实占={reserved / 1048576:.0f} MiB")
             if active:
                 rig.engine_b.cancel(active[0].transfer_id, "复核：用户取消")
             thread.join(timeout=20)

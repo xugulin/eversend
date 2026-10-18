@@ -91,7 +91,8 @@ def dir_usage(path: Path) -> int:
             info = entry.stat()
         except OSError:
             continue
-        total += (info.st_blocks * 512) if info.st_blocks else info.st_size
+        blocks = getattr(info, "st_blocks", 0)
+        total += blocks * 512 if blocks else info.st_size
     return total
 
 

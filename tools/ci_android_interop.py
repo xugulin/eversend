@@ -467,9 +467,12 @@ def main() -> int:
         shot_settings = adb("exec-out", "screencap", "-p", binary=True, timeout=120)
         (shots / "01b-android-settings.png").write_bytes(shot_settings)
         # Back to the session page: the file picker and the composer live there.
+        # 新版界面删掉了 [会话｜传输] 分段控件，回去走「← 返回会话」或点设备行。
         devtools.evaluate(
-            "(function(){var b=document.querySelector('#view-seg [data-view=\"session\"]');"
-            "if(b)b.click();return !!b;})()"
+            "(function(){var b=document.querySelector('#btn-back-session');"
+            "if(b){b.click();return 'back';}"
+            "var d=document.querySelector('#device-list li');"
+            "if(d){d.click();return 'device';}return false;})()"
         )
         time.sleep(1)
 
@@ -611,15 +614,21 @@ def main() -> int:
     # -- 3b. 聊天：手机上打字，电脑端收到 -------------------------------------
     print("\n[3b] 聊天：手机上发病消息，电脑端收到")
     if cdp_ok:
-        # 聊天在「会话」页：顶部 [会话｜传输] 分段控件的左边那一半。
+        # 聊天入口：新版网页取消了 [会话｜传输] 分段控件与「和电脑聊天」按钮，
+        # 入口就是设备列表的一行（点它 = 进会话），输入区在会话页底部。
         devtools.evaluate(
-            "(function(){var b=document.querySelector('#view-seg [data-view=\"session\"]');"
-            "if(b)b.click();return !!b;})()"
+            "(function(){var d=document.querySelector('#device-list li');"
+            "if(d){d.click();return 'device';}"
+            "var b=document.querySelector('#btn-back-session');"
+            "if(b){b.click();return 'back';}return false;})()"
         )
         time.sleep(1)
         chat_text = "来自安卓手机的问候 " + time.strftime("%H:%M:%S")
+        # 入口断言 = 会话页底部的聊天输入区真的可见（不是 DOM 里有但藏着）。
         typed = devtools.evaluate(
-            "(function(){var b=document.querySelector('#btn-new-chat');if(b)b.click();return !!b;})()"
+            "(function(){var i=document.querySelector('#chat-input');"
+            "if(!i)return false;var r=i.getBoundingClientRect();"
+            "return r.width>0&&r.height>0;})()"
         )
         check("手机页面有聊天入口", typed is True)
         time.sleep(2)
