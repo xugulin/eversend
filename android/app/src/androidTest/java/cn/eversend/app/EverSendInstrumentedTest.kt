@@ -224,9 +224,24 @@ class EverSendInstrumentedTest {
                 // 点开大图要先把原图从电脑端取回来再建窗口；前面几条测试连着捶过
                 // 电脑端，CI 模拟器冷启动时 8s 会假失败（实测抓到）。放宽到 20s，
                 // 并且第一次点击没反应就再点一次（模拟器偶发丢帧/点击未落到控件上）。
+                // 重试时**重新找一遍控件**：第一次点击若已打开弹层，旧 UiObject2 会
+                // stale，直接再 click 会抛 StaleObjectException（CI 实测）。
                 var viewer = false
                 repeat(2) { attempt ->
-                    picture.click()
+                    val target = if (attempt == 0) {
+                        picture
+                    } else {
+                        device.findObject(
+                            androidx.test.uiautomator.By.desc("ui-图片.png")
+                        )
+                    }
+                    if (target != null) {
+                        try {
+                            target.click()
+                        } catch (stale: androidx.test.uiautomator.StaleObjectException) {
+                            // 弹层已经把它挤掉了：下一轮会重新找到新控件。
+                        }
+                    }
                     viewer = device.wait(
                         androidx.test.uiautomator.Until.hasObject(androidx.test.uiautomator.By.text("关闭")),
                         20_000,
